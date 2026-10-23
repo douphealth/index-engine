@@ -16,7 +16,7 @@ from collections import defaultdict, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from urllib.parse import quote
 
-from . import config, store
+from . import alerts, config, store
 from .util import days_since, log, norm, now_iso, pacific_day, parse_ts
 
 API = "https://www.googleapis.com/webmasters/v3"
@@ -157,8 +157,10 @@ def inspection_candidates(db, site, include_taxonomy=False):
                g.inspected_at, g.coverage, g.verdict, g.error AS gerr,
                COALESCE(p.gsc_recent_impr,0) AS recent, COALESCE(p.gsc_clicks,0) AS gsc_clicks,
                COALESCE(p.gsc_impr,0) AS gsc_impr, COALESCE(p.bing_clicks,0) AS bing_clicks,
-               COALESCE(p.bing_impr,0) AS bing_impr, a.words
+               COALESCE(p.bing_impr,0) AS bing_impr, a.words, o.requested_at,
+               (SELECT MAX(applied_at) FROM link_ops l WHERE l.target=u.url AND l.status='applied') AS linked_at
         FROM urls u LEFT JOIN audits a ON a.url=u.url LEFT JOIN gsc g ON g.url=u.url LEFT JOIN perf p ON p.url=u.url
+        LEFT JOIN owner_state o ON o.url=u.url
         WHERE u.site=? AND (u.in_sitemap=1 OR u.in_wp=1)""", (site,)).fetchall()
     out = []
     for r in rows:
@@ -172,16 +174,21 @@ def inspection_candidates(db, site, include_taxonomy=False):
         st = "error" if r["gerr"] else state_of(r["coverage"], r["verdict"])
         age = days_since(r["inspected_at"])
         if st is not None and age is not None and age < config.REINSPECT_DAYS.get(st, 10):
-            changed = parse_ts(r["lastmod"]) and parse_ts(r["lastmod"]) > parse_ts(r["inspected_at"])
-            if not changed:
-                continue                               # fresh enough, and the page has not changed since
+            seen = parse_ts(r["inspected_at"])
+            changed = parse_ts(r["lastmod"]) and parse_ts(r["lastmod"]) > seen
+            # Measure an action's effect a few days after it: a manual request, or new internal links.
+            acted = any(parse_ts(t) and parse_ts(t) > seen and (days_since(t) or 0) >= d
+                        for t, d in ((r["requested_at"], 2), (r["linked_at"], 3)))
+            if not (changed or acted):
+                continue                               # fresh enough, and nothing happened since
         never = st is None
         out.append((0 if never else 1, -value_score(r), r["url"]))
     out.sort()
     return [u for _, _, u in out]
 
 
-def inspect_due(db, client, props, max_per_site=None, include_taxonomy=False):
+def inspect_due(db, client, props, max_per_site=None, include_taxonomy=False, only_urls=None):
+    """Inspect what is due per property (or exactly `only_urls`, e.g. pages published minutes ago), within quota."""
     day = pacific_day()
     queues, budget = {}, {}
     for site, prop in props.items():
@@ -189,7 +196,13 @@ def inspect_due(db, client, props, max_per_site=None, include_taxonomy=False):
         left = 0 if exhausted else config.INSPECT_DAILY_LIMIT - config.INSPECT_SAFETY_MARGIN - used
         if max_per_site is not None:
             left = min(left, max_per_site)
-        cands = inspection_candidates(db, site, include_taxonomy)
+        if only_urls is not None:
+            mine = {r["url"] for r in db.execute("SELECT url FROM urls WHERE site=?", (site,))}
+            cands = [u for u in only_urls if u in mine]
+            if not cands:
+                continue
+        else:
+            cands = inspection_candidates(db, site, include_taxonomy)
         budget[site] = max(0, left)
         queues[site] = deque(cands[:budget[site]])
         log(f"[google] {site}: {len(cands)} URLs need an inspection; quota left today {left}; inspecting {len(queues[site])}")
@@ -240,6 +253,14 @@ def inspect_due(db, client, props, max_per_site=None, include_taxonomy=False):
                     log(f"[google] {site}: {res['error']} - stopping this property")
                     stopped.add(site)
                 now = now_iso()
+                prev = db.execute("SELECT coverage, verdict FROM gsc WHERE url=?", (url,)).fetchone()
+                if prev and not res.get("error"):
+                    was, is_ = state_of(prev["coverage"], prev["verdict"]), state_of(res.get("coverage"), res.get("verdict"))
+                    if was == "indexed" and is_ in ("crawled", "discovered", "unknown"):
+                        alerts.add(db, site, url, "dropped_from_google", "high",
+                                   f"Google no longer indexes this page: {res.get('coverage')}.")
+                    elif was in ("crawled", "discovered", "unknown") and is_ == "indexed":
+                        alerts.add(db, site, url, "newly_indexed", "good", f"Google indexed this page (was: {prev['coverage']}).")
                 db.execute("""INSERT OR REPLACE INTO gsc(url, property, inspected_at, verdict, coverage, indexing_state,
                               fetch_state, robots_state, last_crawl, google_canonical, user_canonical, error)
                               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Offline end-to-end test: a fake WordPress-like site on localhost plus fake Google, Bing and
 IndexNow clients. Exercises every stage and checks each decision. No network beyond 127.0.0.1."""
+import base64
 import json
 import random
 import shutil
@@ -8,9 +9,11 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
-from . import audit, bing, config, discover, google, report, store, submit, triage, util
+import numpy as np
+
+from . import audit, bing, brain, config, discover, fresh, google, links, model, report, store, submit, triage, util, wp
 
 KEY = "abcdef1234567890abcdef1234567890"
 VOCAB = [f"w{i}x" for i in range(600)]
@@ -29,7 +32,14 @@ PAGES = {   # path: (title, words, extra)
     "/orphan/": ("Fiddle Leaf Fig Leaf Drop", 650, {}),
     "/not-in-sitemap/": ("Peace Lily Brown Tips", 700, {}),
     "/about/": ("About Us", 500, {"hub": True}),
+    "/brand-new/": ("Watering Brand New Succulents", 500, {}),
 }
+UNLISTED = ("/about/", "/not-in-sitemap/", "/brand-new/")   # not in the post sitemap
+RAW = {}            # path -> stored post content (fake WordPress); rendered instead of generated text
+FLIP = set()        # paths that currently serve noindex (regression test)
+FRESH = []          # (path, modified_gmt) returned by modified_after queries
+WP_USER, WP_PW = "tester", "abcd efgh ijkl mnop qrst uvwx"
+POST_IDS = {p: 100 + i for i, p in enumerate(PAGES)}
 
 
 def body_text(path, n, dup=False):
@@ -65,7 +75,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, f'<?xml version="1.0"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</sitemapindex>', "application/xml")
         if p in ("/post-sitemap.xml", "/page-sitemap.xml", "/category-sitemap.xml"):
             if p == "/post-sitemap.xml":
-                paths = [x for x in PAGES if x not in ("/about/", "/not-in-sitemap/")] + ["/redirect-me/", "/gone/"]
+                paths = [x for x in PAGES if x not in UNLISTED] + ["/redirect-me/", "/gone/"]
             elif p == "/page-sitemap.xml":
                 paths = ["/about/"]
             else:
@@ -74,11 +84,8 @@ class Handler(BaseHTTPRequestHandler):
                             f"<image:image><image:loc>{base}/img{i}.jpg</image:loc></image:image></url>" for i, x in enumerate(paths))
             return self._send(200, '<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" '
                                    f'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">{items}</urlset>', "application/xml")
-        if p == "/wp-json/wp/v2/posts":
-            data = [{"link": f"{base}{x}", "modified_gmt": "2026-10-20T10:00:00"} for x in ("/good-indexed/", "/not-in-sitemap/")]
-            return self._send(200, json.dumps(data), "application/json", {"X-WP-TotalPages": "1"})
-        if p == "/wp-json/wp/v2/pages":
-            return self._send(200, "[]", "application/json", {"X-WP-TotalPages": "1"})
+        if p.startswith("/wp-json/wp/v2/"):
+            return self.wp_get(base, p, parse_qs(u.query))
         if p == "/redirect-me/":
             self.send_response(301)
             self.send_header("Location", f"{base}/good-indexed/")
@@ -92,21 +99,57 @@ class Handler(BaseHTTPRequestHandler):
         title, n, extra = PAGES[p]
         return self._send(200, self.page(base, p, title, n, extra))
 
+    # ---- fake WordPress REST API: login, slug lookup, raw content, save, modified_after
+    def _authed(self):
+        tok = base64.b64encode(f"{WP_USER}:{WP_PW}".encode()).decode()
+        return self.headers.get("Authorization") == f"Basic {tok}"
+
+    def wp_get(self, base, p, q):
+        js = lambda data, code=200: self._send(code, json.dumps(data), "application/json", {"X-WP-TotalPages": "1"})  # noqa: E731
+        if p == "/wp-json/wp/v2/users/me":
+            return js({"id": 1}) if self._authed() else js({"code": "rest_not_logged_in"}, 401)
+        if p == "/wp-json/wp/v2/pages":
+            return js([])
+        if p == "/wp-json/wp/v2/posts":
+            if "slug" in q:
+                path = f"/{q['slug'][0]}/"
+                return js([{"id": POST_IDS[path], "link": f"{base}{path}", "status": "publish"}] if path in POST_IDS else [])
+            if "modified_after" in q:
+                return js([{"link": f"{base}{x}", "modified_gmt": m, "date_gmt": m} for x, m in FRESH])
+            return js([{"link": f"{base}{x}", "modified_gmt": "2026-10-20T10:00:00", "date_gmt": "2026-06-01T10:00:00"}
+                       for x in ("/good-indexed/", "/not-in-sitemap/")])
+        pid = int(p.rsplit("/", 1)[-1]) if p.rsplit("/", 1)[-1].isdigit() else None
+        path = next((k for k, v in POST_IDS.items() if v == pid), None)
+        if path and self._authed():
+            return js({"id": pid, "link": f"{base}{path}", "modified_gmt": "2026-10-20T10:00:00", "content": {"raw": RAW.get(path, "")}})
+        return js({"code": "rest_forbidden"}, 401)
+
+    def do_POST(self):
+        p = urlsplit(self.path).path
+        pid = int(p.rsplit("/", 1)[-1]) if p.rsplit("/", 1)[-1].isdigit() else None
+        path = next((k for k, v in POST_IDS.items() if v == pid), None)
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        if not (path and self._authed()):
+            return self._send(401, "{}", "application/json")
+        RAW[path] = body.get("content", RAW.get(path, ""))
+        return self._send(200, json.dumps({"id": pid}), "application/json")
+
     def page(self, base, path, title, n, extra):
         head = f"<title>{title} | Test Plants</title>"
         head += f'<link rel="canonical" href="{base}{extra.get("canonical", path)}">'
-        if extra.get("noindex"):
+        if extra.get("noindex") or path in FLIP:
             head += '<meta name="robots" content="noindex, follow">'
         nav = f'<nav><a href="{base}/about/">About</a> <a href="{base}/good-unknown/">Monstera</a></nav>'
         links = ""
         if extra.get("hub"):
             links = " ".join(f'<a href="{base}{x}">{t}</a>' for x, (t, _, _) in PAGES.items()
-                             if x not in ("/orphan/", "/good-unknown/", "/about/"))
-        if path == "/good-indexed/":
-            links = f'<a href="{base}/good-crawled/">calathea</a>'
+                             if x not in ("/orphan/", "/good-unknown/", "/about/", "/brand-new/"))
         text = body_text(path, n, extra.get("dup"))
+        if path == "/good-crawled/":
+            text += " In my practice my clients often ask how often to water."
+        inner = RAW[path] if path in RAW else f"<p>{text}</p><p>{links}</p>"
         return (f"<!doctype html><html><head>{head}</head><body><header>{nav}</header><main><article>"
-                f"<h1>{title}</h1><div class='entry-content'><p>{text}</p><p>{links}</p></div></article></main>"
+                f"<h1>{title}</h1><div class='entry-content'>{inner}</div></article></main>"
                 f"<aside>sidebar words here</aside><footer>footer</footer></body></html>")
 
 
@@ -176,6 +219,9 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
+    RAW["/good-indexed/"] = (f"<p>{body_text('/good-indexed/', 900)}</p><h2>Ceramic Planter Drainage Mistakes</h2>"
+                             "<p>Many beginners make ceramic planter drainage mistakes when potting.</p>"
+                             f'<p><a href="{base}/good-crawled/">calathea</a></p>')
     tmp = Path(tempfile.mkdtemp(prefix="index-engine-selftest-"))
     config.OUT, config.DB_PATH, config.LOG_DIR = tmp, tmp / "t.db", tmp / "logs"
     config.INDEXNOW_KEYS_FILE = tmp / "none.json"
@@ -310,6 +356,84 @@ def main():
     check(summary["sites"][0]["site"] == base and tables[base]["cols"][0] == "url" and len(tables[base]["rows"]) == len(t2)
           and run_sum["totals"]["submitted"] == 1 and run_sum["totals"]["known"] > 0, "dashboard payload built")
     res = res2
+
+    # ---- intelligence: trust scan, odds model, best actions, impact
+    t3 = {urlsplit(r["url"]).path: dict(r) for r in db.execute("SELECT * FROM triage")}
+    check("TRUST_RISK" in t3["/good-crawled/"]["flags"], "invented first-hand claims are flagged (trust scan)")
+    rng = np.random.default_rng(7)
+    X = rng.normal(size=(400, len(model.NAMES)))
+    y = ((X[:, 1] + 0.5 * X[:, 0] + rng.normal(scale=0.6, size=400)) > 0).astype(float)
+    check(model.auc(y, model.predict(model.fit(X, y), X)) > 0.85, "odds model learns a real signal (synthetic AUC > 0.85)")
+    check(model.auc([1, 1, 0, 0], [0.9, 0.8, 0.2, 0.1]) == 1.0 and model.auc([1, 0], [0.5, 0.5]) == 0.5,
+          "AUC is computed correctly (ties count half)")
+    res3, intel = brain.analyze(db, sites)
+    check(intel["model"]["quality"] == "insufficient" and intel["actions"],
+          "with too few Google verdicts the model says so and falls back to fixed estimates")
+    check(db.execute("SELECT COUNT(*) FROM triage WHERE odds IS NOT NULL").fetchone()[0] > 0
+          and any(a["action"] == "add_links" and a["url"].endswith("/good-discovered/") for a in intel["actions"]),
+          "scored pages get odds; best actions include links for a stuck page")
+    check({"gained", "lost", "requests", "links", "bing"} <= set(intel["impact"]), "impact report built")
+
+    # ---- link autopilot against the fake WordPress
+    tricky = ('<h2>Ceramic planter drainage mistakes</h2>[caption]ceramic planter drainage mistakes[/caption]'
+              '<p>Avoid <a href="/x/">ceramic planter drainage mistakes</a> and common ceramic planter drainage mistakes.</p>')
+    hit = links.find(tricky, "ceramic planter drainage mistakes", base + "/good-discovered/")
+    check(bool(hit) and tricky[hit[0] - 7:hit[0]] == "common ", "anchor search skips headings, shortcodes and existing links")
+    wpc = wp.WPClient(base, base=base, creds=[("nobody", "wrong pass"), (WP_USER, WP_PW)])
+    check(wpc.ok, "WordPress login with an application password")
+    props_ = links.propose(db, res3, intel["actions"], {base: wpc})
+    prop = next((p for p in props_ if p["target"].endswith("/good-discovered/")), None)
+    check(bool(prop) and prop["source"].endswith("/good-indexed/") and prop["anchor"].lower() == "ceramic planter drainage mistakes",
+          "a link proposal uses a phrase already in the source page's text")
+    reports = []
+
+    def rep(lid, st, result, at):
+        reports.append((lid, st, result))
+
+    lk = dict(prop or {}, status="approved")
+    links.apply(db, [lk], {"links_per_site_per_day": 1}, {base: wpc}, rep)
+    new_raw = RAW["/good-indexed/"]
+    check(bool(reports) and reports[-1][1] == "applied" and new_raw.count(f'href="{lk.get("target")}"') == 1
+          and "<h2>Ceramic Planter Drainage Mistakes</h2>" in new_raw and "live page: visible" in reports[-1][2],
+          "an approved link is applied once, inside the paragraph (heading untouched), and seen on the live page")
+    n_rep = len(reports)
+    other = dict(lk, id="0123456789abcdef", target=base + "/orphan/", anchor="beginners")
+    links.apply(db, [other], {"links_per_site_per_day": 1}, {base: wpc}, rep)
+    check(len(reports) == n_rep, "the daily per-site link cap is respected")
+    links.STRICT_SITES.add(base)
+    links.apply(db, [dict(other, status="proposed")], {"links_per_site_per_day": 5, "link_autopilot": True}, {base: wpc}, rep)
+    links.STRICT_SITES.discard(base)
+    check(len(reports) == n_rep, "autopilot never applies an unapproved link on a strict site")
+    links.apply(db, [dict(lk, status="undo")], {}, {base: wpc}, rep)
+    check(reports[-1][1] == "undone" and f'href="{lk.get("target")}"' not in RAW["/good-indexed/"],
+          "undo removes exactly the added link")
+
+    # ---- fresh-content autopilot
+    store.set_meta(db, base, fresh_watermark="2026-10-01T00:00:00+00:00")
+    FRESH.append(("/brand-new/", "2026-10-23T12:00:00"))
+    ch = fresh.changed(db, sites)
+    check(base in ch and [urlsplit(u).path for u, *_ in ch[base]] == ["/brand-new/"],
+          "the fresh check finds a post published since the last look")
+    fresh.ingest(db, ch)
+    n_calls = len(inow.calls)
+    submit.run(db, sites, bing_client=bng, bing_sites=bsites, indexnow_client=inow)
+    check(len(inow.calls) == n_calls + 1 and base + "/brand-new/" in inow.calls[-1][3], "a brand-new post is submitted on the same tick")
+    check(not fresh.changed(db, sites), "the watermark moves on: the same post is not picked up twice")
+
+    # ---- regression alerts and Google transitions
+    FLIP.add("/good-unknown/")
+    audit.run(db, sites, force=True)
+    kinds = [(r["kind"], r["url"]) for r in db.execute("SELECT kind, url FROM alerts")]
+    check(any(k == "became_blocked" and u.endswith("/good-unknown/") for k, u in kinds), "a page that turns noindex raises an alert")
+    FLIP.clear()
+    audit.run(db, sites, force=True)
+    check(any(r["kind"] == "unblocked" for r in db.execute("SELECT kind FROM alerts")), "its recovery raises a good-news alert")
+    FakeGSC.COVERAGE["/good-discovered/"] = "Submitted and indexed"
+    db.execute("UPDATE gsc SET inspected_at='2026-09-01T00:00:00+00:00' WHERE url LIKE '%/good-discovered/'")
+    google.inspect_due(db, gsc, props)
+    FakeGSC.COVERAGE["/good-discovered/"] = "Discovered - currently not indexed"
+    check(db.execute("SELECT COUNT(*) FROM alerts WHERE kind='newly_indexed'").fetchone()[0] == 1,
+          "a page entering Google's index raises a good-news alert")
 
     path = report.write(db, res)
     html = path.read_text(encoding="utf-8")

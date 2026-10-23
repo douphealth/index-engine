@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Index Engine - find every URL your sites publish, find out why each one is or is not indexed,
-push the indexable ones through every channel search engines accept, and tell you exactly what
-to fix for the rest. Results and controls live in the online dashboard (dashboard/).
+"""Index Engine - find every URL your sites publish, find out why each one is or is not indexed, push the indexable
+ones through every channel search engines accept, learn what gets pages indexed on YOUR sites, and act on it.
+Results and controls live in the online dashboard (dashboard/).
 
-    python indexengine.py tick                    # what the scheduler runs every 30 min: queued run, else the daily run
+    python indexengine.py tick                    # the scheduler, every 30 min: queued run > daily run > quick tick
     python indexengine.py run                     # everything, all enabled sites, now
     python indexengine.py run --site frenchyfab.com --dry-run
     python indexengine.py run --no-submit         # measure only
-    python indexengine.py publish                 # re-upload the latest results to the dashboard (no crawling)
+    python indexengine.py publish                 # re-analyse local data and re-upload to the dashboard (no crawling)
     python indexengine.py status                  # one line per site from the last run
     python indexengine.py selftest                # offline test with a fake site and fake APIs
 
-Stages: discover -> audit -> Google data + inspection -> Bing data -> submit -> triage -> report -> dashboard.
-Credentials come from ../GSC-Bing.txt and never leave this PC; the dashboard only receives results.
+Full run: [apply approved links] -> discover -> audit -> Google data + inspection -> Bing data -> submit ->
+          analyse (triage, odds model, best actions, impact) -> link proposals -> report -> dashboard.
+Quick tick (every 30 min): apply approved links; find posts published/updated since the last look; audit, inspect,
+          gate and submit them within minutes; re-analyse and upload only when something changed.
+Credentials come from ../GSC-Bing.txt and the sites' credentials.txt and never leave this PC.
 """
 import argparse
 import datetime as dt
@@ -25,7 +28,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from engine import audit, bing, config, discover, google, publish, report, store, submit, triage  # noqa: E402
+from engine import (alerts, audit, bing, brain, config, discover, fresh, google, links, publish, report,  # noqa: E402
+                    store, submit, wp)
 from engine.dashboard import Dashboard, apply_state, safe  # noqa: E402
 from engine.util import load_credentials, log, log_text, now_iso, open_log, parse_ts, utf8_stdout  # noqa: E402
 
@@ -49,13 +53,8 @@ class RunLock:
         config.LOCK_FILE.unlink(missing_ok=True)
 
 
-def pipeline(db, args, sites):
-    """The engine itself. Returns (triage results, {site: {channel: n_submitted}})."""
-    if not args.skip_discover:
-        discover.run(db, sites, use_wp=not args.no_wp)
-    if not args.skip_audit:
-        audit.run(db, sites, force=args.force_audit, max_per_site=args.audit_max)
-
+def engines(args, db, sites):
+    """Google and Bing clients plus each site's property / Bing site (None/{} when unavailable)."""
     sa, bing_keys = (None, []) if args.no_creds else load_credentials()
     gclient = google.GSCClient(sa) if sa and not args.no_google else None
     bclient = bing.working_client(bing_keys) if bing_keys and not args.no_bing else None
@@ -63,6 +62,40 @@ def pipeline(db, args, sites):
         f"Bing key {'valid' if bclient else 'not found or rejected' if bing_keys else 'not found'}")
     props = google.resolve_properties(db, gclient, sites) if gclient else {}
     bsites = bing.resolve_sites(db, bclient, sites) if bclient else {}
+    return gclient, bclient, props, bsites
+
+
+def wp_clients(sites):
+    out = {}
+    for s in sites:
+        if s in wp.SITE_DIRS:
+            c = wp.WPClient(s)
+            if c.ok:
+                out[s] = c
+    return out
+
+
+def apply_links(db, dash, state, settings):
+    """Apply approved (or, with autopilot, auto-approved) internal links and process undo requests."""
+    todo = [lk for lk in (state or {}).get("links") or [] if lk.get("status") in ("approved", "undo", "proposed")]
+    if not todo:
+        return set()
+    clients = wp_clients(sorted({lk["site"] for lk in todo}))
+
+    def report_(lid, status, result, applied_at):
+        safe(dash.link_result, lid, status, result, applied_at, what="report link result")
+
+    return links.apply(db, todo, settings, clients, report_)
+
+
+def pipeline(db, args, sites):
+    """The full engine. Returns (results, {site: {channel: n}}, intel, proposals or None)."""
+    if not args.skip_discover:
+        discover.run(db, sites, use_wp=not args.no_wp)
+    if not args.skip_audit:
+        audit.run(db, sites, force=args.force_audit, max_per_site=args.audit_max)
+
+    gclient, bclient, props, bsites = engines(args, db, sites)
     if props:
         google.pull_performance(db, gclient, props)
     if bsites:
@@ -79,12 +112,26 @@ def pipeline(db, args, sites):
     if bsites and args.bing_check:
         bing.check_url_info(db, bclient, bsites, max_per_site=args.bing_check)
 
-    results = triage.run(db, sites)
+    results, intel = brain.analyze(db, config.SITES)
+    m = intel["model"]
+    log(f"[model] trained on {m.get('n')} Google verdicts ({m.get('indexed')} indexed), held-out AUC {m.get('auc')}, "
+        f"quality {m.get('quality')}; {len(intel['actions'])} best next actions")
+    proposals = None
+    if not args.no_links and not args.no_creds:
+        proposals = links.propose(db, results, intel["actions"], wp_clients([s for s in sites if s in wp.SITE_DIRS]))
     path = report.write(db, results)
     log("")
-    print_status(db, sites)
+    print_status(db, config.SITES)
     log(f"\nReport: {path}")
-    return results, submitted if not args.dry_run else {}
+    return results, (submitted if not args.dry_run else {}), intel, proposals
+
+
+def upload(dash, db, results, intel, submitted, disabled, proposals=None, proposal_sites=()):
+    run_summary = safe(publish.push, dash, db, results, now_iso(), submitted, log_text(), disabled, intel, what="upload results")
+    if proposals is not None:
+        safe(dash.proposals, proposals, sorted(proposal_sites), what="upload link proposals")
+    safe(alerts.push, dash, db, what="push alerts")
+    return run_summary
 
 
 def run(args, dash=None, state=None, trigger="manual"):
@@ -112,11 +159,13 @@ def run(args, dash=None, state=None, trigger="manual"):
             f"{' | dashboard connected' if dash else ''}")
 
         run_id = safe(dash.run_start, trigger, options, what="open run") if dash else None
-        cur = db.execute("INSERT INTO local_runs(started_at, status, trigger) VALUES(?, 'running', ?)", (now_iso(), trigger))
-        local_id = cur.lastrowid
+        local_id = db.execute("INSERT INTO local_runs(started_at, status, trigger) VALUES(?, 'running', ?)",
+                              (now_iso(), trigger)).lastrowid
         db.commit()
         try:
-            results, submitted = pipeline(db, args, sites)
+            if dash and state and not args.dry_run and not args.no_links:
+                apply_links(db, dash, state, settings)
+            results, submitted, intel, proposals = pipeline(db, args, sites)
         except Exception as e:
             log(traceback.format_exc())
             db.execute("UPDATE local_runs SET finished_at=?, status='failed' WHERE rowid=?", (now_iso(), local_id))
@@ -126,12 +175,8 @@ def run(args, dash=None, state=None, trigger="manual"):
                 safe(dash.run_finish, run_id, "failed", error=f"{type(e).__name__}: {e}", what="close run")
             raise
         if dash:
-            # The dashboard always shows every site: re-triage the ones this run skipped from local data (no network).
-            rest = [s for s in config.SITES if s not in results]
-            if rest:
-                results.update(triage.run(db, rest))
-            run_summary = safe(publish.push, dash, db, results, now_iso(), submitted, log_text(), disabled,
-                               what="upload results")
+            run_summary = upload(dash, db, results, intel, submitted, disabled, proposals,
+                                 [s for s in sites if s in wp.SITE_DIRS])
             safe(dash.run_finish, run_id, "ok", summary=run_summary, what="close run")
             if run_summary:
                 log(f"Dashboard updated: {dash.url}")
@@ -140,8 +185,46 @@ def run(args, dash=None, state=None, trigger="manual"):
         return results
 
 
+def quick(args, dash, state, settings):
+    """Between daily runs: apply approved links, then catch new/updated posts and get them indexed within minutes."""
+    with RunLock():
+        db = store.connect()
+        if state:
+            apply_state(db, state)
+        disabled = set(settings.get("sites_disabled") or [])
+        sites = [s for s in config.SITES if s not in disabled]
+        touched = apply_links(db, dash, state, settings) if (dash and state) else set()
+        changes = fresh.changed(db, sites) if settings.get("fresh_check", True) else {}
+        if not changes and not touched:
+            db.commit()
+            print("Quick tick: nothing new.")
+            return
+        open_log("fresh")
+        log(f"Quick tick: {sum(len(v) for v in changes.values())} new/updated URLs on {len(changes)} sites; "
+            f"links applied on {len(touched)} sites")
+        run_id = safe(dash.run_start, "fresh", {"site": ",".join(sorted(changes))}, what="open run") if dash else None
+        local_id = db.execute("INSERT INTO local_runs(started_at, status, trigger) VALUES(?, 'running', 'fresh')",
+                              (now_iso(),)).lastrowid
+        submitted = {}
+        if changes:
+            urls = fresh.ingest(db, changes)
+            gclient, bclient, props, bsites = engines(args, db, list(changes))
+            if props:
+                google.inspect_due(db, gclient, props, only_urls=urls)
+            if not settings.get("submit_paused"):
+                submitted = submit.run(db, list(changes), bing_client=bclient, bing_sites=bsites)
+        results, intel = brain.analyze(db, config.SITES)
+        report.write(db, results)
+        if dash:
+            run_summary = upload(dash, db, results, intel, submitted, disabled)
+            safe(dash.run_finish, run_id, "ok", summary=run_summary, what="close run")
+        db.execute("UPDATE local_runs SET finished_at=?, status='ok' WHERE rowid=?", (now_iso(), local_id))
+        db.commit()
+
+
 def tick(args):
-    """Scheduler entry point (every 30 minutes). Heartbeat, then a queued dashboard run, else the daily run when due."""
+    """Scheduler entry point (every 30 minutes): heartbeat, then a queued dashboard run, else the daily run when due,
+    else a quick tick."""
     if config.LOCK_FILE.exists() and time.time() - config.LOCK_FILE.stat().st_mtime < config.LOCK_STALE_HOURS * 3600:
         print("A run is in progress; nothing to do.")
         return
@@ -165,15 +248,12 @@ def tick(args):
     hhmm = settings.get("daily_run_time") or config.DAILY_RUN_TIME
     now = dt.datetime.now()
     due = now.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:]), second=0, microsecond=0)
-    if now < due:
-        print(f"Daily run is due at {hhmm}; nothing to do.")
-        return
     db = store.connect()
     last = db.execute("SELECT MAX(started_at) FROM local_runs WHERE trigger='schedule'").fetchone()[0]
-    if last and parse_ts(last) >= due.astimezone(dt.timezone.utc):
-        print(f"Today's scheduled run already started at {last}; nothing to do.")
+    if now >= due and not (last and parse_ts(last) >= due.astimezone(dt.timezone.utc)):
+        run(build_parser().parse_args(["run"]), dash, state, trigger="schedule")
         return
-    run(build_parser().parse_args(["run"]), dash, state, trigger="schedule")
+    quick(args, dash, state, settings)
 
 
 def print_status(db, sites):
@@ -194,12 +274,13 @@ def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["run", "tick", "publish", "status", "seed", "selftest"])
     ap.add_argument("--site", action="append", help="limit to a site (repeatable)")
-    ap.add_argument("--dry-run", action="store_true", help="decide everything, submit nothing")
+    ap.add_argument("--dry-run", action="store_true", help="decide everything, submit and change nothing")
     ap.add_argument("--no-submit", action="store_true", help="skip the submission stage")
     ap.add_argument("--no-google", action="store_true")
     ap.add_argument("--no-bing", action="store_true")
-    ap.add_argument("--no-creds", action="store_true", help="ignore the credential file entirely")
+    ap.add_argument("--no-creds", action="store_true", help="ignore the credential files entirely")
     ap.add_argument("--no-wp", action="store_true", help="do not query the WordPress REST API")
+    ap.add_argument("--no-links", action="store_true", help="no link proposals and no link changes")
     ap.add_argument("--no-dashboard", action="store_true", help="do not sync with the online dashboard")
     ap.add_argument("--both", action="store_true", help="use the Bing API even where IndexNow works")
     ap.add_argument("--include-taxonomy", action="store_true", help="also inspect/submit category, tag and author archives")
@@ -224,7 +305,7 @@ def main():
         elif args.command == "tick":
             tick(args)
         elif args.command == "publish":
-            for flag in ("skip_discover", "skip_audit", "no_submit", "no_creds"):
+            for flag in ("skip_discover", "skip_audit", "no_submit", "no_creds", "no_links"):
                 setattr(args, flag, True)
             args.inspect_max, args.bing_check = 0, 0
             run(args, trigger="publish")

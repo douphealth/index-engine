@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Shape one run's results for the dashboard: a portfolio summary plus one compact URL table per site."""
+"""Shape one run's results for the dashboard: a portfolio summary (with the model's view, best next actions and
+measured impact) plus one compact URL table per site."""
 from . import config, report
 
-COLS = ["url", "bucket", "flags", "reason", "action", "value", "google", "bing", "kind", "in_sitemap", "words", "title"]
+COLS = ["url", "bucket", "flags", "reason", "action", "value", "google", "bing", "kind", "in_sitemap", "words", "title",
+        "odds", "why", "trust"]
 KNOWN = ("INDEXED", "CRAWLED_NOT_INDEXED", "DISCOVERED_NOT_INDEXED", "UNKNOWN_TO_GOOGLE", "GOOGLE_STALE", "GOOGLE_PICKED_OTHER")
 
 
-def build(db, results, generated_at, submitted=None, disabled=()):
+def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
     """Return (summary, {site: site_table}, run_totals)."""
     submitted = submitted or {}
     disabled = set(disabled or ())
+    intel = intel or {}
     sites, tables, requests_ = [], {}, []
     order = {s: i for i, s in enumerate(config.SITES)}
     for site in sorted(results, key=lambda s: order.get(s, len(order))):
@@ -18,25 +21,27 @@ def build(db, results, generated_at, submitted=None, disabled=()):
         snap = res["snapshot"]
         n_sub = db.execute("SELECT COUNT(DISTINCT url) FROM submissions s JOIN urls u USING(url) "
                            "WHERE u.site=? AND s.http_status BETWEEN 200 AND 299", (site,)).fetchone()[0]
+        rows = db.execute("""SELECT t.url, t.bucket, t.flags, t.reason, t.action, t.value, t.google, t.bing, u.kind, u.in_sitemap,
+                                    a.words, a.title, t.odds, t.why, a.trust
+                             FROM triage t JOIN urls u ON u.url=t.url LEFT JOIN audits a ON a.url=t.url
+                             WHERE t.site=? ORDER BY t.value DESC""", (site,)).fetchall()
         sites.append({
             "site": site, "urls": snap["total"], "counts": dict(res["counts"]), "conflicts": snap.get("conflicts", 0),
             "excluded": snap.get("excluded", 0), "bing_earners": snap["bing_earners"], "indexnow": meta.get("indexnow"),
             "gsc_property": meta.get("gsc_property"), "bing_site": meta.get("bing_site"), "submitted_total": n_sub,
-            "disabled": site in disabled,
+            "disabled": site in disabled, "wp": bool(meta.get("wp")),
+            "trust_risk": sum(1 for r in rows if "TRUST_RISK" in (r["flags"] or "")),
             "diagnosis": [[k, m] for k, m in res["diagnosis"]],
             "sitemaps": [{k: sm.get(k) for k in ("path", "lastDownloaded", "errors", "warnings")} for sm in meta.get("gsc_sitemaps") or []],
         })
-        rows = db.execute("""SELECT t.url, t.bucket, t.flags, t.reason, t.action, t.value, t.google, t.bing, u.kind, u.in_sitemap,
-                                    a.words, a.title
-                             FROM triage t JOIN urls u ON u.url=t.url LEFT JOIN audits a ON a.url=t.url
-                             WHERE t.site=? ORDER BY t.value DESC""", (site,)).fetchall()
         tables[site] = {"site": site, "generated_at": generated_at, "cols": COLS,
                         "rows": [[r[c] if r[c] is not None else "" for c in COLS] for r in rows],
                         "plan": res["plan"][:200],
                         "dups": [{"url": u, "similar_to": o, "estimated_overlap": j} for u, (o, j) in list(res["dups"].items())[:300]]}
         titles = {r["url"]: r["title"] for r in rows}
+        odds = {r["url"]: r["odds"] for r in rows}
         for m in res["manual"]:
-            requests_.append({"site": site, "url": m["url"], "bucket": m["bucket"], "value": m["value"],
+            requests_.append({"site": site, "url": m["url"], "bucket": m["bucket"], "value": m["value"], "odds": odds.get(m["url"]),
                               "title": titles.get(m["url"]) or "", "link": report.inspect_link(meta.get("gsc_property"), m["url"])})
 
     totals = {"urls": 0, "indexed": 0, "known": 0, "crawled": 0, "discovered": 0, "unknown": 0, "conflicts": 0,
@@ -55,13 +60,16 @@ def build(db, results, generated_at, submitted=None, disabled=()):
         totals["conflicts"] += s["conflicts"]
         totals["excluded"] += s["excluded"]
         totals["bing_earners"] += s["bing_earners"]
-    summary = {"generated_at": generated_at, "sites": sites, "requests": requests_}
+    imp = intel.get("impact") or {}
+    totals["gained_30d"], totals["lost_30d"] = imp.get("gained", 0), imp.get("lost", 0)
+    summary = {"generated_at": generated_at, "sites": sites, "requests": requests_,
+               "model": intel.get("model"), "actions": intel.get("actions") or [], "impact": imp}
     return summary, tables, {"totals": totals, "sites": per_site}
 
 
-def push(dash, db, results, generated_at, submitted, log_text, disabled=()):
+def push(dash, db, results, generated_at, submitted, log_text, disabled=(), intel=None):
     """Upload everything; returns the run summary for the run history (or None if the upload failed)."""
-    summary, tables, run_summary = build(db, results, generated_at, submitted, disabled)
+    summary, tables, run_summary = build(db, results, generated_at, submitted, disabled, intel)
     for site, table in tables.items():
         dash.put(f"site:{site.split('://')[-1].rstrip('/')}", table)
     dash.put("summary", summary)

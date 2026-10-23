@@ -118,6 +118,23 @@ dialog::backdrop { background: rgba(0, 0, 0, .35); }
 .chart text { fill: var(--muted); font-size: 11px; }
 .pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 10px; }
 
+.badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 5px; border-radius: 9px; font-size: 11px; line-height: 18px;
+  text-align: center; background: var(--bad); color: #fff; font-weight: 700; }
+.badge:empty { display: none; }
+.badge.soft { background: var(--accent); }
+mark { background: color-mix(in srgb, var(--b-unknown) 45%, transparent); color: inherit; padding: 0 2px; border-radius: 3px; }
+.odds { font-variant-numeric: tabular-nums; font-weight: 600; }
+.odds.lo { color: var(--bad); } .odds.mid { color: var(--warn); } .odds.hi { color: var(--good); }
+.sev { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+.sev.high { background: var(--bad); } .sev.warn { background: var(--warn); } .sev.good { background: var(--good); } .sev.info { background: var(--b-none); }
+.alert-row { display: flex; gap: 10px; align-items: flex-start; }
+.alert-row.acked { opacity: .55; }
+.seg-ctl { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg-ctl button { border: 0; background: var(--card); padding: 5px 11px; cursor: pointer; }
+.seg-ctl button.on { background: var(--soft); font-weight: 600; }
+.arrow { color: var(--muted); padding: 0 4px; }
+ul.plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+
 /* login */
 .login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
 .login form { width: min(360px, 100%); }

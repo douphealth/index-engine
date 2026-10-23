@@ -54,7 +54,27 @@ CREATE TABLE IF NOT EXISTS owner_state(url TEXT PRIMARY KEY, site TEXT, ignored 
 -- Local run log for the scheduler (tick): one row per run.
 CREATE TABLE IF NOT EXISTS local_runs(started_at TEXT, finished_at TEXT, status TEXT, trigger TEXT);
 CREATE TABLE IF NOT EXISTS site_meta(site TEXT PRIMARY KEY, data TEXT);
+
+-- Things the owner should know about (regressions, drops, gains); pushed to the dashboard once.
+CREATE TABLE IF NOT EXISTS alerts(id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, site TEXT, url TEXT, kind TEXT,
+  severity TEXT, message TEXT, pushed INT DEFAULT 0);
+CREATE INDEX IF NOT EXISTS alerts_dedupe ON alerts(url, kind, at);
+
+-- Internal links the engine inserted (for verification, impact tracking and undo).
+CREATE TABLE IF NOT EXISTS link_ops(id TEXT PRIMARY KEY, site TEXT, source TEXT, target TEXT, anchor TEXT, post_id INT,
+  post_type TEXT, status TEXT, applied_at TEXT, backup TEXT, result TEXT);
+
+-- The indexation-odds model's last training (coefficients, quality).
+CREATE TABLE IF NOT EXISTS model(trained_at TEXT, data TEXT);
 """
+
+# Columns added after the first release; ALTER fails harmlessly when the column exists.
+MIGRATIONS = [
+    "ALTER TABLE urls ADD COLUMN published TEXT",
+    "ALTER TABLE audits ADD COLUMN trust TEXT",
+    "ALTER TABLE triage ADD COLUMN odds REAL",
+    "ALTER TABLE triage ADD COLUMN why TEXT",
+]
 
 
 def connect(path=None):
@@ -65,6 +85,12 @@ def connect(path=None):
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=NORMAL")
     db.executescript(SCHEMA)
+    for sql in MIGRATIONS:
+        try:
+            db.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+    db.commit()
     return db
 
 

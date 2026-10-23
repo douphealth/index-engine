@@ -10,7 +10,7 @@ import re
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
 
-from . import config, store
+from . import alerts, config, store
 from .util import get, log, norm, now_iso, same_site
 
 SM = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
@@ -90,13 +90,13 @@ def walk_sitemaps(base, roots, site_host, cap=300):
 
 
 def wp_published(base, site_host, max_pages=60):
-    """Published posts and pages from the public WP REST API: {url: modified_gmt}. {} if not WordPress."""
+    """Published posts and pages from the public WP REST API: {url: (kind, modified_gmt, date_gmt)}. None if not WordPress."""
     out = {}
     for typ in ("posts", "pages"):
         page = 1
         while page <= max_pages:
             try:
-                r = get(f"{base}/wp-json/wp/v2/{typ}", params={"per_page": 100, "page": page, "_fields": "link,modified_gmt"},
+                r = get(f"{base}/wp-json/wp/v2/{typ}", params={"per_page": 100, "page": page, "_fields": "link,modified_gmt,date_gmt"},
                         timeout=(10, 90))
             except Exception as e:
                 log(f"  WP REST {typ} p{page}: {e}")
@@ -114,7 +114,7 @@ def wp_published(base, site_host, max_pages=60):
             for it in items:
                 link = it.get("link") if isinstance(it, dict) else None
                 if link and same_site(link, site_host):
-                    out[norm(link)] = (typ[:-1], it.get("modified_gmt"))
+                    out[norm(link)] = (typ[:-1], it.get("modified_gmt"), it.get("date_gmt"))
             total = int(r.headers.get("X-WP-TotalPages", page) or page)
             if page >= total:
                 break
@@ -141,6 +141,10 @@ def run(db, sites, use_wp=True):
         found, read, errors = walk_sitemaps(base, roots, host)
         wp = wp_published(base, host) if use_wp else None
         now = now_iso()
+        before = store.get_meta(db, site).get("sitemap_count") or 0
+        if before >= 20 and len(found) < 0.9 * before:
+            alerts.add(db, site, None, "sitemap_shrank", "high",
+                       f"Sitemaps now list {len(found)} URLs, down from {before}. Check for a plugin, Worker or setting change.")
 
         if found:
             db.execute("UPDATE urls SET in_sitemap=0 WHERE site=?", (site,))
@@ -153,15 +157,15 @@ def run(db, sites, use_wp=True):
         missing = 0
         if wp is not None:
             db.execute("UPDATE urls SET in_wp=0 WHERE site=?", (site,))
-            for url, (kind, modified) in wp.items():
+            for url, (kind, modified, published) in wp.items():
                 if url not in found:
                     missing += 1
-                db.execute("""INSERT INTO urls(url, site, kind, lastmod, in_wp, first_seen, last_seen)
-                              VALUES(?,?,?,?,1,?,?)
+                db.execute("""INSERT INTO urls(url, site, kind, lastmod, in_wp, first_seen, last_seen, published)
+                              VALUES(?,?,?,?,1,?,?,?)
                               ON CONFLICT(url) DO UPDATE SET in_wp=1, last_seen=excluded.last_seen,
-                                lastmod=COALESCE(urls.lastmod, excluded.lastmod),
+                                lastmod=COALESCE(urls.lastmod, excluded.lastmod), published=excluded.published,
                                 kind=CASE WHEN urls.kind IN ('post','page','product','taxonomy') THEN urls.kind ELSE excluded.kind END""",
-                           (url, site, kind, modified, now, now))
+                           (url, site, kind, modified, now, now, published))
         db.commit()
         store.set_meta(db, site, base=base, robots=robots, sitemap_roots=roots, sitemaps_read=read,
                        sitemap_errors=errors[:20], wp=wp is not None, wp_count=len(wp or {}),

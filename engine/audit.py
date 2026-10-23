@@ -16,7 +16,7 @@ from html.parser import HTMLParser
 from urllib import robotparser
 from urllib.parse import urlsplit
 
-from . import config, store
+from . import alerts, config, store
 from .util import days_since, get, log, norm, now_iso, same_page, same_site
 
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
@@ -40,6 +40,7 @@ class PageParser(HTMLParser):
         self.meta_robots, self.canonical = [], None
         self.links = []                      # (href, in_content)
         self.words_content, self.words_body = [], []
+        self.text_content, self.text_body = [], []   # raw text, for the trust scan
 
     def _in(self, tag):
         return any(t == tag for t, _, _ in self.stack)
@@ -95,6 +96,36 @@ class PageParser(HTMLParser):
         if not words:
             return
         (self.words_content if self.content > 0 else self.words_body).extend(words)
+        (self.text_content if self.content > 0 else self.text_body).append(data)
+
+
+# Phrasings that read as invented first-hand experience or statistics (portfolio guardrail 4). A match is a prompt
+# to verify, not proof: each needs a named, checkable source next to it or should go.
+TRUST_PATTERNS = [
+    ("first-hand practice", r"\bin (?:my|our) (?:\d+ years of )?(?:practice|clinic|kennel|lab)\b"),
+    ("own clients/patients", r"\b(?:my|our) (?:clients|patients)\b"),
+    ("treated/tested N", r"\b(?:I|we)(?:'ve| have)? (?:personally )?(?:treated|coached|trained|tested|helped|reviewed) "
+                         r"(?:over |more than |hundreds of |thousands of )?[\d,]{2,}"),
+    ("certified first person", r"\bas an? (?:certified|licensed|registered|board-certified) "
+                               r"(?:personal trainer|trainer|coach|nutritionist|dietitian|veterinarian|vet|exterminator|"
+                               r"pest control (?:technician|professional)|physician|doctor|numerologist|astrologer)\b"),
+    ("share of own clients", r"\b\d{2,3}% of (?:my|our) (?:clients|patients|readers|customers|users|members)\b"),
+    ("rating with review count", r"\b[3-5]\.\d\s*(?:/\s*5|out of 5|stars?)?\s*\(?\s*(?:from |based on )?[\d,]{3,}\s+(?:reviews|ratings)\b"),
+    ("named doctor + year", r"\bDr\.\s+[A-Z][\w'-]+(?:\s+[A-Z][\w'-]+)?,?\s*\(?20\d\d\)?"),
+    ("unsourced study", r"\b[Aa] (?:20\d\d|recent|new) (?:study|survey|trial) (?:by|from|at|of) (?:Dr\.|Professor|researchers at)"),
+]
+TRUST_RE = [(label, re.compile(rx, re.I if "Dr\\." not in rx else 0)) for label, rx in TRUST_PATTERNS]
+
+
+def trust_scan(text, limit=6):
+    hits = []
+    for label, rx in TRUST_RE:
+        for m in rx.finditer(text):
+            a, b = max(0, m.start() - 90), min(len(text), m.end() + 60)
+            hits.append({"kind": label, "excerpt": re.sub(r"\s+", " ", text[a:b]).strip()})
+            if len(hits) >= limit:
+                return hits
+    return hits
 
 
 def sketch(words):
@@ -127,7 +158,7 @@ def _noindex(meta_robots, x_robots):
 def fetch_page(url, rp):
     rec = {"url": url, "checked_at": now_iso(), "status": None, "final_url": None, "hops": 0, "ctype": "",
            "ms": None, "noindex": 0, "noindex_src": None, "canonical": None, "canonical_state": None,
-           "title": "", "h1": "", "words": 0, "sketch": "[]", "out_links": 0, "error": None, "links": []}
+           "title": "", "h1": "", "words": 0, "sketch": "[]", "out_links": 0, "error": None, "trust": None, "links": []}
     rec["robots_google"] = int(rp.can_fetch("Googlebot", url))
     rec["robots_bing"] = int(rp.can_fetch("bingbot", url))
     t0 = time.time()
@@ -177,9 +208,13 @@ def fetch_page(url, rp):
         rec["canonical_state"] = "missing"
     rec["title"] = re.sub(r"\s+", " ", "".join(p.title)).strip()[:300]
     rec["h1"] = re.sub(r"\s+", " ", "".join(p.h1)).strip()[:300]
-    main = p.words_content if p.saw_content and len(p.words_content) >= 50 else p.words_body + p.words_content
+    use_content = p.saw_content and len(p.words_content) >= 50
+    main = p.words_content if use_content else p.words_body + p.words_content
     rec["words"] = len(main)
     rec["sketch"] = json.dumps(sketch(main))
+    text = " ".join(p.text_content if use_content else p.text_body + p.text_content)[:300_000]
+    hits = trust_scan(text)
+    rec["trust"] = json.dumps(hits) if hits else None
 
     links, site_host = {}, urlsplit(r.url).netloc
     for href, in_content in p.links:
@@ -210,7 +245,46 @@ def due_rows(db, sites, force=False, max_per_site=None):
     return out
 
 
+def _indexable(status, hops, noindex, canonical_state, robots_google):
+    return status == 200 and not hops and not noindex and canonical_state != "other" and bool(robots_google)
+
+
+def _why_blocked(rec):
+    if rec["status"] != 200:
+        return f"HTTP {rec['status']}"
+    if rec["hops"]:
+        return f"redirecting to {rec['final_url']}"
+    if rec["noindex"]:
+        return f"noindex ({rec['noindex_src']})"
+    if rec["canonical_state"] == "other":
+        return f"canonical pointing to {rec['canonical']}"
+    return "blocked by robots.txt"
+
+
+def regressions(db, rec):
+    """Compare a fresh fetch with the previous one and raise alerts for changes that matter."""
+    prev = db.execute("SELECT status, hops, noindex, canonical_state, robots_google, words FROM audits WHERE url=?",
+                      (rec["url"],)).fetchone()
+    if prev is None or rec["status"] is None:          # first sight, or a transient fetch failure
+        return
+    site = (db.execute("SELECT site FROM urls WHERE url=?", (rec["url"],)).fetchone() or {"site": None})["site"]
+    was = _indexable(prev["status"], prev["hops"], prev["noindex"], prev["canonical_state"], prev["robots_google"])
+    now = _indexable(rec["status"], rec["hops"], rec["noindex"], rec["canonical_state"], rec["robots_google"])
+    if was and not now:
+        p = db.execute("SELECT COALESCE(bing_clicks,0)+COALESCE(gsc_clicks,0) AS c FROM perf WHERE url=?", (rec["url"],)).fetchone()
+        g = db.execute("SELECT coverage FROM gsc WHERE url=?", (rec["url"],)).fetchone()
+        valuable = (p and p["c"]) or (g and "indexed" in (g["coverage"] or "").lower() and "not" not in (g["coverage"] or "").lower())
+        alerts.add(db, site, rec["url"], "became_blocked", "high" if valuable else "warn",
+                   f"Was indexable, now {_why_blocked(rec)}." + (" It earns clicks or is indexed." if valuable else ""))
+    elif now and not was:
+        alerts.add(db, site, rec["url"], "unblocked", "good", "Indexable again (it was blocked at the previous check).")
+    if now and (prev["words"] or 0) >= 300 and (rec["words"] or 0) < 0.4 * prev["words"]:
+        alerts.add(db, site, rec["url"], "content_shrank", "warn",
+                   f"Main content dropped from {prev['words']} to {rec['words']} words. Check for a broken template or a bad save.")
+
+
 def save(db, rec, lastmod):
+    regressions(db, rec)
     links = rec.pop("links", [])
     rec["lastmod_at_check"] = lastmod
     cols = list(rec)
@@ -233,6 +307,7 @@ def run(db, sites, force=False, max_per_site=None):
     active = defaultdict(int)
     inflight = {}
     done_n, t0 = 0, time.time()
+    fetched, failed = defaultdict(int), defaultdict(int)
     with ThreadPoolExecutor(max_workers=max(1, sum(limit.values()))) as ex:
         while queues or inflight:
             for s in list(queues):
@@ -249,10 +324,17 @@ def run(db, sites, force=False, max_per_site=None):
             for f in finished:
                 site, lastmod = inflight.pop(f)
                 active[site] -= 1
-                save(db, f.result(), lastmod)
+                rec = f.result()
+                fetched[site] += 1
+                failed[site] += rec["status"] is None
+                save(db, rec, lastmod)
                 done_n += 1
                 if done_n % 100 == 0 or done_n == total:
                     db.commit()
                     rate = done_n / max(1e-6, time.time() - t0)
                     log(f"  audited {done_n}/{total}  ({rate:.1f}/s, ~{(total - done_n) / max(rate, 1e-6) / 60:.0f} min left)")
+    for site, n in fetched.items():
+        if n >= 10 and failed[site] / n > 0.2:
+            alerts.add(db, site, None, "fetch_errors", "high",
+                       f"{failed[site]} of {n} pages did not answer (timeouts or connection errors). Crawlers slow down on sites that do this.")
     db.commit()

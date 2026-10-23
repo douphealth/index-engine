@@ -56,6 +56,17 @@ class Dashboard:
         return self._call("POST", "/api/engine/run", json={"event": "finish", "id": run_id, "status": status,
                                                            "summary": summary, "error": error})
 
+    def alerts(self, items):
+        return self._call("POST", "/api/engine/alerts", json={"alerts": items})
+
+    def proposals(self, items, sites):
+        """Replace the open link proposals of these sites (approved/applied/rejected ones are kept)."""
+        return self._call("POST", "/api/engine/links", json={"proposals": items, "sites": sites}, timeout=120)
+
+    def link_result(self, lid, status, result, applied_at=None):
+        return self._call("POST", "/api/engine/link", json={"id": lid, "status": status, "result": result,
+                                                            "applied_at": applied_at})
+
     def put(self, key, body):
         data = body if isinstance(body, (bytes, bytearray)) else (body if isinstance(body, str) else json.dumps(body, separators=(",", ":")))
         if isinstance(data, str):

@@ -7,6 +7,9 @@ const VALIDATE = {
   manual_queue_per_site: (v) => Number.isInteger(v) && v >= 0 && v <= 50,
   inspect_max_per_site: (v) => v === null || (Number.isInteger(v) && v >= 0 && v <= 2000),
   daily_run_time: (v) => typeof v === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(v),
+  fresh_check: (v) => typeof v === "boolean",
+  link_autopilot: (v) => typeof v === "boolean",
+  links_per_site_per_day: (v) => Number.isInteger(v) && v >= 0 && v <= 10,
 };
 
 export const onRequestPost = handle(async ({ request, env }) => {

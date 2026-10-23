@@ -24,6 +24,30 @@ your PC (Windows task, every 30 min)                    Cloudflare: index-engine
   - `Index-Engine-Dashboard-Login.txt`: your dashboard password
   - `Index-Engine-Cloudflare-Token.txt`: the deploy token, limited to Pages, D1 and KV
 
+## What makes it smart and autonomous
+
+- **An indexation-odds model trained on your own sites.** Every page Google has judged teaches the model what gets pages indexed on these sites.
+  - It is an L2 logistic regression with 5-fold cross-validation.
+  - On 23 Oct 2026 it trained on 2,711 verdicts, with a within-site AUC of 0.85.
+  - Strongest signal: links from pages Google already indexes.
+  - Each page gets odds plus a plain-English "what holds it back". If the data can't support a model, it says so and falls back to fixed estimates.
+- **Best next actions.** The model simulates each action and ranks them portfolio-wide by expected gain (page value × rise in odds). The actions are: add links from indexed pages, request indexing, de-duplicate, add substance, source claims. The request-indexing list is ranked the same way.
+- **Internal-link autopilot.**
+  - The engine proposes links whose anchor already exists in an indexed page's text and names something specific to the target.
+  - You approve on the Links page; your PC applies them within 30 minutes, at most N per site per day (default 5, max 10).
+  - Every link is backed up, verified on the live page and logged, and can be undone.
+  - Optional auto-approve stays off by default and never applies to gearuptofit.
+- **Fresh-content autopilot.** Every 30-minute tick checks each WordPress site for posts published or updated since the last look. New ones are audited, inspected, gated and submitted within minutes.
+- **Regression alarms.** You get an alert when:
+  - an indexable page turns noindex, 404s, redirects or loses its canonical;
+  - content shrinks sharply;
+  - a sitemap drops 10% or more of its URLs;
+  - a site stops answering;
+  - a page enters or leaves Google's index.
+- **Trust-risk scanner.** It flags phrasings that read as invented first-hand experience, ratings or statistics (guardrail 4), with the exact sentences.
+- **Measured impact.** It tracks pages gained or lost in Google over 30 days, and the success rate of requests, new links and Bing submissions. The measured request success rate feeds back into the model.
+- **Inspections where they matter.** Pages you requested or that received links are re-inspected 2–3 days later, so the effect is measured, not assumed.
+
 ## Commands
 
 ```
@@ -41,13 +65,16 @@ python D:\Claude\SEO-Setup\index-engine\indexengine.py tick
 | `run --inspect-max 200` | Caps URL Inspection calls per property this run |
 | `publish` | Re-uploads the latest results to the dashboard without crawling |
 | `status` | One line per site from the last run |
-| `selftest` | Offline end-to-end test: a fake site plus fake Google, Bing and IndexNow (55 checks); runs in GitHub Actions on every push |
+| `selftest` | Offline end-to-end test: a fake site plus fake Google, Bing and IndexNow (74 checks); runs in GitHub Actions on every push |
 
 ## The dashboard (`dashboard/`)
 
 | Page | What you can do |
 |---|---|
-| Overview | Portfolio totals, Google indexed-share trend, every site with its state bar, PC online status, last run |
+| Overview | Portfolio totals, Google indexed-share trend, best next actions, last-30-days impact, alerts, every site with its state bar, PC online status |
+| Plan | What decides indexing on your sites (the model's drivers and accuracy) and every action ranked by expected gain, with one-click handling |
+| Links | The internal-link approval queue: each proposal shows the anchor highlighted in its sentence. Approve, reject, cancel or undo |
+| Alerts | Regressions and Google gains and drops, with acknowledge |
 | Site | Diagnosis, filterable URL table (by state, flag or search), why each page isn't indexed and what to do. Per URL you can open the page, inspect it in Search Console, **ignore** it (never submitted, off the work lists) or add a note. Also lists the internal links to add |
 | Requests | Today's "Request indexing" list with direct Search Console links. Mark each one **done**; it stays off the list for 14 days |
 | Fixes | Open fixes with the exact command or wp-admin step. Mark them done or skipped |

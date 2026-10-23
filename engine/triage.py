@@ -104,7 +104,8 @@ def load_site(db, site):
     return db.execute("""
         SELECT u.url, u.kind, u.lastmod, u.in_sitemap, u.in_wp,
                a.checked_at, a.status, a.final_url, a.hops, a.ctype, a.ms, a.noindex, a.noindex_src, a.robots_google,
-               a.robots_bing, a.canonical, a.canonical_state, a.title, a.h1, a.words, a.sketch, a.error AS aerr,
+               a.robots_bing, a.canonical, a.canonical_state, a.title, a.h1, a.words, a.sketch, a.error AS aerr, a.trust,
+               u.published,
                g.inspected_at, g.verdict, g.coverage, g.last_crawl, g.google_canonical, g.error AS gerr,
                COALESCE(p.gsc_clicks,0) AS gsc_clicks, COALESCE(p.gsc_impr,0) AS gsc_impr,
                COALESCE(p.gsc_recent_impr,0) AS recent, COALESCE(p.bing_clicks,0) AS bing_clicks,
@@ -249,6 +250,10 @@ def detail(bucket, flags, r, dup, dup_title, inl):
         out.append(f"Same title as {dup_title}.")
     if "SLOW" in flags:
         out.append(f"Took {r['ms'] / 1000:.0f} s to load.")
+    if "TRUST_RISK" in flags:
+        hits = json.loads(r["trust"] or "[]")
+        out.append(f"{len(hits)} phrasing(s) read as first-hand experience or statistics, e.g. \"{hits[0]['excerpt'][:140]}\": "
+                   "give each a named, checkable source or remove it (portfolio guardrail 4).")
     if "SOFT_404" in flags:
         out.append("Looks like an error page (title says not found).")
     return " ".join(out)
@@ -275,7 +280,9 @@ def link_plan(rows, buckets, inl_src, per_site=200):
 
     def wsim(a, b):
         return sum(idf[t] for t in a & b) / max(1e-9, sum(idf[t] for t in a | b))
-    sources = [u for u, (b, f) in buckets.items() if b == "INDEXED" or "BING_EARNER" in f]
+    # A source must serve its own content (not noindexed, redirected...) and be trusted: indexed, or earning Bing clicks.
+    sources = [u for u, (b, f) in buckets.items()
+               if b not in BLOCKERS and "IGNORED" not in f and (b == "INDEXED" or "BING_EARNER" in f)]
     inv = defaultdict(list)
     for u in sources:
         for t in toks[u]:
@@ -309,7 +316,8 @@ def link_plan(rows, buckets, inl_src, per_site=200):
     return plan
 
 
-def site_diagnosis(counts, meta, missing=0, conflicts=0, excluded=None, blocked_earners=(0, 0), near_dup=(0, 0), thin=0):
+def site_diagnosis(counts, meta, missing=0, conflicts=0, excluded=None, blocked_earners=(0, 0), near_dup=(0, 0), thin=0,
+                   trust=0):
     """Plain-English verdict for the whole site."""
     excluded = excluded or Counter()
     indexable = sum(n for b, n in counts.items() if b not in BLOCKERS and b != "NOT_CHECKED")
@@ -327,6 +335,10 @@ def site_diagnosis(counts, meta, missing=0, conflicts=0, excluded=None, blocked_
                              "Google most often leaves 'crawled, not indexed', and at scale they weigh on how it rates the whole "
                              "site. Consolidate the ones with no clicks on either engine into fewer, distinct pages "
                              "(owner decision, one batch at a time)."))
+    if trust >= 5:
+        msgs.append(("site", f"{trust} indexable pages contain phrasings that read as invented first-hand experience, ratings or "
+                             "statistics (flag TRUST_RISK; the sentences are on each URL). Google's quality systems weigh this "
+                             "site-wide: source each claim or remove it, worst pages first."))
     if thin >= 10:
         msgs.append(("info", f"{thin} indexable pages have under {config.THIN_WORDS} words of main content in the HTML the server "
                              "sends (hub/listing pages can be fine; articles rarely are)."))
@@ -368,7 +380,8 @@ def site_diagnosis(counts, meta, missing=0, conflicts=0, excluded=None, blocked_
     return msgs
 
 
-def run(db, sites):
+def run(db, sites, with_manual=True):
+    """Classify every URL of each site. with_manual=False leaves the request list to brain.analyze (ranked by odds)."""
     results = {}
     now = now_iso()
     for site in sites:
@@ -394,6 +407,8 @@ def run(db, sites):
             bucket, flags, reason, action = classify(r, inl, coverage, dups.get(r["url"]), dup_title.get(r["url"]), site)
             if owner.get(r["url"]) and owner[r["url"]]["ignored"]:
                 flags.append("IGNORED")
+            if r["trust"] and bucket not in BLOCKERS:
+                flags.append("TRUST_RISK")
             extra = detail(bucket, flags, r, dups.get(r["url"]), dup_title.get(r["url"]), inl)
             if r["inspected_at"] and r["coverage"] and bucket not in BLOCKERS and not r["recent"]:
                 reason += f" [Google checked {r['inspected_at'][:10]}]"
@@ -405,7 +420,7 @@ def run(db, sites):
                 action = "Ignored by the owner (dashboard): never submitted, kept off the work lists. " + action
             buckets[r["url"]] = (bucket, flags)
             counts[bucket] += 1
-            db.execute("INSERT INTO triage VALUES(?,?,?,?,?,?,?,?,?)",
+            db.execute("INSERT INTO triage(url, site, bucket, flags, reason, action, value, google, bing) VALUES(?,?,?,?,?,?,?,?,?)",
                        (r["url"], site, bucket, ",".join(flags), reason, action, value_score(r),
                         r["coverage"] or ("impressions" if r["recent"] else ""), bing_state(r)))
         meta = store.get_meta(db, site)
@@ -415,23 +430,26 @@ def run(db, sites):
         earners = [r for r in blocked if r["bing_clicks"]]
         nd = [r for r in rows if "NEAR_DUPLICATE" in buckets[r["url"]][1] and buckets[r["url"]][0] not in BLOCKERS]
         thin = sum(1 for b, f in buckets.values() if "THIN" in f and b not in BLOCKERS)
+        trust = sum(1 for b, f in buckets.values() if "TRUST_RISK" in f)
         diag = site_diagnosis(counts, meta, sum(1 for _, f in buckets.values() if "NOT_IN_SITEMAP" in f), conflicts, excluded,
                               (len(earners), sum(r["bing_clicks"] for r in earners)),
-                              (len(nd), sum(1 for r in nd if r["bing_clicks"])), thin)
+                              (len(nd), sum(1 for r in nd if r["bing_clicks"])), thin, trust)
         plan = link_plan(rows, buckets, inl_src)
-        manual = manual_queue(db, site, rows, buckets, owner)
+        manual = manual_queue(db, site, rows, buckets, owner) if with_manual else []
         snap = {"total": len(rows), "audited": audited, "buckets": dict(counts), "conflicts": conflicts,
                 "excluded": sum(excluded.values()), "bing_earners": sum(1 for b, f in buckets.values() if "BING_EARNER" in f)}
         db.execute("INSERT INTO snapshots VALUES(?,?,?)", (now, site, json.dumps(snap)))
         db.commit()
         results[site] = {"counts": counts, "diagnosis": diag, "plan": plan, "manual": manual, "dups": dups,
-                         "snapshot": snap, "meta": meta}
+                         "snapshot": snap, "meta": meta, "rows": rows, "buckets": buckets, "owner": owner}
     return results
 
 
-def manual_queue(db, site, rows, buckets, owner=None):
-    """Today's short list for Search Console's 'Request indexing' button, where a request can help."""
+def manual_queue(db, site, rows, buckets, owner=None, gain=None):
+    """Today's short list for Search Console's 'Request indexing' button, where a request can help.
+    gain: {url: expected gain from a request} from the odds model; it orders pages within each tier."""
     owner = owner or {}
+    gain = gain or {}
     by_url = {r["url"]: r for r in rows}
     eligible = []
     for u, (b, f) in buckets.items():
@@ -452,10 +470,11 @@ def manual_queue(db, site, rows, buckets, owner=None):
         # Best odds first: a fixed problem, then never seen, then seen-not-crawled; a crawled page whose lastmod
         # moved goes last, because lastmod also moves on re-saves without real edits.
         odds = MANUAL_ORDER.index(b)
+        worth = -(gain[u] if u in gain else value_score(r))
         if age is not None and age < 0.8:
-            eligible.append((0, odds, -value_score(r), u))     # already on today's list: keep it there on re-runs
+            eligible.append((0, odds, worth, u))     # already on today's list: keep it there on re-runs
         elif age is None or age >= config.MANUAL_REQUEUE_DAYS:
-            eligible.append((1, odds, -value_score(r), u))
+            eligible.append((1, odds, worth, u))
     eligible.sort()
     picked = [u for _, _, _, u in eligible[:config.MANUAL_QUEUE_PER_SITE]]
     for u in picked:
