@@ -1,0 +1,23 @@
+{
+  // Production: the same app deployed as a Worker with static assets (the account is at its 100 Pages-project cap).
+  // functions/ is compiled into dist/worker by `wrangler pages functions build`; wrangler.jsonc stays for `pages dev`.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "index-engine-dashboard",
+  "main": "./dist/worker/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    // The password check must run before any file is served.
+    "run_worker_first": true
+  },
+  "kv_namespaces": [
+    { "binding": "DATA", "id": "e57dbbc9671f4c3197e643c9f436112a" }
+  ],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "index-engine", "database_id": "d8b89b27-80b9-4224-a0b7-c84873ec7225", "migrations_dir": "./migrations" }
+  ],
+  "observability": { "enabled": true }
+  // Secrets (`wrangler secret put <NAME> --config wrangler.worker.jsonc`): DASHBOARD_PASSWORD, SESSION_SECRET, ENGINE_TOKEN
+}

@@ -1,11 +1,15 @@
 # Index Engine
 
-Finds every URL your sites publish and works out why each one is or isn't indexed. It pushes the indexable ones through every channel search engines accept, and gives you a ranked fix list for the rest. Results and controls are in a password-protected dashboard on Cloudflare Pages that you can open from any device.
+Finds every URL your sites publish and works out why each one is or isn't indexed. It pushes the indexable ones through every channel search engines accept, and gives you a ranked fix list for the rest. Results and controls are in a password-protected dashboard on Cloudflare that you can open from any device.
+
+**Dashboard: https://index-engine-dashboard.papalexios.workers.dev** (the password is in `D:\Claude\SEO-Setup\Index-Engine-Dashboard-Login.txt`)
+
+The dashboard is built as a Cloudflare Pages app (`dashboard/functions`, `dashboard/public`). In production it runs as a **Worker with static assets**, because the Cloudflare account is at its 100 Pages-project limit. It is the same code: `wrangler pages functions build` compiles `functions/` into one Worker (`dashboard/wrangler.worker.jsonc`), with `run_worker_first` so the password check runs before any file is served. If a Pages slot frees up, `npm run deploy:pages` deploys it to Pages unchanged.
 
 ## How it fits together
 
 ```
-your PC (Windows task, every 30 min)                    Cloudflare Pages: index-engine-dashboard
+your PC (Windows task, every 30 min)                    Cloudflare: index-engine-dashboard (Worker + assets)
   indexengine.py tick  ── pulls decisions + queued runs ──►  /api/engine/*   (engine token)
      │ runs the engine with YOUR credentials                 D1: settings, ignored URLs, requests done,
      │ (Google service account, Bing key, WordPress)             fixes, run queue, run history
@@ -52,7 +56,18 @@ python D:\Claude\SEO-Setup\index-engine\indexengine.py tick
 
 **Run now** (top right) queues a run for one site or all sites. It can be set to measure only, re-fetch every page, or dry-run.
 
-**Stack:** Cloudflare Pages static app (no framework, no build step) and Pages Functions; D1 for state, KV for results. Signing in uses a password and a signed HttpOnly cookie, with login rate limiting; the engine uses its own bearer token. Pushing to `main` deploys through `.github/workflows/deploy-dashboard.yml`, which also applies D1 migrations.
+**Stack:** a static app (no framework, no build step) with Pages-style Functions; D1 for state, KV for results. Signing in uses a password and a signed HttpOnly cookie, with login rate limiting; the engine uses its own bearer token.
+
+Pushing to `main` deploys through `.github/workflows/deploy-dashboard.yml`, which applies D1 migrations, builds and deploys, then smoke-tests the auth wall. The workflow uses repo secrets `CLOUDFLARE_API_TOKEN` (a token limited to Pages, D1, KV and Workers Scripts on one account) and `CLOUDFLARE_ACCOUNT_ID`.
+
+To deploy by hand:
+
+```
+cd dashboard
+npm run deploy
+```
+
+This needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the environment.
 
 **Local development:**
 
@@ -68,7 +83,7 @@ Local secrets go in `dashboard/.dev.vars`: `DASHBOARD_PASSWORD`, `SESSION_SECRET
 **Rotating secrets:**
 
 ```
-npx wrangler pages secret put <NAME> --project-name index-engine-dashboard
+npx wrangler secret put <NAME> --config wrangler.worker.jsonc
 ```
 
 - Changing `SESSION_SECRET` signs everyone out.

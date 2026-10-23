@@ -6,7 +6,9 @@
     "dev": "wrangler pages dev",
     "db:local": "wrangler d1 migrations apply index-engine --local",
     "db:remote": "wrangler d1 migrations apply index-engine --remote",
-    "deploy": "wrangler pages deploy"
+    "deploy:pages": "wrangler pages deploy",
+    "build": "wrangler pages functions build --outdir=./dist/worker",
+    "deploy": "npm run build && wrangler deploy --config wrangler.worker.jsonc"
   },
   "devDependencies": {
     "wrangler": "^4.152.0"

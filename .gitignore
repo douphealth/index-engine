@@ -13,6 +13,7 @@ dashboard/.dev.vars
 # Tooling
 dashboard/node_modules/
 dashboard/.wrangler/
+dashboard/dist/
 __pycache__/
 *.pyc
 .DS_Store

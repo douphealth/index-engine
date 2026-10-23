@@ -1,5 +1,7 @@
 name: Deploy dashboard
 
+# Production is a Worker with static assets (dashboard/wrangler.worker.jsonc): the Cloudflare account is at its
+# 100 Pages-project cap. The same functions/ folder is compiled by `wrangler pages functions build`.
 on:
   push:
     branches: [main]
@@ -26,6 +28,10 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - run: npm ci
       - name: Apply database migrations
-        run: npx wrangler d1 migrations apply index-engine --remote
-      - name: Deploy to Cloudflare Pages
-        run: npx wrangler pages deploy --project-name index-engine-dashboard --branch main --commit-dirty=true
+        run: npx wrangler d1 migrations apply index-engine --remote --config wrangler.worker.jsonc
+      - name: Build and deploy
+        run: npm run deploy
+      - name: Smoke test
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" https://index-engine-dashboard.papalexios.workers.dev/api/state)
+          test "$code" = "401" || { echo "expected 401 from /api/state without a session, got $code"; exit 1; }

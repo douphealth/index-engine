@@ -5,11 +5,11 @@
   "compatibility_date": "2026-10-01",
   // Crawl results uploaded by the engine (summary, per-site URL tables, last log).
   "kv_namespaces": [
-    { "binding": "DATA", "id": "KV_NAMESPACE_ID" }
+    { "binding": "DATA", "id": "e57dbbc9671f4c3197e643c9f436112a" }
   ],
   // Owner decisions, fix list, command queue, run history.
   "d1_databases": [
-    { "binding": "DB", "database_name": "index-engine", "database_id": "D1_DATABASE_ID", "migrations_dir": "./migrations" }
+    { "binding": "DB", "database_name": "index-engine", "database_id": "d8b89b27-80b9-4224-a0b7-c84873ec7225", "migrations_dir": "./migrations" }
   ]
   // Secrets (set with `wrangler pages secret put`): DASHBOARD_PASSWORD, SESSION_SECRET, ENGINE_TOKEN
 }
