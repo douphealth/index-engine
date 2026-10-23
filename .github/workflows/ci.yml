@@ -1,0 +1,19 @@
+name: Engine selftest
+
+on:
+  push:
+    branches: [main]
+    paths: ["engine/**", "indexengine.py", "requirements.txt", ".github/workflows/ci.yml"]
+  pull_request:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      # Offline: a fake site on localhost plus fake Google, Bing and IndexNow clients.
+      - run: python indexengine.py selftest

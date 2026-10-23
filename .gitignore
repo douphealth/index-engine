@@ -1,0 +1,19 @@
+# Run data, logs and state: they stay on the PC that runs the engine
+out/
+fixes/backup_*.json
+*.db
+
+# Secrets and local connection files (credentials live in D:\Claude\SEO-Setup, never in this repo)
+indexnow_keys.json
+*.local.json
+dashboard/.dev.vars
+.env
+.env.*
+
+# Tooling
+dashboard/node_modules/
+dashboard/.wrangler/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

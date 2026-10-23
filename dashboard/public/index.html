@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Index Engine</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <a class="brand" href="#/"><img src="/favicon.svg" alt="">Index Engine</a>
+    <nav class="tabs" id="tabs">
+      <a href="#/" data-r="">Overview</a>
+      <a href="#/requests" data-r="requests">Requests</a>
+      <a href="#/fixes" data-r="fixes">Fixes</a>
+      <a href="#/runs" data-r="runs">Runs</a>
+      <a href="#/settings" data-r="settings">Settings</a>
+    </nav>
+    <span class="spacer"></span>
+    <span id="engine-pill" class="pill"><span class="dot"></span>engine</span>
+    <button class="btn primary" id="run-btn" type="button">Run now</button>
+    <button class="btn" id="logout" type="button" title="Sign out">Sign out</button>
+  </div>
+</header>
+<main id="app"><div class="empty">Loading…</div></main>
+
+<dialog id="run-dlg">
+  <form method="dialog" class="stack" id="run-form">
+    <h2>Run the engine</h2>
+    <p class="muted small">The engine runs on your PC. It checks for queued runs every 30 minutes while the PC is on.</p>
+    <label class="stack small">Site
+      <select id="run-site"><option value="">All enabled sites</option></select>
+    </label>
+    <label class="chk small"><input type="checkbox" id="run-nosubmit"> Measure only (submit nothing)</label>
+    <label class="chk small"><input type="checkbox" id="run-force"> Re-fetch every page (slower)</label>
+    <label class="chk small"><input type="checkbox" id="run-dry"> Dry run (decide, log, submit nothing)</label>
+    <div class="row"><span class="spacer"></span>
+      <button class="btn" value="cancel" type="submit">Cancel</button>
+      <button class="btn primary" value="ok" type="submit">Queue run</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>

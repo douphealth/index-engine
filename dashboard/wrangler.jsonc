@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "index-engine-dashboard",
+  "pages_build_output_dir": "./public",
+  "compatibility_date": "2026-10-01",
+  // Crawl results uploaded by the engine (summary, per-site URL tables, last log).
+  "kv_namespaces": [
+    { "binding": "DATA", "id": "KV_NAMESPACE_ID" }
+  ],
+  // Owner decisions, fix list, command queue, run history.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "index-engine", "database_id": "D1_DATABASE_ID", "migrations_dir": "./migrations" }
+  ]
+  // Secrets (set with `wrangler pages secret put`): DASHBOARD_PASSWORD, SESSION_SECRET, ENGINE_TOKEN
+}

@@ -1,0 +1,14 @@
+{
+  "name": "index-engine-dashboard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev",
+    "db:local": "wrangler d1 migrations apply index-engine --local",
+    "db:remote": "wrangler d1 migrations apply index-engine --remote",
+    "deploy": "wrangler pages deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.152.0"
+  }
+}
