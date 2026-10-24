@@ -6,9 +6,11 @@ Connection details live OUTSIDE the repo, in D:\\Claude\\SEO-Setup\\Index-Engine
 or in the environment (INDEX_ENGINE_DASHBOARD_URL / INDEX_ENGINE_DASHBOARD_TOKEN). The token is never printed.
 A dashboard failure never stops a run: every call here is best effort and logged.
 """
+import gzip
 import json
 import os
 import socket
+import time
 from urllib.parse import quote
 
 import requests
@@ -38,10 +40,23 @@ class Dashboard:
         return cls(url, token) if url and token else None
 
     def _call(self, method, path, **kw):
-        r = self.s.request(method, self.url + path, timeout=kw.pop("timeout", 60), **kw)
-        if r.status_code >= 300:
-            raise RuntimeError(f"{method} {path} -> HTTP {r.status_code}: {r.text[:160]}")
-        return r.json() if "json" in r.headers.get("Content-Type", "") else r.text
+        """One API call, retried with backoff on network errors and 5xx (a dropped TLS connection must not cost
+        a run's upload)."""
+        timeout = kw.pop("timeout", 60)
+        for attempt in range(4):
+            try:
+                r = self.s.request(method, self.url + path, timeout=timeout, **kw)
+            except requests.RequestException:
+                if attempt == 3:
+                    raise
+                time.sleep(3 * (attempt + 1))
+                continue
+            if r.status_code >= 500 and attempt < 3:
+                time.sleep(3 * (attempt + 1))
+                continue
+            if r.status_code >= 300:
+                raise RuntimeError(f"{method} {path} -> HTTP {r.status_code}: {r.text[:160]}")
+            return r.json() if "json" in r.headers.get("Content-Type", "") else r.text
 
     def state(self):
         return self._call("GET", "/api/engine/state")
@@ -71,8 +86,9 @@ class Dashboard:
         data = body if isinstance(body, (bytes, bytearray)) else (body if isinstance(body, str) else json.dumps(body, separators=(",", ":")))
         if isinstance(data, str):
             data = data.encode("utf-8")
-        return self._call("PUT", f"/api/engine/ingest/{quote(key, safe=':')}", data=data,
-                          headers={"Content-Type": "application/octet-stream"}, timeout=180)
+        # Stored and served gzipped: ~9x smaller uploads and faster dashboard loads.
+        return self._call("PUT", f"/api/engine/ingest/{quote(key, safe=':')}", data=gzip.compress(data, 6),
+                          headers={"Content-Type": "application/octet-stream", "X-Content-Gzip": "1"}, timeout=180)
 
 
 def apply_state(db, state):

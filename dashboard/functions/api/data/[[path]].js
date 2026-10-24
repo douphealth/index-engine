@@ -1,4 +1,5 @@
 // Crawl results the engine uploaded to KV: /api/data/summary, /api/data/site/<site>, /api/data/log
+// Values uploaded gzipped are passed through as-is with Content-Encoding: gzip (the browser decompresses).
 import { handle, json, SITE_RE } from "../../../lib/http.js";
 
 function keyFor(parts) {
@@ -10,12 +11,15 @@ function keyFor(parts) {
 export const onRequestGet = handle(async ({ params, env }) => {
   const key = keyFor([].concat(params.path || []));
   if (!key) return json({ error: "not found" }, 404);
-  const value = await env.DATA.get(key, { type: "stream" });
+  const { value, metadata } = await env.DATA.getWithMetadata(key, { type: "stream" });
   if (value === null) return json({ error: "no data yet" }, 404);
-  return new Response(value, {
-    headers: {
-      "Content-Type": key === "log" ? "text/plain; charset=utf-8" : "application/json; charset=utf-8",
-      "Cache-Control": "private, no-store",
-    },
-  });
+  const headers = {
+    "Content-Type": key === "log" ? "text/plain; charset=utf-8" : "application/json; charset=utf-8",
+    "Cache-Control": "private, no-store",
+  };
+  if (metadata && metadata.gzip) {
+    headers["Content-Encoding"] = "gzip";
+    return new Response(value, { headers, encodeBody: "manual" });
+  }
+  return new Response(value, { headers });
 });

@@ -112,7 +112,7 @@ TRUST_PATTERNS = [
     ("share of own clients", r"\b\d{2,3}% of (?:my|our) (?:clients|patients|readers|customers|users|members)\b"),
     ("rating with review count", r"\b[3-5]\.\d\s*(?:/\s*5|out of 5|stars?)?\s*\(?\s*(?:from |based on )?[\d,]{3,}\s+(?:reviews|ratings)\b"),
     ("named doctor + year", r"\bDr\.\s+[A-Z][\w'-]+(?:\s+[A-Z][\w'-]+)?,?\s*\(?20\d\d\)?"),
-    ("unsourced study", r"\b[Aa] (?:20\d\d|recent|new) (?:study|survey|trial) (?:by|from|at|of) (?:Dr\.|Professor|researchers at)"),
+    ("study claim to verify", r"\b[Aa] (?:20\d\d|recent|new) (?:study|survey|trial) (?:by|from|at|of) (?:Dr\.|Professor|researchers at)"),
 ]
 TRUST_RE = [(label, re.compile(rx, re.I if "Dr\\." not in rx else 0)) for label, rx in TRUST_PATTERNS]
 
