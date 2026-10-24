@@ -118,7 +118,7 @@ def pipeline(db, args, sites):
         f"quality {m.get('quality')}; {len(intel['actions'])} best next actions")
     proposals = None
     if not args.no_links and not args.no_creds:
-        proposals = links.propose(db, results, intel["actions"], wp_clients([s for s in sites if s in wp.SITE_DIRS]))
+        proposals = links.propose(db, results, intel["link_gain"], wp_clients([s for s in sites if s in wp.SITE_DIRS]))
     path = report.write(db, results)
     log("")
     print_status(db, config.SITES)

@@ -3,8 +3,11 @@
 
 Links from pages Google already indexes are the strongest lever this portfolio has for "discovered / unknown /
 crawled, not indexed" pages. Rules that keep it safe:
-  * the anchor is a phrase that ALREADY exists in the source page's own text (taken from the target's title);
+  * the anchor is a phrase that ALREADY exists in the source page's own text, taken from the target's title or URL
+    slug, and no other page on the site has it in its title or slug (so the link text names where it leads);
     nothing is written but the <a> tag around it - no new sentences, blocks or boxes;
+  * sources are only pages Google indexes or that earn Bing clicks; at most 3 new links per target and 2 per source
+    per run;
   * never inside headings, links, buttons, captions, quotes, tables, code, scripts or shortcodes;
   * only approved links are applied (approval in the dashboard), at most `links_per_site_per_day` per site
     (default 5, never above 10); sites in STRICT_SITES are never auto-approved (gearuptofit AGENTS.md rule 3/2);
@@ -14,10 +17,12 @@ crawled, not indexed" pages. Rules that keep it safe:
 import datetime as dt
 import hashlib
 import json
+import math
 import re
 import subprocess
 import sys
 import time
+import zlib
 from collections import defaultdict
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -25,8 +30,8 @@ from urllib.parse import urlsplit
 import requests
 
 from . import config, store
-from .triage import STOP, clean_title
-from .util import SECRETS, bare_host, get, log, now_iso
+from .triage import BLOCKERS, STOP as _STOP, clean_title
+from .util import SECRETS, bare_host, days_since, get, log, now_iso
 
 STRICT_SITES = {"gearuptofit.com"}
 MAX_PER_DAY = 10
@@ -76,22 +81,6 @@ def segments(raw):
     return out
 
 
-def phrases(title, common=frozenset()):
-    """Anchor candidates from the target's title: 2-5 word runs with real topic words, longest first."""
-    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'’-]*", clean_title(title))
-    out = []
-    for n in (5, 4, 3, 2):
-        for i in range(len(words) - n + 1):
-            run = words[i:i + n]
-            topical = [w for w in run if w.lower() not in STOP and not w.isdigit() and len(w) > 2]
-            if len(topical) < min(2, n) or not any(w.lower() not in common for w in topical):
-                continue
-            if run[0].lower() in STOP or run[-1].lower() in STOP:
-                continue
-            out.append(" ".join(run))
-    return list(dict.fromkeys(out))
-
-
 def links_to(html, target):
     """True when html contains an href to exactly this URL (with or without the trailing slash)."""
     return re.search(r"""href\s*=\s*["']""" + re.escape(target.rstrip("/")) + r"""/?["'#?]""", html or "") is not None
@@ -102,8 +91,9 @@ def find(raw, phrase, target):
     if links_to(raw, target):
         return None
     rx = re.compile(r"(?<![\w-])" + r"\s+".join(map(re.escape, phrase.split())) + r"(?![\w-])", re.I)
+    need = len(tokens(phrase)) + 3                   # inside a sentence, not a bare label or list entry
     for s, e, ok in segments(raw):
-        if not ok:
+        if not ok or len(tokens(raw[s:e])) < need:
             continue
         m = rx.search(raw, s, e)
         if m:
@@ -116,75 +106,244 @@ def link_id(source, target):
     return hashlib.sha1(f"{source}|{target}".encode()).hexdigest()[:16]
 
 
-def propose(db, results, actions, clients, per_site=20):
-    """Natural-anchor proposals for the pages where links are expected to help most."""
-    want = defaultdict(list)                      # site -> targets, best first
-    for a in actions:
-        if a["action"] == "add_links" and a["url"] not in want[a["site"]]:
-            want[a["site"]].append(a["url"])
-    titles = {r["url"]: r["title"] or "" for r in db.execute("SELECT url, title FROM audits")}
-    gains = {(a["url"]): a["gain"] for a in actions if a["action"] == "add_links"}
-    out = []
-    for site, wpc in clients.items():
-        plan = (results.get(site) or {}).get("plan") or []
-        by_target = defaultdict(list)
-        for p in plan:
-            by_target[p["target"]].append(p)
-        targets = want.get(site, []) + [t for t in by_target if t not in want.get(site, [])]
-        df, n_titles = _df(titles, site)
-        common = {w for w, n in df.items() if n > 0.25 * max(1, n_titles)}
-        raw_cache, made = {}, 0
-        for target in targets:
-            if made >= per_site:
-                break
-            cands = phrases(titles.get(target, ""), common)
-            if not cands:
-                continue
-            for p in sorted(by_target.get(target, []), key=lambda p: -p["similarity"]):
-                src = p["source"]
-                if src not in raw_cache:
-                    try:
-                        loc = wpc.find(src)
-                        raw_cache[src] = (loc, wpc.raw(*loc)[0]) if loc else (None, None)
-                    except Exception as e:
-                        log(f"[links] {site}: cannot read {src}: {str(e)[:100]}")
-                        raw_cache[src] = (None, None)
-                loc, raw = raw_cache[src]
-                if not raw:
-                    continue
-                # The anchor must name what is specific to the target, not the topic both pages share
-                # ("Hawaiian spider plant" -> the Hawaiian page: yes; "spider plant" -> "make spider plant bushier": no).
-                # ...and that word must be rare on this site, so the anchor says which page it leads to.
-                distinct = _words(titles.get(target, "")) - _words(titles.get(src, "")) - common
-                rare = max(3, 0.03 * n_titles)
-                usable = [ph for ph in cands if any(df.get(w, 0) <= rare for w in _words(ph) & distinct)]
-                hit = next(((ph, f) for ph in usable for f in [find(raw, ph, target)] if f), None)
-                if not hit:
-                    continue
-                phrase, (s, e, context) = hit
-                out.append({"id": link_id(src, target), "site": site, "source": src, "source_title": titles.get(src, ""),
-                            "target": target, "target_title": titles.get(target, ""), "anchor": raw[s:e],
-                            "context": context, "score": p["similarity"], "gain": gains.get(target, 0)})
-                made += 1
-                break                                  # one new link per target per run
-        log(f"[links] {site}: {made} link proposals with natural anchors")
+# ---------------------------------------------------------------- finding natural anchors
+# Every published post's stored content is kept locally (link_corpus, refreshed incrementally). For each page that
+# needs links, its distinctive phrases (from its title, or a long one from its URL slug) are looked up in the article
+# text of every page Google already indexes or that earns Bing clicks. A phrase qualifies only when it names that one
+# page: no other title or slug on the site contains it, it is a whole phrase of the title (never a fragment across
+# punctuation or a compound cut short), it carries the title's main topic, and it is not a stock phrase used all over
+# the site's text.
+YEAR = re.compile(r"^(19|20)\d\d$")
+ENTITY = re.compile(r"&(?:#\d+|#x[0-9a-f]+|[a-z]+);", re.I)
+WORD = re.compile(r"[A-Za-z0-9]+")
+GAP = re.compile(r"^(?:\s|-|–|&nbsp;|&#160;|&#8211;|['’]s|&#8217;s|&#039;s|&#39;s)+$", re.I)   # allowed between anchor words
+CHUNK = re.compile(r"\s*(?:[:|?!()\[\],;&—–]|\s-\s)\s*")           # title punctuation that ends a phrase
+CORPUS_FULL_DAYS = 7
+MAX_PER_TARGET = 3          # the model's "add links" estimate is for about 3 new links
+MAX_PER_SOURCE = 2          # new links proposed into one page per run
+MAX_PER_SITE = 60           # proposals per site per run (each one waits for the owner's approval)
+STOCK_SHARE = 0.08          # a phrase found in the text of more than 8% of a site's pages is a stock phrase, not a name
+
+
+def stem(w):
+    """Light, predictable normalisation so 'Shoes' in a title matches 'shoe' in text (never over-merges)."""
+    w = w.lower()
+    if len(w) > 4 and w.endswith("ies"):
+        return w[:-3] + "y"
+    if len(w) > 4 and w.endswith(("sses", "xes", "ches", "shes")):
+        return w[:-2]
+    if len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
+        return w[:-1]
+    return w
+
+
+STOP = _STOP | {stem(w) for w in _STOP}
+# Words an anchor may not start or end on: function words, filler and headline adjectives.
+EDGE = STOP | {stem(w) for w in """through between across after before during over under against among around within like
+based using via per while still also just even only much many some such very same other each both own first last next
+real way step thing help work start now then fast proven essential surprising amazing effective practical honest full
+free expert simple smart powerful perfect great good better right common key important definitive near me understanding
+unlock unlocking discover explore exploring mastering decode decoding power importance significance safely quickly
+naturally easily set boost improve""".split()}
+END_EDGE = EDGE | {stem(w) for w in "daily weekly monthly yearly today tonight often need".split()}
+# What follows these in a title is what the page is NOT about ("Running Shoes Without a Carbon Plate").
+NEGATION = {"without", "no", "not", "non", "never", "instead", "avoid"}
+END_EDGE |= NEGATION
+# A title word after the phrase that does not make the phrase a fragment ("habit tracker" in "Habit Tracker Apps").
+# These category words never start an anchor ("tools for beginners" names no page).
+TAIL_OK = {stem(w) for w in """app tool guide tip idea example review checklist plan list prompt question template
+calculator chart meaning explained""".split()}
+UTILITY = re.compile(r"(^|-)(disclosure|privacy|terms|cookie|cookies|contact|about|editorial|policy|disclaimer|"
+                     r"sitemap|author|accessibility|imprint|legal)(-|$)")
+
+
+def tokens(text):
+    """[(stem, start, end)] of the words in a run of text; HTML entities count as gaps, a possessive 's is dropped."""
+    masked = ENTITY.sub(lambda m: " " * len(m.group(0)), text)
+    return [(stem(m.group(0)), m.start(), m.end()) for m in WORD.finditer(masked)
+            if not (m.group(0).lower() == "s" and m.start() and masked[m.start() - 1] in " '’")]
+
+
+def _topical(w):
+    return w not in STOP and (len(w) > 2 or (w.isdigit() and len(w) > 1)) and not YEAR.match(w)
+
+
+def title_words(url, title):
+    """(title chunks split at punctuation, slug words), each a list of stems."""
+    chunks = [[t for t, _, _ in tokens(c)] for c in CHUNK.split(clean_title(title or "")) if c.strip()]
+    slug = [s for s in urlsplit(url).path.split("/") if s]
+    return ([c for c in chunks if any(_topical(w) for w in c)],
+            [t for t, _, _ in tokens(slug[-1].replace("-", " "))] if slug else [])
+
+
+def all_grams(chunks, slug):
+    """Every 2-5 word run of a page's title chunks and slug: what the page's name contains."""
+    out = set()
+    for words in chunks + [slug]:
+        for n in (2, 3, 4, 5):
+            out.update(tuple(words[i:i + n]) for i in range(len(words) - n + 1))
     return out
 
 
-def _words(text):
-    """Topic words of a title or phrase, numbers included (they name the page on a numerology or listicle site)."""
-    return {w for w in re.findall(r"[a-z0-9]+", clean_title(text or "").lower()) if w not in STOP and (len(w) > 2 or w.isdigit())}
+def title_phrases(chunks, common):
+    """{key: from_main_chunk} for the WHOLE phrases a title offers as anchors. A run may drop leading words only when
+    they are function or site-wide words ("French Bulldog Tail Pocket" -> "tail pocket", but "Rodent Control
+    Strategies" -/-> "control strategies"), and trailing words only when they are function or category words
+    ("Habit Tracker Apps" -> "habit tracker", but "Runner's Weight Loss" -/-> "runner weight"). Slugs only count
+    against other pages (uniqueness), never as anchors: their runs cross what the title separates."""
+    out = {}
+    for ci, words in enumerate(chunks):
+        for n in (5, 4, 3, 2):
+            for i in range(len(words) - n + 1):
+                key = tuple(words[i:i + n])
+                before, after = words[i - 1] if i else None, words[i + n] if i + n < len(words) else None
+                if key[0] in EDGE or key[0] in TAIL_OK or key[-1] in END_EDGE or NEGATION & set(words[:i]):
+                    continue
+                if (before and before not in STOP and before not in common) or (after and after not in STOP and after not in TAIL_OK):
+                    continue
+                out[key] = out.get(key, False) or ci == 0
+    return out
 
 
-def _df(titles, site):
-    """Word document frequency over this site's titles (brand and topic words appear on most of them)."""
-    df, n = defaultdict(int), 0
-    for u, t in titles.items():
-        if site in u:
-            n += 1
-            for w in set(re.findall(r"[a-z0-9]+", (t or "").lower())):
+def _usable(key, common, is_main, main_words, core):
+    """At least two topic words, one of them neither a site-wide word nor a short number, and the title's subject:
+    a phrase from the main part must contain its rarest word (the one that names this page: "Perplexity" in "How to
+    Use Perplexity AI to Boost Your Affiliate Earnings"); one from a subtitle must share a word with the main part."""
+    if any(YEAR.match(w) for w in key):
+        return False
+    topical = [w for w in key if _topical(w)]
+    naming = [w for w in topical if w not in common and not (w.isdigit() and len(w) < 3)]
+    if len(topical) < 2 or not naming:
+        return False
+    return bool(set(topical) & core) if is_main else bool(set(topical) & main_words)
+
+
+def refresh_corpus(db, site, wpc):
+    """Keep the stored content of every published post/page; only what changed since the last look is re-read."""
+    meta = store.get_meta(db, site)
+    age = days_since(meta.get("corpus_full_at"))
+    full = age is None or age >= CORPUS_FULL_DAYS
+    after = None if full else meta.get("corpus_watermark")
+    n, newest = 0, meta.get("corpus_watermark") or ""
+    if full:
+        db.execute("DELETE FROM link_corpus WHERE site=?", (site,))
+    for item in wpc.corpus(after=after):
+        db.execute("INSERT OR REPLACE INTO link_corpus VALUES(?,?,?,?,?,?)",
+                   (item["url"], site, item["id"], item["type"], item["modified"], zlib.compress(item["raw"].encode("utf-8"))))
+        newest = max(newest, item["modified"] or "")
+        n += 1
+    store.set_meta(db, site, corpus_watermark=newest, **({"corpus_full_at": now_iso()} if full else {}))
+    db.commit()
+    return n
+
+
+def corpus(db, site):
+    return {r["url"]: zlib.decompress(r["raw"]).decode("utf-8") for r in db.execute(
+        "SELECT url, raw FROM link_corpus WHERE site=?", (site,))}
+
+
+def candidates(raw, keys):
+    """{key: (start, end)} for the first safe occurrence in raw of each phrase key."""
+    found = {}
+    for s, e, ok in segments(raw):
+        if not ok:
+            continue
+        toks = tokens(raw[s:e])
+        for n in (5, 4, 3, 2):
+            if len(toks) < n + 3:                        # inside a sentence, not a bare label or list entry
+                continue
+            for i in range(len(toks) - n + 1):
+                key = tuple(t for t, _, _ in toks[i:i + n])
+                if key not in keys or key in found:
+                    continue
+                if all(GAP.match(raw[s + toks[j][2]:s + toks[j + 1][1]]) for j in range(i, i + n - 1)):
+                    found[key] = (s + toks[i][1], s + toks[i + n - 1][2])
+    return found
+
+
+def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
+    """Natural-anchor proposals: for each page where links should help (best expected gain first), up to
+    MAX_PER_TARGET links from different trusted pages whose article text already names it."""
+    titles = {r["url"]: r["title"] or "" for r in db.execute("SELECT url, title FROM audits")}
+    out = []
+    for site, wpc in clients.items():
+        res = results.get(site) or {}
+        buckets, rows = res.get("buckets") or {}, {r["url"]: r for r in res.get("rows") or []}
+        if not buckets or not getattr(wpc, "ok", False):
+            continue
+        try:
+            changed = refresh_corpus(db, site, wpc)
+        except Exception as e:
+            log(f"[links] {site}: could not read post content ({str(e)[:120]}); using the stored copy")
+            changed = 0
+        texts = corpus(db, site)
+        names = {u: title_words(u, titles.get(u)) for u in buckets}
+        df = defaultdict(int)
+        for chunks, _slug in names.values():
+            for w in {w for c in chunks for w in c}:
                 df[w] += 1
-    return df, n
+        common = {w for w, k in df.items() if k > 0.25 * max(1, len(buckets))}
+        owners = defaultdict(set)                        # phrase -> pages whose title/slug has it (2 = not unique)
+        for u, (chunks, slug) in names.items():
+            for k in all_grams(chunks, slug):
+                if len(owners[k]) < 2:
+                    owners[k].add(u)
+        targets = sorted((u for u, (b, f) in buckets.items() if link_gain.get(u, 0) > 0 and b not in BLOCKERS
+                          and "IGNORED" not in f and (rows[u]["kind"] if u in rows else "") != "taxonomy"
+                          and not UTILITY.search(([x for x in urlsplit(u).path.split("/") if x] or [""])[-1])),
+                         key=lambda u: -link_gain[u])
+        keys = {}                                        # phrase -> target
+        for t in targets:
+            chunks, slug = names[t]
+            main = [w for w in chunks[0] if _topical(w)] if chunks else []
+            ranked = [w for w in main if (len(w) >= 4 and not w.isdigit()) or (w.isdigit() and len(w) >= 3)] or main
+            low = min((df[w] for w in ranked), default=0)
+            core = {w for w in ranked if df[w] == low}
+            for k, is_main in title_phrases(chunks, common).items():
+                if owners[k] == {t} and _usable(k, common, is_main, set(main), core):
+                    keys[k] = t
+        strength = {}
+        for u, (b, f) in buckets.items():
+            if b in BLOCKERS or "IGNORED" in f or u not in texts or not (b == "INDEXED" or "BING_EARNER" in f):
+                continue
+            r = rows.get(u)
+            strength[u] = (2.0 if b == "INDEXED" else 1.0) + math.log1p((r["gsc_clicks"] + r["bing_clicks"]) if r else 0)
+        hits, used = defaultdict(list), defaultdict(int)     # target -> [(rank, source, start, end)]; phrase -> pages
+        for src, raw in texts.items():
+            for key, (s, e) in candidates(raw, keys).items():
+                used[key] += 1
+                t = keys[key]
+                if src in strength and t != src and not links_to(raw, t):
+                    hits[t].append((len(key) + strength[src], key, src, s, e))
+        stock = {k for k, n in used.items() if n > max(3, STOCK_SHARE * len(texts))}
+        per_source, made = defaultdict(int), 0
+        for t in targets:
+            if made >= per_site:
+                break
+            picked = 0
+            for rank, key, src, s, e in sorted(hits.get(t, []), key=lambda h: -h[0]):
+                if picked >= MAX_PER_TARGET or made >= per_site:
+                    break
+                if key in stock or per_source[src] >= MAX_PER_SOURCE:
+                    continue
+                raw = texts[src]
+                hit = find(raw, raw[s:e], t)             # the occurrence apply() will link: the first safe one
+                if not hit:
+                    continue
+                a, b, context = hit
+                prev = re.search(r"([A-Za-z0-9]+)[\s-]+$", raw[max(0, a - 40):a])
+                if prev and _topical(stem(prev.group(1))) and stem(prev.group(1)) in {w for c in names[t][0] for w in c}:
+                    continue
+                out.append({"id": link_id(src, t), "site": site, "source": src, "source_title": titles.get(src, ""),
+                            "target": t, "target_title": titles.get(t, ""), "anchor": raw[a:b], "context": context,
+                            "score": round(rank, 2), "gain": round(link_gain.get(t, 0), 4)})
+                per_source[src] += 1
+                picked += 1
+                made += 1
+        n_targets = len({p["target"] for p in out if p["site"] == site})
+        log(f"[links] {site}: {made} link proposals with natural anchors for {n_targets} pages "
+            f"({len(strength)} trusted source pages scanned, {len(stock)} stock phrases skipped, {changed} posts re-read)")
+    return out
 
 
 def _log_change(site, line):

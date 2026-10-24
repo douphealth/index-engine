@@ -7,6 +7,7 @@ import random
 import shutil
 import tempfile
 import threading
+from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -117,6 +118,14 @@ class Handler(BaseHTTPRequestHandler):
             if "slug" in q:
                 path = f"/{q['slug'][0]}/"
                 return js([{"id": POST_IDS[path], "link": f"{base}{path}", "status": "publish"}] if path in POST_IDS else [])
+            if q.get("context") == ["edit"]:                 # bulk content for the link finder
+                if not self._authed():
+                    return js({"code": "rest_forbidden_context"}, 401)
+                after = (q.get("modified_after") or [""])[0]
+                paths = [x for x, m in FRESH if m > after] if after else list(PAGES)
+                return js([{"id": POST_IDS[x], "link": f"{base}{x}", "modified_gmt": "2026-10-20T10:00:00",
+                            "content": {"raw": RAW.get(x) or f"<p>{body_text(x, PAGES[x][1], PAGES[x][2].get('dup'))}</p>"}}
+                           for x in paths if x in POST_IDS])
             if "modified_after" in q:
                 return js([{"link": f"{base}{x}", "modified_gmt": m, "date_gmt": m} for x, m in FRESH])
             return js([{"link": f"{base}{x}", "modified_gmt": "2026-10-20T10:00:00", "date_gmt": "2026-06-01T10:00:00"}
@@ -385,15 +394,33 @@ def main():
 
     # ---- link autopilot against the fake WordPress
     tricky = ('<h2>Ceramic planter drainage mistakes</h2>[caption]ceramic planter drainage mistakes[/caption]'
-              '<p>Avoid <a href="/x/">ceramic planter drainage mistakes</a> and common ceramic planter drainage mistakes.</p>')
+              '<p>Avoid <a href="/x/">ceramic planter drainage mistakes</a> and common ceramic planter drainage mistakes when potting.</p>')
     hit = links.find(tricky, "ceramic planter drainage mistakes", base + "/good-discovered/")
     check(bool(hit) and tricky[hit[0] - 7:hit[0]] == "common ", "anchor search skips headings, shortcodes and existing links")
     wpc = wp.WPClient(base, base=base, creds=[("nobody", "wrong pass"), (WP_USER, WP_PW)])
     check(wpc.ok, "WordPress login with an application password")
-    props_ = links.propose(db, res3, intel["actions"], {base: wpc})
+    props_ = links.propose(db, res3, intel["link_gain"], {base: wpc})
     prop = next((p for p in props_ if p["target"].endswith("/good-discovered/")), None)
     check(bool(prop) and prop["source"].endswith("/good-indexed/") and prop["anchor"].lower() == "ceramic planter drainage mistakes",
           "a link proposal uses a phrase already in the source page's text")
+    check([t for t, _, _ in links.tokens("Women&#8217;s Running Shoes")] == ["women", "running", "shoe"]
+          and links.stem("berries") == "berry" and links.stem("glass") == "glass",
+          "anchor matching ignores plurals, possessives and HTML entities")
+    keys = {("ceramic", "planter", "drainage", "mistake"): 1, ("drainage", "mistake"): 1}
+    found = links.candidates("<p>Water pooled because of poor drainage. Mistakes like this one happen to everyone.</p>"
+                             "<p>Watch for drainage <em>mistakes</em> that many new owners make.</p>"
+                             "<p>Spider Plant Drainage Mistakes</p>"
+                             "<p>Many beginners avoid Ceramic Planter Drainage Mistakes when potting.</p>", keys)
+    check(found.get(("ceramic", "planter", "drainage", "mistake")) == (219, 252) and found.get(("drainage", "mistake")) == (235, 252),
+          "anchors are found as plurals inside sentences, never across sentences or tags, never as a bare label")
+    check(links.refresh_corpus(db, base, wpc) == 0 and len(links.corpus(db, base)) == len(PAGES),
+          "post content is kept locally and re-read only when it changes")
+    by_target = defaultdict(int)
+    for p in props_:
+        by_target[p["target"]] += 1
+    check(max(by_target.values(), default=0) <= links.MAX_PER_TARGET
+          and all(p["source"] != p["target"] and not p["anchor"].lower().startswith("calathea") for p in props_),
+          "at most 3 new links per page, never a self-link, and only phrases that name the target alone")
     reports = []
 
     def rep(lid, st, result, at):

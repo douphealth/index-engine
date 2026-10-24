@@ -240,7 +240,8 @@ FALLBACK_RISE = {"add_links": 0.08, "differentiate": 0.06, "expand": 0.05, "fix_
 
 
 def score(db, request_rate=0.1, max_actions=80, per_site=12):
-    """Train, write odds/why into triage, and return (model meta, best actions, {url: request gain},
+    """Train, write odds/why into triage, and return (model meta, best actions, {action: {url: gain}} for
+    "request" and "add_links" on every candidate page,
     potential {site: {action: {"n": pages, "pages": expected extra indexed pages}}} over ALL candidates, not just the best)."""
     recs = frame(db)
     m, meta = train(recs)
@@ -250,7 +251,7 @@ def score(db, request_rate=0.1, max_actions=80, per_site=12):
         P = predict(m, X)
     else:
         P = np.array([r["raw"]["site_rate"] for r in recs])
-    actions, request_gain = [], {}
+    actions, request_gain, link_gain = [], {}, {}
     for r, x, p in zip(recs, X, P):
         why = explain(m, x) if m is not None else []
         db.execute("UPDATE triage SET odds=?, why=? WHERE url=?", (round(float(p), 4), json.dumps(why), r["url"]))
@@ -268,6 +269,8 @@ def score(db, request_rate=0.1, max_actions=80, per_site=12):
             after = float(predict(m, [vector(simulate(r["raw"], a))])[0]) if usable else min(0.99, p + FALLBACK_RISE[a] * (1 - p))
             if after - p > 0.01:
                 opts.append((a, after))
+                if a == "add_links":
+                    link_gain[r["url"]] = weight * (after - float(p))
         lm, lc = parse_ts(r["lastmod"]), parse_ts(r["last_crawl"])
         eligible_request = r["bucket"] in ("UNKNOWN_TO_GOOGLE", "DISCOVERED_NOT_INDEXED", "GOOGLE_STALE") or (
             r["bucket"] == "CRAWLED_NOT_INDEXED" and lm and lc and lm > lc)
@@ -300,4 +303,4 @@ def score(db, request_rate=0.1, max_actions=80, per_site=12):
     db.execute("DELETE FROM model")
     db.execute("INSERT INTO model VALUES(?,?)", (meta["trained_at"], json.dumps({"meta": meta, "model": m})))
     db.commit()
-    return meta, picked, request_gain, {s: dict(v) for s, v in potential.items()}
+    return meta, picked, {"request": request_gain, "add_links": link_gain}, {s: dict(v) for s, v in potential.items()}

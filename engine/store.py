@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS alerts(id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT,
   severity TEXT, message TEXT, pushed INT DEFAULT 0);
 CREATE INDEX IF NOT EXISTS alerts_dedupe ON alerts(url, kind, at);
 
+-- Stored content (zlib) of every published post/page, for finding natural link anchors; refreshed incrementally.
+CREATE TABLE IF NOT EXISTS link_corpus(url TEXT PRIMARY KEY, site TEXT, post_id INT, post_type TEXT, modified TEXT, raw BLOB);
+CREATE INDEX IF NOT EXISTS link_corpus_site ON link_corpus(site);
+
 -- Internal links the engine inserted (for verification, impact tracking and undo).
 CREATE TABLE IF NOT EXISTS link_ops(id TEXT PRIMARY KEY, site TEXT, source TEXT, target TEXT, anchor TEXT, post_id INT,
   post_type TEXT, status TEXT, applied_at TEXT, backup TEXT, result TEXT);

@@ -6,8 +6,9 @@ from . import impact, model, triage
 
 def analyze(db, sites):
     results = triage.run(db, sites, with_manual=False)
-    meta, actions, request_gain, potential = model.score(db, request_rate=impact.request_rate(db))
+    meta, actions, gains, potential = model.score(db, request_rate=impact.request_rate(db))
     for site, res in results.items():
-        res["manual"] = triage.manual_queue(db, site, res["rows"], res["buckets"], res["owner"], request_gain)
+        res["manual"] = triage.manual_queue(db, site, res["rows"], res["buckets"], res["owner"], gains["request"])
     db.commit()
-    return results, {"model": meta, "actions": actions, "potential": potential, "impact": impact.compute(db)}
+    return results, {"model": meta, "actions": actions, "potential": potential, "link_gain": gains["add_links"],
+                     "impact": impact.compute(db)}

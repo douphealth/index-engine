@@ -93,5 +93,28 @@ class WPClient:
         d = self._call("GET", f"{typ}/{pid}", params={"context": "edit", "_fields": "id,content,modified_gmt,link"})
         return d["content"]["raw"], d.get("modified_gmt")
 
+    def corpus(self, after=None, per_page=50):
+        """Every published post and page with its stored content, in pages of per_page (optionally only those
+        modified after an ISO time). Yields {"url", "id", "type", "modified", "raw"}."""
+        for typ in ("posts", "pages"):
+            page, pages = 1, 1
+            while page <= pages:
+                params = {"context": "edit", "status": "publish", "per_page": per_page, "page": page, "orderby": "id",
+                          "_fields": "id,link,modified_gmt,content"}
+                if after:
+                    params["modified_after"] = after
+                r = self.s.get(f"{self.base}/wp-json/wp/v2/{typ}", params=params, timeout=180)
+                if r.status_code == 400 and page > 1:
+                    break                                   # past the last page
+                if r.status_code >= 300:
+                    raise RuntimeError(f"GET {typ} page {page} -> HTTP {r.status_code}: {r.text[:120]}")
+                pages = int(r.headers.get("X-WP-TotalPages") or 1)
+                for it in r.json():
+                    raw = (it.get("content") or {}).get("raw")
+                    if raw and it.get("link"):
+                        yield {"url": norm(it["link"]), "id": it["id"], "type": typ, "modified": it.get("modified_gmt"),
+                               "raw": raw}
+                page += 1
+
     def update(self, pid, typ, raw):
         return self._call("POST", f"{typ}/{pid}", json={"content": raw})
