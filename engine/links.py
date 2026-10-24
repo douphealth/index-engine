@@ -256,7 +256,7 @@ def cached_msg(cache, age, purged=None):
         cached_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=int(age))
     except (TypeError, ValueError):
         cached_at = dt.datetime.now(dt.timezone.utc)
-    eta = (cached_at + dt.timedelta(hours=EDGE_HOURS)).strftime("%H:%M UTC")
+    eta = (cached_at + dt.timedelta(hours=EDGE_HOURS)).astimezone().strftime("%H:%M")      # the PC's (owner's) local time
     return (f"applied; live in WordPress, but Cloudflare still serves an older cached copy (cache {cache}). "
             f"Visitors and Google see it by about {eta}" + (f". Cache purge: {purged}" if purged else ""))
 
@@ -272,7 +272,7 @@ def recheck(db, report):
             time.sleep(2)                                # e.g. Cache Purge was added to the token since the link went in
             seen, cache, age = visible_to_visitors(op["source"], op["target"])
         if seen:
-            msg = f"applied; visible to visitors (checked {now_iso()[11:16]} UTC)"
+            msg = f"applied; visible to visitors (checked {dt.datetime.now().strftime('%d %b %H:%M')})"
             log(f"[links] now visible to visitors: {op['source']} -> {op['target']}")
         elif op["days"] >= 2:
             msg = "applied in WordPress, but still not on the page visitors get after 2 days: open the post and check it"
