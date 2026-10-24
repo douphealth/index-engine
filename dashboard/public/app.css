@@ -135,12 +135,42 @@ mark { background: color-mix(in srgb, var(--b-unknown) 45%, transparent); color:
 .arrow { color: var(--muted); padding: 0 4px; }
 ul.plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
 
+/* priorities */
+.prio-card { border-top: 3px solid var(--accent); }
+ol.prio { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+ol.prio li { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--line); }
+ol.prio li:first-child { border-top: 0; padding-top: 2px; }
+ol.prio .n { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 700;
+  background: var(--soft); color: var(--fg); font-variant-numeric: tabular-nums; }
+ol.prio .n.t0 { background: var(--bad); color: #fff; } ol.prio .n.t1 { background: var(--accent); color: var(--accent-fg); }
+ol.prio .body { flex: 1; min-width: 0; display: grid; gap: 3px; }
+ol.prio .ttl { font-weight: 600; }
+ol.prio li > .btn { flex: none; align-self: center; }
+.chip.tier.t0 { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+.chip.tier.t1 { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.chip.tier.t2 { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.chip.gain { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); font-weight: 600; }
+td.lever { max-width: 280px; }
+.note { border-left: 3px solid var(--warn); }
+ol.tight { margin: 0; padding-left: 20px; display: grid; gap: 2px; }
+
+/* funnel */
+.funnel { display: grid; gap: 10px; }
+.funnel .step { display: grid; gap: 3px; }
+.funnel .row { gap: 6px; }
+.fbar { height: 8px; border-radius: 4px; background: var(--soft); overflow: hidden; }
+.fbar span { display: block; height: 100%; background: var(--b-none); border-radius: 4px; }
+.fbar span.ok { background: var(--b-indexed); }
+
 /* login */
 .login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
 .login form { width: min(360px, 100%); }
 .login .err { color: var(--bad); min-height: 1.5em; font-size: 14px; }
 @media (max-width: 640px) {
   .hide-sm { display: none; }
+  ol.prio li { flex-wrap: wrap; }
+  ol.prio .body { flex-basis: calc(100% - 38px); }
+  ol.prio li > .btn { margin-left: 38px; }
   td, th { padding: 7px 8px; }
   .kpi .v { font-size: 22px; }
 }

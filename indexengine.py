@@ -3,7 +3,7 @@
 ones through every channel search engines accept, learn what gets pages indexed on YOUR sites, and act on it.
 Results and controls live in the online dashboard (dashboard/).
 
-    python indexengine.py tick                    # the scheduler, every 30 min: queued run > daily run > quick tick
+    python indexengine.py tick                    # the scheduler, every 10 min: queued run > daily run > quick tick
     python indexengine.py run                     # everything, all enabled sites, now
     python indexengine.py run --site frenchyfab.com --dry-run
     python indexengine.py run --no-submit         # measure only
@@ -13,7 +13,7 @@ Results and controls live in the online dashboard (dashboard/).
 
 Full run: [apply approved links] -> discover -> audit -> Google data + inspection -> Bing data -> submit ->
           analyse (triage, odds model, best actions, impact) -> link proposals -> report -> dashboard.
-Quick tick (every 30 min): apply approved links; find posts published/updated since the last look; audit, inspect,
+Quick tick (every 10 min): apply approved links; find posts published/updated since the last look; audit, inspect,
           gate and submit them within minutes; re-analyse and upload only when something changed.
 Credentials come from ../GSC-Bing.txt and the sites' credentials.txt and never leave this PC.
 """
@@ -77,14 +77,14 @@ def wp_clients(sites):
 
 def apply_links(db, dash, state, settings):
     """Apply approved (or, with autopilot, auto-approved) internal links and process undo requests."""
+    def report_(lid, status, result, applied_at):
+        safe(dash.link_result, lid, status, result, applied_at, what="report link result")
+
+    links.recheck(db, report_)          # applied earlier, hidden by an edge cache until now?
     todo = [lk for lk in (state or {}).get("links") or [] if lk.get("status") in ("approved", "undo", "proposed")]
     if not todo:
         return set()
     clients = wp_clients(sorted({lk["site"] for lk in todo}))
-
-    def report_(lid, status, result, applied_at):
-        safe(dash.link_result, lid, status, result, applied_at, what="report link result")
-
     return links.apply(db, todo, settings, clients, report_)
 
 
@@ -223,7 +223,7 @@ def quick(args, dash, state, settings):
 
 
 def tick(args):
-    """Scheduler entry point (every 30 minutes): heartbeat, then a queued dashboard run, else the daily run when due,
+    """Scheduler entry point (every 10 minutes): heartbeat, then a queued dashboard run, else the daily run when due,
     else a quick tick."""
     if config.LOCK_FILE.exists() and time.time() - config.LOCK_FILE.stat().st_mtime < config.LOCK_STALE_HOURS * 3600:
         print("A run is in progress; nothing to do.")

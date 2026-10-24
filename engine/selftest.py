@@ -40,6 +40,7 @@ FLIP = set()        # paths that currently serve noindex (regression test)
 FRESH = []          # (path, modified_gmt) returned by modified_after queries
 WP_USER, WP_PW = "tester", "abcd efgh ijkl mnop qrst uvwx"
 POST_IDS = {p: 100 + i for i, p in enumerate(PAGES)}
+EDGE = {}           # path -> html an edge cache (Cloudflare) keeps serving on the plain URL
 
 
 def body_text(path, n, dup=False):
@@ -96,8 +97,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, self.page(base, p, "Plants", 300, {}))
         if p not in PAGES:
             return self._send(404, "<html><head><title>Not found</title></head><body>404</body></html>")
+        if p in EDGE and not u.query:
+            return self._send(200, EDGE[p], headers={"cf-cache-status": "HIT", "Age": "600"})
         title, n, extra = PAGES[p]
-        return self._send(200, self.page(base, p, title, n, extra))
+        return self._send(200, self.page(base, p, title, n, extra), headers={"cf-cache-status": "MISS"})
 
     # ---- fake WordPress REST API: login, slug lookup, raw content, save, modified_after
     def _authed(self):
@@ -225,6 +228,7 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="index-engine-selftest-"))
     config.OUT, config.DB_PATH, config.LOG_DIR = tmp, tmp / "t.db", tmp / "logs"
     config.INDEXNOW_KEYS_FILE = tmp / "none.json"
+    config.CF_TOKEN_FILE = tmp / "no-token.txt"
     util.open_log("selftest")
     fails, checks = [], []
 
@@ -373,6 +377,11 @@ def main():
           and any(a["action"] == "add_links" and a["url"].endswith("/good-discovered/") for a in intel["actions"]),
           "scored pages get odds; best actions include links for a stuck page")
     check({"gained", "lost", "requests", "links", "bing"} <= set(intel["impact"]), "impact report built")
+    s3 = publish.build(db, res3, util.now_iso(), {}, (), intel)[0]["sites"][0]
+    pot = s3["potential"].get("add_links") or {}
+    check(pot.get("n", 0) >= 1 and 0 < pot.get("pages", 0) <= pot["n"] and isinstance(pot["pages"], float)
+          and s3["flags"].get("ORPHAN", 0) >= 1 and "IGNORED" not in s3["flags"],
+          "the summary carries what each kind of work could gain (all pages, not just the top) and flag counts for the priorities")
 
     # ---- link autopilot against the fake WordPress
     tricky = ('<h2>Ceramic planter drainage mistakes</h2>[caption]ceramic planter drainage mistakes[/caption]'
@@ -394,7 +403,7 @@ def main():
     links.apply(db, [lk], {"links_per_site_per_day": 1}, {base: wpc}, rep)
     new_raw = RAW["/good-indexed/"]
     check(bool(reports) and reports[-1][1] == "applied" and new_raw.count(f'href="{lk.get("target")}"') == 1
-          and "<h2>Ceramic Planter Drainage Mistakes</h2>" in new_raw and "live page: visible" in reports[-1][2],
+          and "<h2>Ceramic Planter Drainage Mistakes</h2>" in new_raw and "visible to visitors" in reports[-1][2],
           "an approved link is applied once, inside the paragraph (heading untouched), and seen on the live page")
     n_rep = len(reports)
     other = dict(lk, id="0123456789abcdef", target=base + "/orphan/", anchor="beginners")
@@ -407,6 +416,51 @@ def main():
     links.apply(db, [dict(lk, status="undo")], {}, {base: wpc}, rep)
     check(reports[-1][1] == "undone" and f'href="{lk.get("target")}"' not in RAW["/good-indexed/"],
           "undo removes exactly the added link")
+
+    # ---- an edge cache hides the change: purge with the app token only, say so honestly, re-check until visible
+    class FakeCF:
+        def __init__(self):
+            self.calls = []
+
+        def _resp(self, data):
+            return type("R", (), {"json": lambda _self: data})()
+
+        def get(self, url, headers=None, params=None, timeout=None):
+            self.calls.append(("GET", url, headers))
+            return self._resp({"result": [{"id": "zone1"}]})
+
+        def post(self, url, headers=None, json=None, timeout=None):
+            self.calls.append(("POST", url, json))
+            return self._resp({"success": False, "errors": [{"code": 10000, "message": "Authentication error"}]})
+
+    EDGE["/good-indexed/"] = util.get(base + "/good-indexed/").text
+    (tmp / "cf-token.txt").write_text("Index Engine token: selftest-cf-token-123", encoding="utf-8")
+    config.CF_TOKEN_FILE = tmp / "cf-token.txt"
+    real_requests, links.requests = links.requests, FakeCF()
+    try:
+        links.apply(db, [lk], {"links_per_site_per_day": 5}, {base: wpc}, rep)
+        msg = reports[-1][2]
+        purges = [c for c in links.requests.calls if c[0] == "POST"]
+        check(reports[-1][1] == "applied" and "older cached copy" in msg and "see it by about" in msg
+              and "not permitted" in msg,
+              "a link hidden by the edge cache is reported as such, with when visitors will see it")
+        check(purges and purges[0][1].endswith("/zones/zone1/purge_cache") and purges[0][2] == {"files": [lk["source"]]}
+              and links.requests.calls[0][2] == {"Authorization": "Bearer selftest-cf-token-123"}
+              and store.get_meta(db, base).get("cf_zone") == "zone1" and "selftest-cf-token-123" in util.SECRETS,
+              "the cache purge uses only the app token, purges just that page, caches the zone and scrubs the token")
+        n_rep = len(reports)
+        links.recheck(db, rep)
+        check(len(reports) == n_rep, "re-check while still cached: no repeated report")
+        del EDGE["/good-indexed/"]
+        links.recheck(db, rep)
+        check(len(reports) == n_rep + 1 and "visible to visitors" in reports[-1][2]
+              and "visible to visitors" in db.execute("SELECT result FROM link_ops WHERE id=?", (lk["id"],)).fetchone()[0],
+              "once the cache refreshes, the re-check reports the link as visible to visitors")
+        links.apply(db, [dict(lk, status="undo")], {}, {base: wpc}, rep)
+        check(reports[-1][1] == "undone" and "cache purge: not permitted" in reports[-1][2], "undo also purges the page")
+    finally:
+        links.requests = real_requests
+        config.CF_TOKEN_FILE = tmp / "no-token.txt"
 
     # ---- fresh-content autopilot
     store.set_meta(db, base, fresh_watermark="2026-10-01T00:00:00+00:00")

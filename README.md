@@ -9,7 +9,7 @@ The dashboard is built as a Cloudflare Pages app (`dashboard/functions`, `dashbo
 ## How it fits together
 
 ```
-your PC (Windows task, every 30 min)                    Cloudflare: index-engine-dashboard (Worker + assets)
+your PC (Windows task, every 10 min)                    Cloudflare: index-engine-dashboard (Worker + assets)
   indexengine.py tick  ── pulls decisions + queued runs ──►  /api/engine/*   (engine token)
      │ runs the engine with YOUR credentials                 D1: settings, ignored URLs, requests done,
      │ (Google service account, Bing key, WordPress)             fixes, run queue, run history
@@ -18,7 +18,7 @@ your PC (Windows task, every 30 min)                    Cloudflare: index-engine
 ```
 
 - **Credentials never leave the PC.** The dashboard only receives results.
-- **Commands from the dashboard wait for the PC.** "Run now" is picked up within 30 minutes whenever the PC is on.
+- **Commands from the dashboard wait for the PC.** "Run now" is picked up within 10 minutes whenever the PC is on.
 - **The repo holds code only.** Data, logs, backups and secrets are git-ignored. The credential files live in `D:\Claude\SEO-Setup\`:
   - `Index-Engine-Dashboard.json`: dashboard URL and engine token
   - `Index-Engine-Dashboard-Login.txt`: your dashboard password
@@ -34,10 +34,11 @@ your PC (Windows task, every 30 min)                    Cloudflare: index-engine
 - **Best next actions.** The model simulates each action and ranks them portfolio-wide by expected gain (page value × rise in odds). The actions are: add links from indexed pages, request indexing, de-duplicate, add substance, source claims. The request-indexing list is ranked the same way.
 - **Internal-link autopilot.**
   - The engine proposes links whose anchor already exists in an indexed page's text and names something specific to the target.
-  - You approve on the Links page; your PC applies them within 30 minutes, at most N per site per day (default 5, max 10).
-  - Every link is backed up, verified on the live page and logged, and can be undone.
+  - You approve on the Links page; your PC applies them within 10 minutes, at most N per site per day (default 5, max 10).
+  - Every link is backed up, verified in WordPress and on the page visitors get, logged, and can be undone.
+  - Sites behind Cloudflare keep serving the old copy of a page for up to about 4 hours. After each link change the engine clears the cache of just that page with its own token (`Index-Engine-Cloudflare-Token.txt`, needs **Zone · Cache Purge**; it never tries any other credential). Without that permission the card says when visitors and Google will see the link, and every tick re-checks until they do.
   - Optional auto-approve stays off by default and never applies to gearuptofit.
-- **Fresh-content autopilot.** Every 30-minute tick checks each WordPress site for posts published or updated since the last look. New ones are audited, inspected, gated and submitted within minutes.
+- **Fresh-content autopilot.** Every 10-minute tick checks each WordPress site for posts published or updated since the last look. New ones are audited, inspected, gated and submitted within minutes.
 - **Regression alarms.** You get an alert when:
   - an indexable page turns noindex, 404s, redirects or loses its canonical;
   - content shrinks sharply;
@@ -54,7 +55,7 @@ your PC (Windows task, every 30 min)                    Cloudflare: index-engine
 python D:\Claude\SEO-Setup\index-engine\indexengine.py tick
 ```
 
-`tick` is what the scheduler runs every 30 minutes. It sends a heartbeat to the dashboard, runs any queued run, and otherwise runs the daily run once a day after the time set in the dashboard (default 10:30).
+`tick` is what the scheduler runs every 10 minutes. It sends a heartbeat to the dashboard, runs any queued run, and otherwise runs the daily run once a day after the time set in the dashboard (default 10:30).
 
 | Command | What it does |
 |---|---|
@@ -71,7 +72,7 @@ python D:\Claude\SEO-Setup\index-engine\indexengine.py tick
 
 | Page | What you can do |
 |---|---|
-| Overview | Portfolio totals, Google indexed-share trend, best next actions, last-30-days impact, alerts, every site with its state bar, PC online status |
+| Overview | **Your priorities**: one ranked to-do list (urgent problems, then quick wins by expected pages indexed per minute, then technical fixes, then content work), each with its expected gain, effort and a one-click link. Also: where pages get stuck (found → indexable → known to Google → crawled → indexed), the indexed-share trend, top pages, last-30-days impact, alerts, and every site with its next step |
 | Plan | What decides indexing on your sites (the model's drivers and accuracy) and every action ranked by expected gain, with one-click handling |
 | Links | The internal-link approval queue: each proposal shows the anchor highlighted in its sentence. Approve, reject, cancel or undo |
 | Alerts | Regressions and Google gains and drops, with acknowledge |
@@ -211,7 +212,7 @@ The app verifies the file is live before using it.
 
 ## Run it every day (Windows Task Scheduler)
 
-The task **"Index Engine"** is already registered. It runs `indexengine.py tick` every 30 minutes with:
+The task **"Index Engine"** is already registered. It runs `indexengine.py tick` every 10 minutes with:
 - `C:\Python312\python.exe` and the working directory set to this folder
 - a catch-up start if the PC was off
 - permission to run on battery

@@ -56,10 +56,10 @@ function rel(iso) {
   return `${Math.round(s / 86400)} days ago`;
 }
 const daysSince = (iso) => (iso ? (Date.now() - new Date(iso).getTime()) / 86400000 : Infinity);
-function toast(msg) {
+function toast(msg, ms = 2600) {
   const t = h("div", { class: "toast", role: "status", text: msg });
   document.body.append(t);
-  setTimeout(() => t.remove(), 2600);
+  setTimeout(() => t.remove(), ms);
 }
 function oddsSpan(p) {
   if (p === null || p === undefined || p === "") return h("span", { class: "muted", text: "–" });
@@ -103,6 +103,11 @@ async function loadSite(site, force) {
   return S.sites[site];
 }
 const setting = (k, dflt) => (S.st.settings[k] ? S.st.settings[k].value : dflt);
+function preset(v, params, keys) {
+  if (!params || v.presetFor === location.hash) return;
+  v.presetFor = location.hash;
+  for (const k of keys) if (params.has(k)) { v[k] = params.get(k); v.page = 0; }
+}
 
 /* ------------------------------------------------------------------ derived numbers */
 function siteNumbers(s) {
@@ -172,6 +177,173 @@ function noData() {
     h("p", { text: "The engine on your PC uploads results after its next run. Use Run now, or wait for the daily run." }));
 }
 
+/* ------------------------------------------------------------------ priorities
+   One ranked to-do list for the whole portfolio: urgent problems first, then quick wins ranked by expected pages
+   indexed per minute of your time, then technical fixes, then content work. Expected gains come from the odds model
+   (simulated "after" odds minus current odds, summed over pages); they are estimates, labelled with "≈". */
+const TIER = ["Urgent", "Quick win", "Technical", "Content"];
+const MIN_PER_PAGE = { add_links: 3, fix_trust: 10, differentiate: 30, expand: 45 };
+const effortText = (m) => (m < 60 ? `${Math.max(1, Math.round(m))} min` : `about ${Math.round(m / 60)} h`);
+const plural = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;
+function requestRate() {
+  const r = (S.summary.impact || {}).requests || {};
+  return r.measured >= 20 ? Math.max(0.03, r.indexed / r.measured) : 0.1;
+}
+function priorities() {
+  const out = [];
+  const add = (o) => out.push({ gain: null, minutes: 5, ...o });
+  const live = S.summary.sites.filter((s) => !s.disabled);
+  const liveSet = new Set(live.map((s) => s.site));
+  const es = engineStatus();
+  const seen = setting("engine_last_seen", null);
+  const bySite = (list) => list.reduce((m, x) => ((m[x.site || "portfolio"] ||= []).push(x), m), {});
+  const downOf = (s) => ((s.counts || {}).SERVER_ERROR || 0) + ((s.counts || {}).FETCH_FAILED || 0);
+  const downHref = (s) => `#/site/${s.site}?bucket=${(s.counts || {}).SERVER_ERROR ? "SERVER_ERROR" : "FETCH_FAILED"}`;
+
+  // ---- urgent
+  if (es.cls === "bad") {
+    add({ tier: 0, title: "Turn on your PC: the engine is offline", minutes: 1, cta: "Runs", href: "#/runs",
+      why: `${seen ? `Last seen ${rel(seen.at)}` : "Never connected"}. Until it runs, no link is applied, no page is submitted or checked.` });
+  }
+  const lastRun = S.st.runs[0];
+  if (lastRun && lastRun.status === "failed") {
+    add({ tier: 0, title: "The last run failed", why: (lastRun.error || "See the log on the Runs page.").slice(0, 160), cta: "See log", href: "#/runs" });
+  }
+  const openAlerts = S.st.alerts.filter((a) => !a.acked);
+  for (const [site, as] of Object.entries(bySite(openAlerts.filter((a) => a.severity === "high")))) {
+    add({ tier: 0, site, title: `${plural(as.length, "urgent alert")} on ${site}`, why: as[0].message, cta: "Open alerts", href: "#/alerts" });
+  }
+  for (const s of live) {
+    const down = downOf(s);
+    if (down && down / Math.max(1, s.urls) >= 0.05) {
+      add({ tier: 0, site: s.site, title: `${plural(down, "page")} on ${s.site} do not answer`, minutes: 15, cta: "See pages", href: downHref(s),
+        why: "Server errors and timeouts make Google slow down crawling of the whole site. Fix the server first." });
+    }
+  }
+
+  // ---- quick wins: ranked by expected pages per minute
+  const proposed = S.st.links.filter((l) => l.status === "proposed" && liveSet.has(l.site));
+  for (const [site, ls] of Object.entries(bySite(proposed))) {
+    const pot = ((S.summary.sites.find((s) => s.site === site) || {}).potential || {}).add_links || {};
+    const perPage = pot.n ? pot.pages / pot.n : 0.05;               // simulated effect of +3 links on one page
+    const perTarget = {};
+    for (const l of ls) perTarget[l.target] = (perTarget[l.target] || 0) + 1;
+    const gain = Object.values(perTarget).reduce((g, k) => g + perPage * Math.min(1, k / 3), 0);
+    add({ tier: 1, site, gain, minutes: Math.max(1, ls.length * 0.5), cta: "Review links", href: `#/links?site=${encodeURIComponent(site)}`,
+      title: `Approve ${plural(ls.length, "internal link")} on ${site}`,
+      why: `They point at ${plural(Object.keys(perTarget).length, "page")} Google has not indexed, from pages it already indexes. ` +
+        "The anchor text is already on your page. Your PC adds approved links within 10 minutes." });
+  }
+  const rate = requestRate();
+  const perDay = setting("manual_queue_per_site", 10) || 10;
+  for (const [site, rs] of Object.entries(bySite(openRequests().filter((r) => liveSet.has(r.site))))) {
+    const today = rs.slice(0, perDay);
+    const gain = today.reduce((g, r) => g + rate * (1 - (r.odds === "" || r.odds === null || r.odds === undefined ? 0.2 : +r.odds)), 0);
+    add({ tier: 1, site, gain, minutes: today.length, cta: "Request", href: `#/requests?site=${encodeURIComponent(site)}`,
+      title: `Request indexing for ${plural(today.length, "page")} on ${site}`,
+      why: `Pages Google has not crawled, or that changed since it did. Search Console takes only about ${perDay} a day per site` +
+        `${rs.length > today.length ? ` (${rs.length - today.length} more wait for the next days)` : ""}.` });
+  }
+
+  // ---- technical
+  for (const [site, as] of Object.entries(bySite(openAlerts.filter((a) => a.severity === "warn")))) {
+    add({ tier: 2, site, title: `${plural(as.length, "warning")} on ${site}`, why: as[0].message, cta: "Open alerts", href: "#/alerts" });
+  }
+  for (const s of live) {
+    if (!s.gsc_property) {
+      add({ tier: 2, site: s.site, title: `Add ${s.site} to Google Search Console`, minutes: 10, cta: "Open Search Console",
+        href: "https://search.google.com/search-console/welcome",
+        why: "Without it the engine cannot see what Google thinks of these pages or submit the sitemap. Verify the domain, then add the engine's " +
+          "service account (client_email in its Google credential file) under Settings → Users and permissions, with Full access." });
+    }
+    if (!s.bing_site) {
+      add({ tier: 2, site: s.site, title: `Add ${s.site} to Bing Webmaster Tools`, minutes: 5, cta: "Open Bing", href: "https://www.bing.com/webmasters",
+        why: "Import it from Search Console (fastest). IndexNow submissions already work without it, but Bing clicks and crawl data need it." });
+    }
+  }
+  for (const f of S.st.fixes.filter((x) => x.status === "open")) {
+    add({ tier: 2, site: f.site, title: f.title, why: (f.detail || "").slice(0, 180), cta: "Open fix", href: "#/fixes" });
+  }
+  for (const s of live) {
+    const fl = s.flags || {};
+    const down = downOf(s);
+    if (down && down / Math.max(1, s.urls) < 0.05) {
+      add({ tier: 2, site: s.site, title: `${plural(down, "page")} on ${s.site} failed to load`, minutes: 10, cta: "See pages", href: downHref(s),
+        why: "Check them: a page that errors for crawlers cannot be indexed." });
+    }
+    if (s.conflicts) {
+      add({ tier: 2, site: s.site, title: `${plural(s.conflicts, "URL")} in the ${s.site} sitemaps ${s.conflicts === 1 ? "is" : "are"} blocked`, minutes: 10,
+        why: "Each one is listed in a sitemap but noindexed, redirected, broken or canonical elsewhere. Mixed signals waste crawl budget.",
+        cta: "See diagnosis", href: `#/site/${s.site}` });
+    }
+    if (fl.NOT_IN_SITEMAP) {
+      add({ tier: 2, site: s.site, title: `${plural(fl.NOT_IN_SITEMAP, "indexable page")} missing from the ${s.site} sitemaps`, minutes: 10,
+        why: "Google finds pages much faster through the sitemap. Check the SEO plugin's sitemap settings for these.",
+        cta: "See pages", href: `#/site/${s.site}?flag=NOT_IN_SITEMAP` });
+    }
+  }
+
+  // ---- content (strategic): ranked by expected pages
+  const CONTENT = {
+    fix_trust: ["Source or remove unverified claims", "Phrasings that read as invented first-hand tests, ratings or statistics. Google weighs this across the whole site."],
+    differentiate: ["Merge or differentiate near-duplicates", "Pages sharing most of their text with another page are what Google most often leaves crawled, not indexed. Check Bing clicks before merging."],
+    expand: ["Add real substance to short pages", "The main content is short. Add first-hand, sourced detail, not filler."],
+    add_links: ["Add internal links by hand", "No natural anchor was found automatically. Link to these from related pages Google already indexes."],
+  };
+  for (const s of live) {
+    const pot = s.potential || {};
+    const linked = new Set(S.st.links.filter((l) => l.site === s.site && ["proposed", "approved", "applied"].includes(l.status)).map((l) => l.target));
+    for (const [action, [title, why]] of Object.entries(CONTENT)) {
+      const p = pot[action];
+      if (!p || !p.n) continue;
+      const n = action === "add_links" ? Math.max(0, p.n - linked.size) : p.n;
+      const gain = p.pages * (n / p.n);
+      if (!n || gain < 0.2) continue;
+      const flag = { fix_trust: "TRUST_RISK", differentiate: "NEAR_DUPLICATE" }[action];   // full lists; the plan holds the top pages
+      add({ tier: 3, site: s.site, gain, minutes: n * MIN_PER_PAGE[action], title: `${title}: ${plural(n, "page")} on ${s.site}`, why,
+        cta: flag ? "See pages" : "Top pages", href: flag ? `#/site/${s.site}?flag=${flag}` : `#/plan?site=${encodeURIComponent(s.site)}&action=${action}` });
+    }
+  }
+  const perMin = (x) => (x.gain === null ? 0 : x.gain / Math.max(1, x.minutes));
+  return out.sort((a, b) => a.tier - b.tier || (a.tier === 1 ? perMin(b) - perMin(a) : a.tier === 3 ? b.gain - a.gain : 0));
+}
+
+function priorityList(items, limit) {
+  const ol = h("ol", { class: "prio" });
+  const gainText = (g) => `≈ +${g < 1 ? g.toFixed(1) : Math.round(g)} ${g >= 0.95 && g < 1.5 ? "page" : "pages"} indexed`;
+  const draw = (n) => ol.replaceChildren(...items.slice(0, n).map((p, i) => h("li", {},
+    h("span", { class: `n t${p.tier}`, text: String(i + 1) }),
+    h("div", { class: "body" },
+      h("div", { class: "ttl", text: p.title }),
+      h("div", { class: "muted small", text: p.why }),
+      h("div", {},
+        h("span", { class: `chip tier t${p.tier}`, text: TIER[p.tier] }),
+        p.gain !== null ? h("span", { class: "chip gain", title: "Expected extra pages in Google's index (model estimate)", text: gainText(p.gain) }) : null,
+        h("span", { class: "chip", text: `⏱ ${effortText(p.minutes)}` }))),
+    h("a", { class: `btn small ${p.tier <= 1 ? "primary" : ""}`, href: p.href,
+      ...(p.href.startsWith("http") ? { target: "_blank", rel: "noopener" } : {}) }, p.cta))));
+  draw(limit);
+  const more = items.length > limit
+    ? h("button", { class: "btn small", onclick: (e) => { draw(items.length); e.target.remove(); } }, `Show all ${items.length}`) : null;
+  return h("div", { class: "stack" }, ol, more);
+}
+
+function funnel(t) {
+  const steps = [
+    ["Found on your sites", t.urls, null],
+    ["Indexable", t.indexable, `${fmt(t.urls - t.indexable)} blocked on purpose or by an error (noindex, redirect, canonical, 4xx/5xx), or not fetched yet`],
+    ["Known to Google", t.knownToGoogle, `${fmt(t.unknown)} unknown to Google · ${fmt(t.nodata)} not inspected yet (2,000 checks a day per site)`],
+    ["Crawled by Google", t.crawledByGoogle, `${fmt(t.discovered)} discovered but not crawled yet`],
+    ["Indexed", t.indexed, `${fmt(t.crawled)} crawled but not indexed: quality, duplication or weak internal links`],
+  ];
+  const max = Math.max(1, t.urls);
+  return h("div", { class: "funnel" }, ...steps.map(([label, v, lost], i) => h("div", { class: "step" },
+    h("div", { class: "row small" }, h("b", { text: label }), h("span", { class: "spacer" }), h("span", { class: "num", text: fmt(v) }),
+      i ? h("span", { class: "muted tiny", text: `${pct(v / Math.max(1, steps[i - 1][1]))} of previous` }) : null),
+    h("div", { class: "fbar" }, h("span", { class: i === steps.length - 1 ? "ok" : null, style: { width: `${Math.max(0.5, (v / max) * 100)}%` } })),
+    lost ? h("div", { class: "muted tiny", text: lost }) : null)));
+}
+
 function viewOverview() {
   if (!S.summary) return noData();
   const sites = S.summary.sites.map((s) => ({ s, n: siteNumbers(s) }));
@@ -179,17 +351,32 @@ function viewOverview() {
     for (const k of Object.keys(n)) if (typeof n[k] === "number") a[k] = (a[k] || 0) + n[k];
     return a;
   }, {});
+  t.indexable = sites.reduce((a, { s }) => a + Object.entries(s.counts || {}).reduce((x, [k, v]) => x + (BLOCKERS.has(k) || k === "NOT_CHECKED" ? 0 : v), 0), 0);
+  t.knownToGoogle = t.indexed + t.crawled + t.discovered + t.stale;
+  t.crawledByGoogle = t.indexed + t.crawled + t.stale;
   const lastRun = S.st.runs[0];
   const queued = S.st.commands.find((c) => c.status === "pending" || c.status === "running");
-  const reqs = openRequests();
-  const openFixes = S.st.fixes.filter((f) => f.status === "open").length;
+  const todo = priorities();
+  const es = engineStatus();
 
   const kpi = (v, l, cls) => h("div", { class: "card kpi" }, h("div", { class: `v ${cls || ""}`, text: v }), h("div", { class: "l", text: l }));
   const head = h("div", { class: "row" }, h("h1", { text: "Portfolio" }), h("span", { class: "spacer" }),
+    h("span", { class: "pill" }, h("span", { class: `dot ${es.cls}` }), `Engine: ${es.text}`),
     h("span", { class: "pill" }, h("span", { class: `dot ${lastRun && lastRun.status === "failed" ? "bad" : "ok"}` }),
       lastRun ? `Last run ${rel(lastRun.finished_at || lastRun.started_at)} · ${lastRun.status}` : "No runs yet"),
     queued ? h("span", { class: "pill" }, h("span", { class: "dot warn" }), `Run ${queued.status} (queued ${rel(queued.created_at)})`) : null,
     h("span", { class: "pill muted", text: `Data from ${rel(S.summary.generated_at)}` }));
+
+  const quick = todo.filter((p) => p.tier <= 1);
+  const quickGain = quick.reduce((g, p) => g + (p.gain || 0), 0);
+  const quickMin = quick.reduce((m, p) => m + p.minutes, 0);
+  const prioCard = h("div", { class: "card stack prio-card" },
+    h("div", { class: "row" }, h("h2", { text: "Your priorities", style: { margin: "0" } }), h("span", { class: "spacer" }),
+      quick.length ? h("span", { class: "muted small", text: `Urgent and quick wins: ${effortText(quickMin)} of your time, ≈ +${quickGain.toFixed(1)} pages indexed` }) : null),
+    todo.length ? priorityList(todo, 8)
+      : h("p", { class: "muted", text: "Nothing needs you right now. The engine keeps submitting, checking and watching every page." }),
+    h("div", { class: "muted tiny", text: "Ranked: urgent problems first, then quick wins by expected pages per minute, then technical fixes, then content work by expected pages. " +
+      "Submissions, inspections, re-checks and approved links run on their own; this list is only what needs you." }));
 
   const kpis = h("div", { class: "grid kpis" },
     kpi(fmt(t.urls), "URLs found on your sites"),
@@ -197,31 +384,21 @@ function viewOverview() {
     kpi(fmt(t.crawled), "Crawled, not indexed", "bad"),
     kpi(fmt(t.discovered + t.unknown), "Discovered or unknown"),
     kpi(fmt(t.conflicts), "In a sitemap but blocked", t.conflicts ? "warn" : ""),
-    kpi(fmt(t.excluded), "Kept out on purpose"),
     kpi(fmt(t.earners), "Pages earning Bing clicks"),
   );
 
-  const waitingLinks = S.st.links.filter((l) => l.status === "proposed").length;
-  const openAlerts = S.st.alerts.filter((a) => !a.acked);
-  const next = h("div", { class: "card stack" }, h("h2", { text: "Today" }),
-    h("div", {}, h("a", { href: "#/requests", text: `${reqs.length} pages to request in Search Console` }),
-      h("div", { class: "muted small", text: "Manual, about 10 a day per property. Ranked by expected gain." })),
-    h("div", {}, h("a", { href: "#/links", text: `${waitingLinks} internal links waiting for your approval` }),
-      h("div", { class: "muted small", text: "Natural anchors already in your text; your PC applies approved ones." })),
-    h("div", {}, h("a", { href: "#/fixes", text: `${openFixes} open fixes` })),
-    h("div", { class: "small muted", text: `Engine: ${engineStatus().text}` }));
-
   const imp = S.summary.impact || {};
-  const rate = (a, b) => (a ? `${b} of ${a} (${pct(b / a)})` : "not measured yet");
+  const rateTxt = (a, b) => (a ? `${b} of ${a} (${pct(b / a)})` : "not measured yet");
   const impact = h("div", { class: "card stack" }, h("h2", { text: `Last ${imp.days || 30} days` }),
     h("div", { class: "row" },
       h("div", { class: "kpi" }, h("div", { class: "v good", text: `+${fmt(imp.gained || 0)}` }), h("div", { class: "l", text: "entered Google's index" })),
       h("span", { class: "spacer" }),
       h("div", { class: "kpi" }, h("div", { class: "v bad", text: `−${fmt(imp.lost || 0)}` }), h("div", { class: "l", text: "dropped out" }))),
-    h("div", { class: "small" }, h("b", { text: "Requests: " }), rate((imp.requests || {}).measured, (imp.requests || {}).indexed), " indexed within 7+ days"),
-    h("div", { class: "small" }, h("b", { text: "New links: " }), rate((imp.links || {}).measured, (imp.links || {}).indexed), " targets indexed"),
-    h("div", { class: "small" }, h("b", { text: "Bing: " }), rate((imp.bing || {}).measured, (imp.bing || {}).crawled_or_shown), " submitted URLs crawled or shown"));
+    h("div", { class: "small" }, h("b", { text: "Requests: " }), rateTxt((imp.requests || {}).measured, (imp.requests || {}).indexed), " indexed within 7+ days"),
+    h("div", { class: "small" }, h("b", { text: "New links: " }), rateTxt((imp.links || {}).measured, (imp.links || {}).indexed), " targets indexed"),
+    h("div", { class: "small" }, h("b", { text: "Bing: " }), rateTxt((imp.bing || {}).measured, (imp.bing || {}).crawled_or_shown), " submitted URLs crawled or shown"));
 
+  const openAlerts = S.st.alerts.filter((a) => !a.acked);
   const alertCard = h("div", { class: "card stack" }, h("h2", {}, "Alerts ", openAlerts.length ? h("span", { class: "badge", text: String(openAlerts.length) }) : null),
     openAlerts.length ? h("ul", { class: "plain" }, ...openAlerts.slice(0, 4).map((a) => h("li", { class: "alert-row small" },
       h("span", { class: `sev ${a.severity}` }), h("span", {}, h("b", { text: `${a.site || ""} ` }), a.message))))
@@ -229,31 +406,38 @@ function viewOverview() {
     h("a", { href: "#/alerts", class: "small", text: "All alerts →" }));
 
   const acts = (S.summary.actions || []).slice(0, 5);
-  const actCard = h("div", { class: "card stack" }, h("h2", { text: "Best next actions" }),
+  const actCard = h("div", { class: "card stack" }, h("h2", { text: "Top pages to work on" }),
     acts.length ? h("ul", { class: "plain" }, ...acts.map((a) => h("li", { class: "small" },
       h("b", { text: ACTION_SHORT[a.action] || a.action }), " · ", h("a", { href: a.url, target: "_blank", rel: "noopener", text: a.title || a.url }),
       h("div", { class: "muted tiny" }, `${a.site} · odds `, oddsSpan(a.p_now), h("span", { class: "arrow", text: "→" }), oddsSpan(a.p_after)))))
       : h("p", { class: "muted small", text: "Appears after a run with Google data." }),
     h("a", { href: "#/plan", class: "small", text: "Full plan →" }));
 
+  const lever = (site) => todo.find((p) => p.site === site);
+  const short = (title, site) => title.replace(` on ${site}`, "").replace(` in the ${site} sitemaps`, " in its sitemaps").replace(` from the ${site} sitemaps`, " from its sitemaps");
   const table = h("table", {},
-    h("thead", {}, h("tr", {}, ...["Site", "URLs", "States", "Indexed", "Share", "Crawled", "Unknown", "Conflicts", "Bing earners"].map((x, i) =>
-      h("th", { class: i && i !== 2 ? "n" : null, text: x })))),
-    h("tbody", {}, ...sites.map(({ s, n }) => h("tr", { class: "click", onclick: () => (location.hash = `#/site/${s.site}`) },
-      h("td", {}, h("a", { href: `#/site/${s.site}`, text: s.site }), s.disabled ? h("span", { class: "chip", text: " paused" }) : null),
-      h("td", { class: "n", text: fmt(n.urls) }),
-      h("td", {}, bucketBar(s.counts || {})),
-      h("td", { class: "n good", text: fmt(n.indexed) }),
-      h("td", { class: "n", text: pct(n.share) }),
-      h("td", { class: "n", text: fmt(n.crawled) }),
-      h("td", { class: "n", text: fmt(n.unknown) }),
-      h("td", { class: `n ${n.conflicts ? "warn" : ""}`, text: fmt(n.conflicts) }),
-      h("td", { class: "n", text: fmt(n.earners) }),
-    ))));
+    h("thead", {}, h("tr", {}, ...["Site", "URLs", "States", "Indexed", "Share", "Crawled", "Unknown", "Next step"].map((x, i) =>
+      h("th", { class: i && i !== 2 && i !== 7 ? "n" : null, text: x })))),
+    h("tbody", {}, ...sites.map(({ s, n }) => {
+      const lv = lever(s.site);
+      return h("tr", { class: "click", onclick: () => (location.hash = `#/site/${s.site}`) },
+        h("td", {}, h("a", { href: `#/site/${s.site}`, text: s.site }), s.disabled ? h("span", { class: "chip", text: " paused" }) : null),
+        h("td", { class: "n", text: fmt(n.urls) }),
+        h("td", {}, bucketBar(s.counts || {})),
+        h("td", { class: "n good", text: fmt(n.indexed) }),
+        h("td", { class: "n", text: pct(n.share) }),
+        h("td", { class: "n", text: fmt(n.crawled) }),
+        h("td", { class: "n", text: fmt(n.unknown) }),
+        h("td", { class: "small lever" }, lv ? h("a", { href: lv.href, onclick: (e) => e.stopPropagation(), text: short(lv.title, s.site),
+          ...(lv.href.startsWith("http") ? { target: "_blank", rel: "noopener" } : {}) })
+          : h("span", { class: "muted", text: s.disabled ? "paused" : "nothing pending" })));
+    })));
 
-  return h("div", {}, head, kpis, h("div", { class: "cols" },
-    h("div", { class: "card" }, h("h2", { text: "Google indexed share of checked URLs" }), trendChart()), next),
-    h("div", { class: "grid kpis", style: { gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" } }, actCard, impact, alertCard),
+  return h("div", { class: "stack" }, head, prioCard, kpis,
+    h("div", { class: "cols" },
+      h("div", { class: "card" }, h("h2", { text: "Google indexed share of checked URLs" }), trendChart()),
+      h("div", { class: "card" }, h("h2", { text: "Where pages get stuck" }), funnel(t))),
+    h("div", { class: "grid kpis", style: { gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", margin: "0" } }, actCard, impact, alertCard),
     h("h3", { text: "Sites" }), h("div", { class: "tablewrap" }, table));
 }
 
@@ -276,12 +460,13 @@ function trendChart() {
     svg("text", { x: W - P - 60, y: H - 4 }, new Date(t1).toLocaleDateString()));
 }
 
-async function viewSite(site) {
+async function viewSite(site, params) {
   const meta = S.summary && S.summary.sites.find((s) => s.site === site);
   if (!meta) return h("div", { class: "card empty", text: `No data for ${site} yet.` });
   const data = await loadSite(site);
   if (!data) return h("div", { class: "card empty", text: `No URL data for ${site} yet.` });
   const v = (S.view[site] ||= { bucket: "", flag: "", q: "", ignored: false, page: 0, open: null });
+  preset(v, params, ["bucket", "flag"]);
   const col = Object.fromEntries(data.cols.map((c, i) => [c, i]));
   const n = siteNumbers(meta);
   const wrap = h("div", {});
@@ -407,11 +592,12 @@ async function markUrl(url, site, action) {
   S.urlState.set(url, res.url_state);
 }
 
-function viewPlan() {
+function viewPlan(params) {
   if (!S.summary) return noData();
   const m = S.summary.model || {};
   const acts = S.summary.actions || [];
   const v = (S.view.__plan ||= { site: "", action: "" });
+  preset(v, params, ["site", "action"]);
   const props = Object.fromEntries(S.summary.sites.map((s) => [s.site, s.gsc_property]));
   const byTarget = {};
   for (const l of S.st.links) (byTarget[l.target] ||= []).push(l);
@@ -468,41 +654,77 @@ function viewPlan() {
 
 function viewLinks(params) {
   const v = (S.view.__links ||= { tab: "proposed", site: "" });
+  preset(v, params, ["site", "tab"]);
   const target = params.get("target");
   const groups = { proposed: ["proposed"], approved: ["approved", "undo"], applied: ["applied"], other: ["rejected", "failed", "undone"] };
   const all = S.st.links.filter((l) => (!v.site || l.site === v.site) && (!target || l.target === target));
   const shown = all.filter((l) => groups[v.tab].includes(l.status));
-  const act = async (ids, action) => {
+  const seen = setting("engine_last_seen", null);
+  const pcNote = seen ? `your PC (last seen ${rel(seen.at)}) adds it within 10 minutes` : "your PC adds it on its next check";
+  const act = async (ids, action, btn) => {
+    const label = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = { approve: "Approving…", undo: "Queuing undo…" }[action] || "Saving…"; }
     try {
       const r = await api.post("/api/link", { ids, action });
-      for (const l of S.st.links) if (ids.includes(l.id) && r.changed) l.status = r.status;
-      toast(`${r.changed} link${r.changed === 1 ? "" : "s"}: ${r.status}`);
+      if (r.changed) for (const l of S.st.links) if (ids.includes(l.id)) l.status = r.status;
+      const n = `${r.changed} link${r.changed === 1 ? "" : "s"}`;
+      toast(!r.changed ? "Nothing changed: reload the page, the list was out of date"
+        : action === "approve" ? `Approved ${n}: ${pcNote}`
+        : action === "undo" ? `Undo queued for ${n}: ${pcNote.replace("adds it", "removes it")}` : `${n}: ${r.status}`, 5000);
       renderChrome();
       render();
-    } catch (e) { toast(e.message); }
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = label; }
+      toast(`Not saved: ${e.message}`, 6000);
+    }
   };
   const autopilot = setting("link_autopilot", false);
   const cap = setting("links_per_site_per_day", 5);
-  const card = (l) => h("div", { class: "card stack" },
-    h("div", { class: "row small" }, h("span", { class: "chip", text: l.site }), h("span", { class: "chip", text: l.status }),
-      l.gain ? h("span", { class: "muted tiny", text: `expected gain ${(+l.gain).toFixed(2)}` }) : null),
-    h("div", {}, "On ", h("a", { href: l.source, target: "_blank", rel: "noopener", text: l.source_title || l.source }),
-      h("span", { class: "arrow", text: " link to " }), h("a", { href: l.target, target: "_blank", rel: "noopener", text: l.target_title || l.target })),
-    h("div", { class: "small muted" }, "“", ...markIn(l.context, l.anchor), "”"),
-    l.result ? h("div", { class: `tiny ${l.status === "failed" ? "bad" : "muted"}`, text: l.result }) : null,
-    h("div", { class: "row" },
-      l.status === "proposed" ? [h("button", { class: "btn small primary", onclick: () => act([l.id], "approve") }, "Approve"),
-        h("button", { class: "btn small", onclick: () => act([l.id], "reject") }, "Reject")] : null,
-      l.status === "approved" ? h("button", { class: "btn small", onclick: () => act([l.id], "cancel") }, "Cancel") : null,
-      l.status === "applied" ? h("button", { class: "btn small", onclick: () => act([l.id], "undo") }, "Undo") : null,
-      ["rejected", "failed", "undone"].includes(l.status) ? h("button", { class: "btn small", onclick: () => act([l.id], "reopen") }, "Reopen") : null));
+  const live = (l) => /visible to visitors/.test(l.result || "");
+  const pending = (l) => l.status === "applied" && !live(l);
+  const seeIt = (l) => `${l.source}${l.source.includes("?") ? "&" : "?"}nc=${Date.now().toString(36)}#:~:text=${encodeURIComponent(l.anchor || "")}`;
+  const state = (l) => l.status === "applied" ? (live(l) ? ["ok", "live for visitors"] : ["warn", "in WordPress, cache refreshing"])
+    : l.status === "approved" ? ["warn", "waiting for your PC"] : l.status === "undo" ? ["warn", "undo waiting for your PC"]
+    : l.status === "failed" ? ["bad", "failed"] : [null, l.status];
+  const card = (l) => {
+    const [cls, txt] = state(l);
+    return h("div", { class: "card stack" },
+      h("div", { class: "row small" }, h("span", { class: "chip", text: l.site }),
+        h("span", { class: "pill" }, cls ? h("span", { class: `dot ${cls}` }) : null, txt),
+        l.applied_at ? h("span", { class: "muted tiny", text: `applied ${rel(l.applied_at)}` }) : null,
+        l.gain ? h("span", { class: "muted tiny", text: `expected gain ${(+l.gain).toFixed(2)}` }) : null),
+      h("div", {}, "On ", h("a", { href: l.source, target: "_blank", rel: "noopener", text: l.source_title || l.source }),
+        h("span", { class: "arrow", text: " link to " }), h("a", { href: l.target, target: "_blank", rel: "noopener", text: l.target_title || l.target })),
+      h("div", { class: "small muted" }, "“", ...markIn(l.context, l.anchor), "”"),
+      l.result ? h("div", { class: `tiny ${l.status === "failed" ? "bad" : "muted"}`, text: l.result }) : null,
+      h("div", { class: "row" },
+        l.status === "proposed" ? [h("button", { class: "btn small primary", onclick: (e) => act([l.id], "approve", e.currentTarget) }, "Approve"),
+          h("button", { class: "btn small", onclick: (e) => act([l.id], "reject", e.currentTarget) }, "Reject")] : null,
+        l.status === "approved" ? h("button", { class: "btn small", onclick: (e) => act([l.id], "cancel", e.currentTarget) }, "Cancel") : null,
+        l.status === "applied" ? [h("a", { class: "btn small", href: seeIt(l), target: "_blank", rel: "noopener",
+          title: "Opens the page past the cache, scrolled to the linked words" }, "See it on the page"),
+          h("button", { class: "btn small", onclick: (e) => act([l.id], "undo", e.currentTarget) }, "Undo")] : null,
+        ["rejected", "failed", "undone"].includes(l.status) ? h("button", { class: "btn small", onclick: (e) => act([l.id], "reopen", e.currentTarget) }, "Reopen") : null));
+  };
+  const noPurge = S.st.links.some((l) => pending(l) && /cached copy/.test(l.result || "") && !/purge: purged/.test(l.result || ""));
+  const waiting = S.st.links.filter((l) => l.status === "approved" || l.status === "undo").length;
   return h("div", { class: "stack" }, h("h1", { text: "Internal links" }),
     h("div", { class: "card small stack" },
       h("div", {}, "Links from pages Google already indexes are the strongest lever for pages Google knows but won't index. Each proposal links a phrase that ",
         h("b", { text: "already exists" }), " in the source page's text; nothing else on the page changes."),
-      h("div", {}, `Your PC applies approved links within 30 minutes: at most ${cap} per site per day, with a backup, a live check and Undo. `,
+      h("div", {}, `Approve a link and your PC adds it within 10 minutes: at most ${cap} per site per day, with a backup, a check of the page and Undo. `,
         `Autopilot is ${autopilot ? "ON (it also applies the best proposals itself, except on gearuptofit)" : "off (only links you approve are applied)"}. `,
         h("a", { href: "#/settings", text: "Settings" }))),
+    waiting ? h("div", { class: "card small note" }, h("b", { text: `${waiting} waiting for your PC. ` }),
+      seen ? `It last checked in ${rel(seen.at)} and checks every 10 minutes while it is on.` : "It has not checked in yet.") : null,
+    noPurge ? h("div", { class: "card small note stack" },
+      h("div", {}, h("b", { text: "Links are in WordPress, but Cloudflare keeps serving the old copy of those pages for up to 4 hours. " }),
+        "Visitors and Google see a link once the cache refreshes; each card says when. To make links show at once, let the engine clear the cache of just that page:"),
+      h("ol", { class: "tight" },
+        h("li", {}, "Cloudflare dashboard → My Profile → API Tokens."),
+        h("li", {}, "Edit the token you made for the Index Engine."),
+        h("li", {}, "Permissions → Add: Zone · Cache Purge · Purge. Zone resources: All zones from the account."),
+        h("li", {}, "Continue to summary → Update token. Nothing else to change: the engine picks it up on the next link."))) : null,
     target ? h("div", { class: "row small" }, h("span", { text: `Showing links to ${target}` }), h("a", { href: "#/links", text: "show all" })) : null,
     h("div", { class: "row" },
       h("div", { class: "seg-ctl" }, ...Object.keys(groups).map((k) => h("button", { type: "button", class: v.tab === k ? "on" : null,
@@ -510,9 +732,9 @@ function viewLinks(params) {
       h("select", { "aria-label": "Site", onchange: (e) => { v.site = e.target.value; render(); } },
         h("option", { value: "", text: "All sites" }), ...[...new Set(S.st.links.map((l) => l.site))].map((s) => h("option", { value: s, selected: v.site === s, text: s }))),
       h("span", { class: "spacer" }),
-      v.tab === "proposed" && shown.length ? h("button", { class: "btn small", onclick: () => act(shown.slice(0, 100).map((l) => l.id), "approve") },
+      v.tab === "proposed" && shown.length ? h("button", { class: "btn small", onclick: (e) => act(shown.slice(0, 100).map((l) => l.id), "approve", e.currentTarget) },
         `Approve all ${Math.min(100, shown.length)} shown`) : null),
-    shown.length ? shown.map(card) : h("div", { class: "card empty", text: "Nothing here." }));
+    shown.length ? shown.map(card) : h("div", { class: "card empty", text: v.tab === "proposed" ? "No proposals waiting. New ones appear after the daily run." : "Nothing here." }));
 }
 
 function viewAlerts() {
@@ -530,9 +752,10 @@ function viewAlerts() {
       : h("div", { class: "card empty", text: "No alerts yet." }));
 }
 
-function viewRequests() {
+function viewRequests(params) {
   if (!S.summary) return noData();
-  const open = openRequests();
+  const only = params.get("site");
+  const open = openRequests().filter((r) => !only || r.site === only);
   const done = S.summary.requests.filter((r) => { const u = S.urlState.get(r.url); return u && daysSince(u.requested_at) < REQUEUE_DAYS; });
   const props = Object.fromEntries(S.summary.sites.map((s) => [s.site, s.gsc_property]));
   const mark = async (r, action) => {
@@ -552,6 +775,7 @@ function viewRequests() {
         h("button", { class: "btn small primary", onclick: () => mark(r, "requested") }, "Done")]);
   return h("div", { class: "stack" },
     h("h1", { text: "Request indexing" }),
+    only ? h("div", { class: "row small" }, h("span", { text: `Showing ${only}` }), h("a", { href: "#/requests", text: "show all sites" })) : null,
     h("p", { class: "muted", text: "Search Console's Request indexing button has no API and a small daily limit (about 10 per property). " +
       "This list holds only pages where a request can help: Google has never seen them, they were fixed since Google's last look, or they changed after Google crawled them. " +
       "Open each one, click Request indexing in Search Console, then mark it done here. Done pages stay off the list for 14 days." }),
@@ -637,10 +861,10 @@ function viewSettings() {
       h("div", { class: "muted tiny", text: "Unticked sites are skipped by scheduled and queued runs." })),
     h("div", { class: "card stack" }, h("h2", { text: "Engine" }),
       h("label", { class: "chk" }, paused, "Pause all submissions (Bing, IndexNow, Search Console sitemaps)"),
-      field("Daily run time on your PC", time, "The engine checks every 30 minutes and runs once a day after this time. Google's inspection quota resets at midnight Pacific (10:00 in Greece)."),
+      field("Daily run time on your PC", time, "The engine checks every 10 minutes and runs once a day after this time. Google's inspection quota resets at midnight Pacific (10:00 in Greece)."),
       field("Request-indexing list size per site", queue, "Search Console allows roughly 10 manual requests a day per property."),
       field("Max URL inspections per site per run", inspect, "Leave empty to use the full daily quota (about 1,950)."),
-      h("label", { class: "chk" }, freshChk, "Fresh-content autopilot: every 30 minutes, find new or updated posts and get them audited, inspected and submitted within minutes"),
+      h("label", { class: "chk" }, freshChk, "Fresh-content autopilot: every 10 minutes, find new or updated posts and get them audited, inspected and submitted within minutes"),
       h("div", {}, h("button", { class: "btn primary", onclick: save }, "Save settings"))),
     h("div", { class: "card stack" }, h("h2", { text: "Internal links" }),
       field("Links applied per site per day (max 10)", linkCap, "Approved links beyond this wait for the next day. 0 pauses link changes."),
@@ -662,11 +886,11 @@ async function render() {
   setTab(route === "site" ? "" : route || "");
   try {
     let node;
-    if (route === "site" && arg) node = await viewSite(decodeURIComponent(arg));
-    else if (route === "plan") node = viewPlan();
+    if (route === "site" && arg) node = await viewSite(decodeURIComponent(arg), params);
+    else if (route === "plan") node = viewPlan(params);
     else if (route === "links") node = viewLinks(params);
     else if (route === "alerts") node = viewAlerts();
-    else if (route === "requests") node = viewRequests();
+    else if (route === "requests") node = viewRequests(params);
     else if (route === "fixes") node = viewFixes();
     else if (route === "runs") node = viewRuns();
     else if (route === "settings") node = viewSettings();
@@ -696,7 +920,7 @@ document.getElementById("run-form").addEventListener("submit", async (e) => {
   };
   try {
     const r = await api.post("/api/command", { kind: "run", options });
-    toast(r.note || "Run queued. Your PC picks it up within 30 minutes.");
+    toast(r.note || "Run queued. Your PC picks it up within 10 minutes.");
     await loadAll();
     render();
   } catch (err) { toast(err.message); }

@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """Shape one run's results for the dashboard: a portfolio summary (with the model's view, best next actions and
 measured impact) plus one compact URL table per site."""
+from collections import Counter
+
 from . import config, report
+from .triage import BLOCKERS
 
 COLS = ["url", "bucket", "flags", "reason", "action", "value", "google", "bing", "kind", "in_sitemap", "words", "title",
         "odds", "why", "trust"]
@@ -31,6 +34,9 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             "gsc_property": meta.get("gsc_property"), "bing_site": meta.get("bing_site"), "submitted_total": n_sub,
             "disabled": site in disabled, "wp": bool(meta.get("wp")),
             "trust_risk": sum(1 for r in rows if "TRUST_RISK" in (r["flags"] or "")),
+            "flags": dict(Counter(f for r in rows if r["bucket"] not in BLOCKERS and "IGNORED" not in (r["flags"] or "")
+                                  for f in (r["flags"] or "").split(",") if f)),
+            "potential": (intel.get("potential") or {}).get(site, {}),
             "diagnosis": [[k, m] for k, m in res["diagnosis"]],
             "sitemaps": [{k: sm.get(k) for k in ("path", "lastDownloaded", "errors", "warnings")} for sm in meta.get("gsc_sitemaps") or []],
         })

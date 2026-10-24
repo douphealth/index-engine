@@ -20,10 +20,13 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from . import config
+import requests
+
+from . import config, store
 from .triage import STOP, clean_title
-from .util import get, log, now_iso
+from .util import SECRETS, bare_host, get, log, now_iso
 
 STRICT_SITES = {"gearuptofit.com"}
 MAX_PER_DAY = 10
@@ -185,21 +188,102 @@ def _df(titles, site):
 
 
 def _log_change(site, line):
+    """gearuptofit: newest-first entry under today's heading in CHANGELOG-AGENTS.md (its rules require it)."""
     if site == "gearuptofit.com":
         p = config.PORTFOLIO / "01-gearuptofit" / "CHANGELOG-AGENTS.md"
         if p.exists():
             txt = p.read_text(encoding="utf-8")
+            head = f"## {dt.datetime.now(dt.timezone.utc).date().isoformat()} (Index Engine link autopilot)\n\n"
             marker = "Read this before you start: it is how the next agent learns what the last one did.\n"
-            if marker in txt:
-                day = dt.date.today().isoformat()
-                head = f"\n## {day} (Index Engine link autopilot)\n\n"
-                txt = txt.replace(marker, marker + head + line + "\n", 1)
+            if head in txt:
+                txt = txt.replace(head, head + line + "\n", 1)
+            elif marker in txt:
+                txt = txt.replace(marker, marker + "\n" + head + line + "\n", 1)
+            else:
+                txt = None
+            if txt is not None:
                 p.write_text(txt, encoding="utf-8")
                 return
     p = config.OUT / "changes.md"
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
+
+
+CF_API = "https://api.cloudflare.com/client/v4"
+EDGE_HOURS = 4          # longest edge-cache lifetime seen on these sites (gearuptofit AGENTS.md: about 4 h)
+
+
+def purge(db, site, urls):
+    """Clear Cloudflare's cached copy of these URLs, with the app's own token only (never other credentials).
+    Returns 'purged' or why not. Needs the token to carry Zone > Cache Purge."""
+    try:
+        tok = config.CF_TOKEN_FILE.read_text(encoding="utf-8").split()[-1]
+    except (OSError, IndexError):
+        return "no app token"
+    SECRETS.append(tok)
+    h = {"Authorization": f"Bearer {tok}"}
+    try:
+        zid = store.get_meta(db, site).get("cf_zone")
+        if not zid:
+            z = requests.get(f"{CF_API}/zones", headers=h, params={"name": bare_host(urlsplit(config.site_base(site)).netloc)},
+                             timeout=30).json().get("result") or []
+            if not z:
+                return "the site is not on this Cloudflare account"
+            zid = z[0]["id"]
+            store.set_meta(db, site, cf_zone=zid)
+        r = requests.post(f"{CF_API}/zones/{zid}/purge_cache", headers=h, json={"files": urls}, timeout=30).json()
+        if r.get("success"):
+            return "purged"
+        msg = str((r.get("errors") or [{}])[0].get("message", ""))[:80]
+        return "not permitted (add Cache Purge to the app token)" if "auth" in msg.lower() or "permission" in msg.lower() else f"failed: {msg}"
+    except Exception as e:
+        return f"failed ({type(e).__name__})"
+
+
+def visible_to_visitors(source, target):
+    """Is the link on the page visitors and crawlers get (the plain URL, through any edge cache)?"""
+    try:
+        r = get(source, timeout=(10, 60))
+        return links_to(r.text, target), r.headers.get("cf-cache-status"), r.headers.get("age")
+    except Exception as e:
+        return False, f"error {type(e).__name__}", None
+
+
+def cached_msg(cache, age, purged=None):
+    """Honest status for a link that is in WordPress but not yet in the copy Cloudflare serves."""
+    try:
+        cached_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=int(age))
+    except (TypeError, ValueError):
+        cached_at = dt.datetime.now(dt.timezone.utc)
+    eta = (cached_at + dt.timedelta(hours=EDGE_HOURS)).strftime("%H:%M UTC")
+    return (f"applied; live in WordPress, but Cloudflare still serves an older cached copy (cache {cache}). "
+            f"Visitors and Google see it by about {eta}" + (f". Cache purge: {purged}" if purged else ""))
+
+
+def recheck(db, report):
+    """Links applied in the last 2 days but not yet seen by visitors: look again, and say so when they are."""
+    rows = db.execute("""SELECT *, julianday('now') - julianday(applied_at) AS days FROM link_ops
+                         WHERE status='applied' AND COALESCE(result,'') NOT LIKE '%visible to visitors%'
+                         AND julianday('now') - julianday(applied_at) < 3""").fetchall()
+    for op in rows:
+        seen, cache, age = visible_to_visitors(op["source"], op["target"])
+        if not seen and cache in ("HIT", "STALE", "UPDATING", "REVALIDATED") and purge(db, op["site"], [op["source"]]) == "purged":
+            time.sleep(2)                                # e.g. Cache Purge was added to the token since the link went in
+            seen, cache, age = visible_to_visitors(op["source"], op["target"])
+        if seen:
+            msg = f"applied; visible to visitors (checked {now_iso()[11:16]} UTC)"
+            log(f"[links] now visible to visitors: {op['source']} -> {op['target']}")
+        elif op["days"] >= 2:
+            msg = "applied in WordPress, but still not on the page visitors get after 2 days: open the post and check it"
+        elif cache in ("HIT", "STALE", "UPDATING", "REVALIDATED"):
+            msg = cached_msg(cache, age)
+        else:
+            continue
+        if msg[:40] != (op["result"] or "")[:40]:          # report changes of state, not a re-estimated minute
+            db.execute("UPDATE link_ops SET result=? WHERE id=?", (msg, op["id"]))
+            report(op["id"], "applied", msg, op["applied_at"])
+    db.commit()
 
 
 def _site_guard_check():
@@ -272,20 +356,28 @@ def _apply_one(db, lk, wpc):
         after, _ = wpc.raw(*loc)
         if f'<a href="{lk["target"]}">{raw[s:e]}</a>' not in after:
             return False, "saved, but the link is not in the stored content (check the post)"
-        live = "pending cache"
-        for _ in range(2):
+        fresh = False
+        for _ in range(2):                       # the server's own copy (cache bypassed)
             try:
-                page = get(f"{lk['source']}?_ie={int(time.time())}", timeout=(10, 60)).text
-                if links_to(page, lk["target"]):
-                    live = "visible"
+                fresh = links_to(get(f"{lk['source']}?nc={int(time.time())}", timeout=(10, 60)).text, lk["target"])
+                if fresh:
                     break
             except Exception:
                 pass
             time.sleep(3)
+        purged = purge(db, lk["site"], [lk["source"]])
+        time.sleep(2)
+        seen, cache, age = visible_to_visitors(lk["source"], lk["target"])
+        if seen:
+            msg = "applied; visible to visitors"
+        elif fresh:
+            msg = cached_msg(cache, age, purged)
+        else:
+            msg = "applied in WordPress; the page has not picked it up yet (page cache). Re-checked every tick"
         db.execute("INSERT OR REPLACE INTO link_ops VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (lk["id"], lk["site"], lk["source"], lk["target"], raw[s:e], loc[0], loc[1], "applied", now_iso(),
-                    str(bk), f"live: {live}"))
-        return True, f"applied; live page: {live}"
+                    str(bk), msg))
+        return True, msg
     except Exception as e:
         return False, f"{type(e).__name__}: {str(e)[:160]}"
 
@@ -302,7 +394,8 @@ def _undo(db, lk, wpc, report):
             report(lk["id"], "undone", "the link was already gone", None)
         else:
             wpc.update(op["post_id"], op["post_type"], raw.replace(added, op["anchor"], 1))
-            report(lk["id"], "undone", "link removed", None)
+            purged = purge(db, lk["site"], [op["source"]])
+            report(lk["id"], "undone", f"link removed (cache purge: {purged})", None)
         db.execute("UPDATE link_ops SET status='undone' WHERE id=?", (lk["id"],))
         _log_change(lk["site"], f"- {now_iso()[:16]}Z | Index Engine link autopilot | UNDO: removed the link {op['source']} -> {op['target']}")
     except Exception as e:

@@ -240,7 +240,8 @@ FALLBACK_RISE = {"add_links": 0.08, "differentiate": 0.06, "expand": 0.05, "fix_
 
 
 def score(db, request_rate=0.1, max_actions=80, per_site=12):
-    """Train, write odds/why into triage, and return (model meta, best actions, {url: request gain})."""
+    """Train, write odds/why into triage, and return (model meta, best actions, {url: request gain},
+    potential {site: {action: {"n": pages, "pages": expected extra indexed pages}}} over ALL candidates, not just the best)."""
     recs = frame(db)
     m, meta = train(recs)
     usable = m is not None and meta.get("quality") in ("good", "fair")
@@ -280,6 +281,11 @@ def score(db, request_rate=0.1, max_actions=80, per_site=12):
                             "gain": round(weight * (after - float(p)), 4)})
     db.commit()
     actions.sort(key=lambda a: -a["gain"])
+    potential = defaultdict(lambda: defaultdict(lambda: {"n": 0, "pages": 0.0}))
+    for a in actions:
+        t = potential[a["site"]][a["action"]]
+        t["n"] += 1
+        t["pages"] = round(float(t["pages"] + a["p_after"] - a["p_now"]), 3)
     picked, n_site, seen = [], defaultdict(int), set()
     for a in actions:
         key = (a["url"], a["action"])
@@ -294,4 +300,4 @@ def score(db, request_rate=0.1, max_actions=80, per_site=12):
     db.execute("DELETE FROM model")
     db.execute("INSERT INTO model VALUES(?,?)", (meta["trained_at"], json.dumps({"meta": meta, "model": m})))
     db.commit()
-    return meta, picked, request_gain
+    return meta, picked, request_gain, {s: dict(v) for s, v in potential.items()}

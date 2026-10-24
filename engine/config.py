@@ -15,6 +15,8 @@ CRED_FILE = Path(os.environ.get("INDEX_ENGINE_CREDS", PORTFOLIO / "GSC-Bing.txt"
 # {"url": "https://<project>.pages.dev", "token": "<ENGINE_TOKEN>"}
 DASHBOARD_FILE = Path(os.environ.get("INDEX_ENGINE_DASHBOARD_FILE", PORTFOLIO / "Index-Engine-Dashboard.json"))
 DAILY_RUN_TIME = "10:30"        # local time; the dashboard setting overrides it
+# The app's own Cloudflare token (deploys; clears the edge cache of a page after a link change when it has Cache Purge).
+CF_TOKEN_FILE = Path(os.environ.get("INDEX_ENGINE_CF_TOKEN_FILE", PORTFOLIO / "Index-Engine-Cloudflare-Token.txt"))
 LOCK_FILE = OUT / "run.lock"
 LOCK_STALE_HOURS = 4
 # Optional: {"example.com": {"key": "...", "keyLocation": "https://example.com/<key>.txt"}}
