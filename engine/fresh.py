@@ -9,7 +9,7 @@ from .util import get, log, norm, now_iso, parse_ts
 
 
 def changed(db, sites):
-    """{site: [(url, kind, modified_gmt, date_gmt)]} changed since the site's watermark (first call only sets it)."""
+    """Find recent WordPress changes. The watermark advances only after successful processing."""
     out = {}
     for site in sites:
         meta = store.get_meta(db, site)
@@ -37,9 +37,11 @@ def changed(db, sites):
                 if mod and mod > wm and it.get("link"):
                     items.append((norm(it["link"]), typ[:-1], it["modified_gmt"] + "+00:00", it.get("date_gmt")))
                     newest = max(newest, mod)
-        store.set_meta(db, site, fresh_watermark=newest.isoformat())
+        # Never acknowledge a partial or failed scan; the next tick must retry it.
         if items:
             out[site] = items
+        elif newest > wm:
+            store.set_meta(db, site, fresh_watermark=newest.isoformat())
     return out
 
 
@@ -59,3 +61,14 @@ def ingest(db, changes):
         log(f"[fresh] {site}: {len(items)} new or updated: " + ", ".join(u for u, *_ in items[:5]) + (" ..." if len(items) > 5 else ""))
     db.commit()
     return urls
+
+def acknowledge(db, changes):
+    """Commit per-site watermarks only after ingest, inspection and submission stages succeed."""
+    for site, items in changes.items():
+        times = [parse_ts(mod) for _, _, mod, _ in items]
+        times = [t for t in times if t is not None]
+        if times:
+            old = parse_ts(store.get_meta(db, site).get("fresh_watermark"))
+            newest = max(times)
+            if old is None or newest > old:
+                store.set_meta(db, site, fresh_watermark=newest.isoformat())
