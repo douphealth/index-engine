@@ -99,7 +99,7 @@ def run(db, sites, bing_client=None, bing_sites=None, indexnow_client=None, dry_
             due_now = {ch: [(u, lm) for u, lm in items if u in passed] for ch, items in due_now.items()}
         if key:
             host, k, loc = key
-            items = due_now["indexnow"][: min(max_per_site or 10**9, config.INDEXNOW_MAX_PER_POST)]
+            items = due_now["indexnow"][: min((max_per_site if max_per_site is not None else 10**9), config.INDEXNOW_MAX_PER_POST)]
             if items and dry_run:
                 log(f"[submit] {site}: would send {len(items)} URLs to IndexNow")
             elif items:
@@ -121,7 +121,7 @@ def run(db, sites, bing_client=None, bing_sites=None, indexnow_client=None, dry_
             except Exception as e:
                 log(f"[submit] {site}: Bing quota check failed: {e}")
                 daily = 0
-            items = due_now["bing"][: min(daily, max_per_site or 10**9)]
+            items = due_now["bing"][: min(daily, (max_per_site if max_per_site is not None else 10**9))]
             if items and dry_run:
                 log(f"[submit] {site}: would send {len(items)} URLs to the Bing URL Submission API (quota today {daily})")
             elif items:
