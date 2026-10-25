@@ -75,6 +75,12 @@ def wp_clients(sites):
     return out
 
 
+def writes_allowed(args):
+    """No WordPress edits in measure-only, dry-run, no-credentials or no-WordPress modes."""
+    return not any(getattr(args, flag, False) for flag in
+                   ("no_submit", "dry_run", "no_links", "no_creds", "no_wp"))
+
+
 def apply_links(db, dash, state, settings):
     """Apply approved (or, with autopilot, auto-approved) internal links and process undo requests."""
     def report_(lid, status, result, applied_at):
@@ -163,7 +169,7 @@ def run(args, dash=None, state=None, trigger="manual"):
                               (now_iso(), trigger)).lastrowid
         db.commit()
         try:
-            if dash and state and not args.dry_run and not args.no_links:
+            if dash and state and writes_allowed(args):
                 apply_links(db, dash, state, settings)
             results, submitted, intel, proposals = pipeline(db, args, sites)
         except Exception as e:
@@ -193,7 +199,7 @@ def quick(args, dash, state, settings):
             apply_state(db, state)
         disabled = set(settings.get("sites_disabled") or [])
         sites = [s for s in config.SITES if s not in disabled]
-        touched = apply_links(db, dash, state, settings) if (dash and state) else set()
+        touched = apply_links(db, dash, state, settings) if (dash and state and writes_allowed(args)) else set()
         changes = fresh.changed(db, sites) if settings.get("fresh_check", True) else {}
         if not changes and not touched:
             db.commit()
@@ -211,7 +217,7 @@ def quick(args, dash, state, settings):
             gclient, bclient, props, bsites = engines(args, db, list(changes))
             if props:
                 google.inspect_due(db, gclient, props, only_urls=urls)
-            if not settings.get("submit_paused"):
+            if not (settings.get("submit_paused") or args.no_submit or args.dry_run):
                 submitted = submit.run(db, list(changes), bing_client=bclient, bing_sites=bsites)
         results, intel = brain.analyze(db, config.SITES)
         report.write(db, results)
@@ -220,6 +226,9 @@ def quick(args, dash, state, settings):
             safe(dash.run_finish, run_id, "ok", summary=run_summary, what="close run")
         db.execute("UPDATE local_runs SET finished_at=?, status='ok' WHERE rowid=?", (now_iso(), local_id))
         db.commit()
+        # Only advance after processing succeeds; a crash must not silently lose WordPress updates.
+        if changes:
+            fresh.acknowledge(db, changes)
 
 
 def tick(args):
