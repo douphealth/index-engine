@@ -22,21 +22,40 @@ def changed(db, sites):
             continue
         since = (wm - dt.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")   # WP compares in site time; margin, then exact filter
         newest, items = wm, []
+        failed = False
         for typ in ("posts", "pages"):
-            try:
-                r = get(f"{base}/wp-json/wp/v2/{typ}", timeout=(10, 60),
-                        params={"modified_after": since, "per_page": 100, "orderby": "modified",
-                                "_fields": "link,modified_gmt,date_gmt", "_ie": int(dt.datetime.now().timestamp())})
-            except Exception as e:
-                log(f"[fresh] {site}: {typ} check failed: {type(e).__name__}")
-                continue
-            if r.status_code != 200 or "json" not in r.headers.get("Content-Type", ""):
-                continue
-            for it in r.json() if isinstance(r.json(), list) else []:
-                mod = parse_ts((it.get("modified_gmt") or "") + "+00:00")
-                if mod and mod > wm and it.get("link"):
-                    items.append((norm(it["link"]), typ[:-1], it["modified_gmt"] + "+00:00", it.get("date_gmt")))
-                    newest = max(newest, mod)
+            page = 1
+            while True:
+                try:
+                    r = get(f"{base}/wp-json/wp/v2/{typ}", timeout=(10, 60),
+                            params={"modified_after": since, "per_page": 100, "page": page,
+                                    "orderby": "modified", "order": "asc",
+                                    "_fields": "link,modified_gmt,date_gmt",
+                                    "_ie": int(dt.datetime.now().timestamp())})
+                    if r.status_code != 200 or "json" not in r.headers.get("Content-Type", ""):
+                        raise RuntimeError(f"HTTP {r.status_code}")
+                    data = r.json()
+                    if not isinstance(data, list):
+                        raise ValueError("WordPress response is not a list")
+                except Exception as e:
+                    log(f"[fresh] {site}: {typ} page {page} failed: {type(e).__name__}")
+                    failed = True
+                    break
+                for it in data:
+                    mod = parse_ts((it.get("modified_gmt") or "") + "+00:00")
+                    if mod and mod > wm and it.get("link"):
+                        items.append((norm(it["link"]), typ[:-1], it["modified_gmt"] + "+00:00", it.get("date_gmt")))
+                        newest = max(newest, mod)
+                if len(data) < 100:
+                    break
+                page += 1
+                if page > 1000:
+                    log(f"[fresh] {site}: pagination safety limit reached")
+                    failed = True
+                    break
+        if failed:
+            # No partial batch is acknowledged; retry all types on the next tick.
+            continue
         # Never acknowledge a partial or failed scan; the next tick must retry it.
         if items:
             out[site] = items
