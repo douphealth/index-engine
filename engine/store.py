@@ -78,6 +78,7 @@ MIGRATIONS = [
     "ALTER TABLE audits ADD COLUMN trust TEXT",
     "ALTER TABLE triage ADD COLUMN odds REAL",
     "ALTER TABLE triage ADD COLUMN why TEXT",
+    "ALTER TABLE gsc ADD COLUMN last_attempt_at TEXT",
 ]
 
 
