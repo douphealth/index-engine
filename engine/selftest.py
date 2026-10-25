@@ -281,6 +281,22 @@ def main():
     used, _ = store.quota_used(db, util.pacific_day(), props[base])
     check(used == n_inspected, "inspection quota is tracked")
 
+    # A failed inspection must not destroy previously verified Google evidence.
+    old = db.execute("SELECT coverage, verdict FROM gsc WHERE url = ?", (base + "/good-crawled/",)).fetchone()
+    original_inspect = gsc.inspect
+    gsc.inspect = lambda prop, url: {"error": "HTTP 503: temporary outage", "http": 503}
+    db.execute("UPDATE gsc SET inspected_at='2026-01-01T00:00:00+00:00' WHERE url=?", (base + "/good-crawled/",))
+    google.inspect_due(db, gsc, props, only_urls=[base + "/good-crawled/"])
+    after = db.execute("SELECT coverage, verdict, error FROM gsc WHERE url=?", (base + "/good-crawled/",)).fetchone()
+    check(after["coverage"] == old["coverage"] and after["verdict"] == old["verdict"] and bool(after["error"]),
+          "transient GSC errors preserve the last known indexing verdict")
+    gsc.inspect = original_inspect
+    db.execute("UPDATE gsc SET error=NULL, inspected_at='2026-10-25T00:00:00+00:00' WHERE url=?",
+               (base + "/good-crawled/",))
+
+
+    submit.run(db, sites, bing_client=bng, bing_sites=bsites, indexnow_client=inow, max_per_site=0)
+    check(not inow.calls, "zero submission limit sends nothing")
     submit.run(db, sites, bing_client=bng, bing_sites=bsites, indexnow_client=inow)
     sent = {urlsplit(u).path for c in inow.calls for u in c[3]}
     check(sent and not ({"/gone/", "/redirect-me/", "/noindex/", "/canon-other/", "/private/secret/", "/category/plants/"} & sent),
