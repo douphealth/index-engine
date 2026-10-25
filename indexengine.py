@@ -75,9 +75,9 @@ def wp_clients(sites):
     return out
 
 
-def writes_allowed(args):
+def writes_allowed(args, settings=None):
     """No WordPress edits in measure-only, dry-run, no-credentials or no-WordPress modes."""
-    return not any(getattr(args, flag, False) for flag in
+    return not (settings or {}).get("submit_paused") and not any(getattr(args, flag, False) for flag in
                    ("no_submit", "dry_run", "no_links", "no_creds", "no_wp"))
 
 
@@ -169,7 +169,7 @@ def run(args, dash=None, state=None, trigger="manual"):
                               (now_iso(), trigger)).lastrowid
         db.commit()
         try:
-            if dash and state and writes_allowed(args):
+            if dash and state and writes_allowed(args, settings):
                 apply_links(db, dash, state, settings)
             results, submitted, intel, proposals = pipeline(db, args, sites)
         except Exception as e:
@@ -199,7 +199,7 @@ def quick(args, dash, state, settings):
             apply_state(db, state)
         disabled = set(settings.get("sites_disabled") or [])
         sites = [s for s in config.SITES if s not in disabled]
-        touched = apply_links(db, dash, state, settings) if (dash and state and writes_allowed(args)) else set()
+        touched = apply_links(db, dash, state, settings) if (dash and state and writes_allowed(args, settings)) else set()
         changes = fresh.changed(db, sites) if settings.get("fresh_check", True) else {}
         if not changes and not touched:
             db.commit()
