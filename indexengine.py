@@ -262,6 +262,25 @@ def run(args, dash=None, state=None, trigger="manual"):
         return results
 
 
+TRICKLE_MAX = 15            # Bing crawl-status lookups per tick
+
+
+def bing_trickle(args, db, sites, settings):
+    """Between daily runs: a few Bing crawl-status lookups on every tick that has nothing else to do. Bing throttles
+    GetUrlInfo for the whole account (it stops after about ten calls in a burst), so asking a little, often, and
+    stopping at the first throttle finds the highest rate Bing really allows without ever hammering it.
+    Read-only: it stays on while everything else is paused."""
+    if args.no_creds or args.no_bing or settings.get("bing_trickle") is False:
+        return 0
+    _, keys = load_credentials()
+    client = bing.working_client(keys) if keys else None
+    bsites = {s: store.get_meta(db, s).get("bing_site") for s in sites}
+    bsites = {s: burl for s, burl in bsites.items() if burl}           # resolved by the daily run
+    if not client or not bsites:
+        return 0
+    return bing.check_url_info(db, client, bsites, max_per_site=50, max_total=TRICKLE_MAX)
+
+
 def quick(args, dash, state, settings):
     """Between daily runs: apply approved links, then catch new/updated posts and get them indexed within minutes."""
     with RunLock():
@@ -274,7 +293,8 @@ def quick(args, dash, state, settings):
         changes = fresh.changed(db, sites) if settings.get("fresh_check", True) else {}
         if not changes and not touched:
             db.commit()
-            print("Quick tick: nothing new.")
+            n = bing_trickle(args, db, sites, settings)
+            print(f"Quick tick: nothing new{f'; {n} Bing crawl checks' if n else ''}.")
             return
         open_log("fresh")
         log(f"Quick tick: {sum(len(v) for v in changes.values())} new/updated URLs on {len(changes)} sites; "

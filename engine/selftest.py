@@ -46,6 +46,7 @@ FRESH = []          # (path, modified_gmt) returned by modified_after queries
 WP_USER, WP_PW = "tester", "abcd efgh ijkl mnop qrst uvwx"
 POST_IDS = {p: 100 + i for i, p in enumerate(PAGES)}
 EDGE = {}           # path -> html an edge cache (Cloudflare) keeps serving on the plain URL
+FAIL_PAGE = []      # page numbers of the modified_after feed that answer HTTP 500 (partial-failure test)
 
 
 def body_text(path, n, dup=False):
@@ -131,6 +132,8 @@ class Handler(BaseHTTPRequestHandler):
                             "content": {"raw": RAW.get(x) or f"<p>{body_text(x, PAGES[x][1], PAGES[x][2].get('dup'))}</p>"}}
                            for x in paths if x in POST_IDS])
             if "modified_after" in q:
+                if int((q.get("page") or ["1"])[0]) in FAIL_PAGE:
+                    return self._send(500, "{}", "application/json")
                 start = (int((q.get("page") or ["1"])[0]) - 1) * int((q.get("per_page") or ["100"])[0])
                 stop = start + int((q.get("per_page") or ["100"])[0])
                 return js([{"link": f"{base}{x}", "modified_gmt": m, "date_gmt": m} for x, m in FRESH[start:stop]])
@@ -517,14 +520,17 @@ def main():
               "the cache purge uses only the app token, purges just that page, caches the zone and scrubs the token")
         n_rep = len(reports)
         links.recheck(db, rep)
-        check(len(reports) == n_rep, "re-check while still cached: no repeated report")
+        check(len(reports) == n_rep and len([c for c in links.requests.calls if c[0] == "POST"]) == len(purges),
+              "re-check while still cached: no repeated report and no repeated purge request during the cool-down")
         del EDGE["/good-indexed/"]
         links.recheck(db, rep)
         check(len(reports) == n_rep + 1 and "visible to visitors" in reports[-1][2]
               and "visible to visitors" in db.execute("SELECT result FROM link_ops WHERE id=?", (lk["id"],)).fetchone()[0],
               "once the cache refreshes, the re-check reports the link as visible to visitors")
+        store.set_meta(db, base, cf_purge_denied=None)               # the owner fixed the token: the cool-down is over
         links.apply(db, [dict(lk, status="undo")], {}, {base: wpc}, rep)
-        check(reports[-1][1] == "undone" and "cache purge: not permitted" in reports[-1][2], "undo also purges the page")
+        check(reports[-1][1] == "undone" and "cache purge: not permitted" in reports[-1][2]
+              and len([c for c in links.requests.calls if c[0] == "POST"]) == len(purges) + 1, "undo also purges the page")
     finally:
         links.requests = real_requests
         config.CF_TOKEN_FILE = tmp / "no-token.txt"
@@ -542,6 +548,23 @@ def main():
     check(bool(fresh.changed(db, sites)), "a change remains pending until explicitly acknowledged")
     fresh.acknowledge(db, ch)
     check(not fresh.changed(db, sites), "after processing, the watermark prevents duplicate work")
+
+    # more than 100 changed posts are all found (the feed is paged), and a page that fails loses nothing
+    FRESH.clear()
+    store.set_meta(db, base, fresh_watermark="2026-10-01T00:00:00+00:00")
+    FRESH.extend((f"/bulk-{i}/", f"2026-10-24T{i // 60:02d}:{i % 60:02d}:00") for i in range(250))
+    big = fresh.changed(db, sites)
+    check(len(big.get(base, [])) == 250 and store.get_meta(db, base)["fresh_watermark"].startswith("2026-10-01"),
+          "250 changed posts across three feed pages are all found and the watermark has not moved yet")
+    FAIL_PAGE.append(2)
+    partial = fresh.changed(db, sites)
+    check(base not in partial and store.get_meta(db, base)["fresh_watermark"].startswith("2026-10-01"),
+          "when one page of the feed fails, nothing from that site is acknowledged and the whole scan is retried")
+    FAIL_PAGE.clear()
+    fresh.acknowledge(db, fresh.changed(db, sites))
+    check(store.get_meta(db, base)["fresh_watermark"].startswith("2026-10-24T04:09"),
+          "after a clean pass the watermark moves to the newest change")
+    FRESH.clear()
 
     # ---- regression alerts and Google transitions
     FLIP.add("/good-unknown/")
@@ -613,6 +636,17 @@ def main():
 
     # ---- the engine's own orchestration (imported as a module so its functions can be called)
     import indexengine as ie
+    db.execute("DELETE FROM bing_info")
+    for host, burl in hosts.items():
+        store.set_meta(db, host, bing_site=burl)
+    real_creds, real_client = ie.load_credentials, bing.working_client
+    ie.load_credentials = lambda: (None, ["fake-key"])
+    bing.working_client = lambda keys: ThrottlingBing(base, ok=7)
+    targs = ie.build_parser().parse_args(["tick"])
+    n_tr = ie.bing_trickle(targs, db, list(hosts), {})
+    off = ie.bing_trickle(targs, db, list(hosts), {"bing_trickle": False})
+    ie.load_credentials, bing.working_client = real_creds, real_client
+    check(n_tr == 7 and off == 0, "idle ticks trickle a few Bing crawl checks, stop at the first throttle, and can be switched off")
     config.LOCK_FILE = tmp / "run.lock"
     with ie.RunLock():
         try:
@@ -658,6 +692,22 @@ def main():
     db.execute("DELETE FROM local_runs")
     db.commit()
     check(all(ok), f"the daily run is retried after a failure (30 min apart, 3 tries) and not repeated after success {ok}")
+
+    # nothing writes to a WordPress site unless every switch allows it
+    plain = ie.build_parser().parse_args(["run"])
+    blocked = [ie.writes_allowed(ie.build_parser().parse_args(["run", f]), {}) for f in
+               ("--dry-run", "--no-submit", "--no-links", "--no-creds", "--no-wp")]
+    check(ie.writes_allowed(plain, {}) and not any(blocked) and not ie.writes_allowed(plain, {"submit_paused": True}),
+          "link edits happen only when not paused, dry-run, measure-only, offline or without links")
+
+    class NoDash:
+        def link_result(self, *a, **k):
+            raise AssertionError("a paused site's link must not even be reported on")
+
+    skipped_links = ie.apply_links(db, NoDash(), {"links": [{"id": "0" * 16, "site": "gearuptofit.com", "status": "approved",
+                                                              "source": "https://gearuptofit.com/a/", "target": "https://gearuptofit.com/b/",
+                                                              "anchor": "x"}]}, {"sites_disabled": ["gearuptofit.com"]})
+    check(skipped_links == set(), "approved links on a paused site are left alone")
 
     # the dashboard's pause / disabled sites stay in force when it cannot be reached
     dashboard.apply_state(db, {"url_state": [], "settings": {"sites_disabled": ["gearuptofit.com"], "submit_paused": True}})

@@ -177,7 +177,10 @@ function renderChrome() {
   bl.className = "badge soft";
 }
 function setTab(route) {
-  for (const a of document.querySelectorAll("#tabs a")) a.classList.toggle("on", a.dataset.r === route);
+  for (const a of document.querySelectorAll("#tabs a")) {
+    a.classList.toggle("on", a.dataset.r === route);
+    if (a.dataset.r === route) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  }
 }
 
 /* ------------------------------------------------------------------ views */

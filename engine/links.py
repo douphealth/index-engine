@@ -400,9 +400,23 @@ CF_API = "https://api.cloudflare.com/client/v4"
 EDGE_HOURS = 4          # longest edge-cache lifetime seen on these sites (gearuptofit AGENTS.md: about 4 h)
 
 
+PURGE_COOLDOWN_MIN = 20
+
+
 def purge(db, site, urls):
     """Clear Cloudflare's cached copy of these URLs, with the app's own token only (never other credentials).
-    Returns 'purged' or why not. Needs the token to carry Zone > Cache Purge."""
+    Returns 'purged' or why not. Needs the token to carry Zone > Cache Purge. After a refusal the same answer is
+    returned for 20 minutes without asking again, so unseen links are not re-tried on every 10-minute tick."""
+    held = store.get_meta(db, site).get("cf_purge_denied")
+    if held and (days_since(held["at"]) or 1) * 1440 < PURGE_COOLDOWN_MIN:
+        return held["why"]
+    result = _purge_call(db, site, urls)
+    refused = result not in ("purged", "no app token")          # a missing token file costs nothing to re-check
+    store.set_meta(db, site, cf_purge_denied={"at": now_iso(), "why": result} if refused else None)
+    return result
+
+
+def _purge_call(db, site, urls):
     try:
         tok = config.CF_TOKEN_FILE.read_text(encoding="utf-8").split()[-1]
     except (OSError, IndexError):
