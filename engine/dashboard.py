@@ -111,7 +111,7 @@ def cached_settings(db):
     in force instead of silently lapsing."""
     meta = store.get_meta(db, "__dashboard__")
     if meta.get("settings"):
-        log(f"[dashboard] unreachable: keeping the settings pulled at {str(meta.get('pulled_at'))[:16]}")
+        log(f"[dashboard] not connected: keeping the settings pulled at {str(meta.get('pulled_at'))[:16]}")
     return meta.get("settings") or {}
 
 

@@ -9,6 +9,7 @@ import random
 import shutil
 import tempfile
 import threading
+import time
 import zlib
 from collections import Counter, defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -664,6 +665,11 @@ def main():
     except ie.Locked:
         took_over = False
     check(took_over and ie.lock_holder() is None, "a lock left by a crashed run (its process is gone) is taken over at once")
+    config.LOCK_FILE.write_text("", encoding="utf-8")                              # a power cut left it empty
+    check(ie.lock_holder() == ("?", None), "an unreadable lock is honoured for a moment (it may be being written)")
+    os.utime(config.LOCK_FILE, (time.time() - 300, time.time() - 300))
+    check(ie.lock_holder() is None, "an unreadable lock older than a minute is not honoured")
+    config.LOCK_FILE.unlink()
 
     now_local = dt.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
     due = now_local.replace(hour=10, minute=30)
@@ -721,6 +727,7 @@ def main():
     check(skipped is not None and "gearuptofit.com" in skipped,
           "a run for a paused site is skipped, say why, and works offline from the cached settings")
     dashboard.apply_state(db, {"url_state": [], "settings": {}})
+    check(dashboard.cached_settings(db) == {}, "settings the owner has cleared are not resurrected from the local copy")
 
     # a quick tick that crashes closes its run as failed and does not move the watermark
     store.set_meta(db, base, fresh_watermark="2026-10-01T00:00:00+00:00")

@@ -513,7 +513,9 @@ async function viewSite(site, params) {
     const body = h("tbody");
     for (const r of slice) {
       const url = r[col.url], st = S.urlState.get(url) || {};
-      const tr = h("tr", { class: `click ${st.ignored ? "dim" : ""}`, onclick: () => { v.open = v.open === url ? null : url; drawTable(); } },
+      const toggle = () => { v.open = v.open === url ? null : url; drawTable(); };
+      const tr = h("tr", { class: `click ${st.ignored ? "dim" : ""}`, onclick: toggle, tabindex: "0", role: "button", "aria-expanded": String(v.open === url),
+        onkeydown: (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); toggle(); } } },
         h("td", { class: "page" }, h("div", { text: r[col.title] || url }), h("div", { class: "u", text: url })),
         h("td", {}, h("span", { class: "pill" }, h("span", { class: `sw b-${BLOCKERS.has(r[col.bucket]) ? "blocked" : r[col.bucket]}` }), LABEL[r[col.bucket]] || r[col.bucket]),
           st.ignored ? h("span", { class: "chip", text: "ignored" }) : null),
@@ -959,6 +961,7 @@ async function render() {
   const [route, arg] = path.split("/");
   const params = new URLSearchParams(query || "");
   setTab(route === "site" ? "" : route || "");
+  document.title = `${route === "site" && arg ? decodeURIComponent(arg) : (route ? route[0].toUpperCase() + route.slice(1) : "Overview")} · Index Engine`;
   try {
     let node;
     if (route === "site" && arg) node = await viewSite(decodeURIComponent(arg), params);
@@ -983,6 +986,7 @@ function openRunDialog(site = "") {
 }
 
 document.getElementById("run-btn").addEventListener("click", () => openRunDialog());
+document.getElementById("run-cancel").addEventListener("click", () => document.getElementById("run-dlg").close());
 // The form's submit event fires synchronously with the button press (the dialog's close event is queued and can be
 // delayed in background tabs). method="dialog" then closes the dialog by itself.
 document.getElementById("run-form").addEventListener("submit", async (e) => {
@@ -1020,5 +1024,6 @@ setInterval(async () => {
 }, 120000);
 
 loadAll().then(render).catch((e) => {
-  document.getElementById("app").replaceChildren(h("div", { class: "card empty", text: `Could not load: ${e.message}` }));
+  document.getElementById("app").replaceChildren(h("div", { class: "card empty stack" }, h("div", { text: `Could not load: ${e.message}` }),
+    h("div", {}, h("button", { class: "btn", onclick: () => location.reload() }, "Try again"))));
 });

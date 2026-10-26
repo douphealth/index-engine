@@ -51,11 +51,11 @@ def _pid_alive(pid):
         return False
     if os.name == "nt":
         import ctypes
-        k32 = ctypes.windll.kernel32
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         k32.OpenProcess.restype = ctypes.c_void_p
         handle = k32.OpenProcess(0x1000, False, pid)             # PROCESS_QUERY_LIMITED_INFORMATION
         if not handle:
-            return False
+            return ctypes.get_last_error() == 5                  # access denied: it exists, it is just not ours to open
         try:
             code = ctypes.c_ulong()
             return bool(k32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))) and code.value == 259   # STILL_ACTIVE
@@ -82,7 +82,7 @@ def lock_holder():
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return ("?", None)               # being written right now
+        return ("?", None) if age < 60 else None      # being written right now, or left empty by a power cut
     return (data.get("pid"), data.get("at")) if _pid_alive(data.get("pid")) else None
 
 
@@ -362,7 +362,7 @@ def tick(args):
     dash = None if args.no_dashboard else Dashboard.from_config()
     state = safe(dash.state, what="pull state") if dash else None
     # When the dashboard cannot be reached, keep honouring the last settings (paused / disabled sites) it gave us.
-    settings = (state or {}).get("settings") or cached_settings(db)
+    settings = (state.get("settings") or {}) if state is not None else cached_settings(db)
     cmd = next((c for c in (state or {}).get("commands", []) if c.get("kind") == "run"), None)
     if cmd:
         o = cmd.get("options") or {}
