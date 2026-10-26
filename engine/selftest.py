@@ -127,7 +127,9 @@ class Handler(BaseHTTPRequestHandler):
                             "content": {"raw": RAW.get(x) or f"<p>{body_text(x, PAGES[x][1], PAGES[x][2].get('dup'))}</p>"}}
                            for x in paths if x in POST_IDS])
             if "modified_after" in q:
-                return js([{"link": f"{base}{x}", "modified_gmt": m, "date_gmt": m} for x, m in FRESH])
+                start = (int((q.get("page") or ["1"])[0]) - 1) * int((q.get("per_page") or ["100"])[0])
+                stop = start + int((q.get("per_page") or ["100"])[0])
+                return js([{"link": f"{base}{x}", "modified_gmt": m, "date_gmt": m} for x, m in FRESH[start:stop]])
             return js([{"link": f"{base}{x}", "modified_gmt": "2026-10-20T10:00:00", "date_gmt": "2026-06-01T10:00:00"}
                        for x in ("/good-indexed/", "/not-in-sitemap/")])
         pid = int(p.rsplit("/", 1)[-1]) if p.rsplit("/", 1)[-1].isdigit() else None
@@ -515,7 +517,9 @@ def main():
     n_calls = len(inow.calls)
     submit.run(db, sites, bing_client=bng, bing_sites=bsites, indexnow_client=inow)
     check(len(inow.calls) == n_calls + 1 and base + "/brand-new/" in inow.calls[-1][3], "a brand-new post is submitted on the same tick")
-    check(not fresh.changed(db, sites), "the watermark moves on: the same post is not picked up twice")
+    check(bool(fresh.changed(db, sites)), "a change remains pending until explicitly acknowledged")
+    fresh.acknowledge(db, ch)
+    check(not fresh.changed(db, sites), "after processing, the watermark prevents duplicate work")
 
     # ---- regression alerts and Google transitions
     FLIP.add("/good-unknown/")
