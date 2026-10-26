@@ -87,7 +87,9 @@ def apply_links(db, dash, state, settings):
         safe(dash.link_result, lid, status, result, applied_at, what="report link result")
 
     links.recheck(db, report_)          # applied earlier, hidden by an edge cache until now?
-    todo = [lk for lk in (state or {}).get("links") or [] if lk.get("status") in ("approved", "undo", "proposed")]
+    disabled = set(settings.get("sites_disabled") or [])
+    todo = [lk for lk in (state or {}).get("links") or []
+            if lk.get("site") not in disabled and lk.get("status") in ("approved", "undo", "proposed")]
     if not todo:
         return set()
     clients = wp_clients(sorted({lk["site"] for lk in todo}))
@@ -151,7 +153,12 @@ def run(args, dash=None, state=None, trigger="manual"):
         settings = apply_state(db, state) if (dash and state) else {}
 
         disabled = set(settings.get("sites_disabled") or [])
-        sites = args.site or [s for s in config.SITES if s not in disabled]
+        # Disabled sites are excluded even when explicitly requested from the dashboard.
+        # A local CLI override would need an explicit, separately audited policy.
+        sites = [s for s in (args.site or config.SITES) if s in config.SITES and s not in disabled]
+        if not sites:
+            log("No enabled sites selected; no indexing operations will be performed.")
+            return {}
         if settings.get("submit_paused") and not args.no_submit:
             log("Submissions are paused in the dashboard settings: measuring only.")
             args.no_submit = True
