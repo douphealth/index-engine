@@ -2,19 +2,23 @@
 """Offline end-to-end test: a fake WordPress-like site on localhost plus fake Google, Bing and
 IndexNow clients. Exercises every stage and checks each decision. No network beyond 127.0.0.1."""
 import base64
+import datetime as dt
 import json
+import os
 import random
 import shutil
 import tempfile
 import threading
-from collections import defaultdict
+import zlib
+from collections import Counter, defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
-from . import audit, bing, brain, config, discover, fresh, google, links, model, report, store, submit, triage, util, wp
+from . import (audit, bing, brain, config, dashboard, discover, fresh, google, links, model, report, store, submit, triage,
+               util, wp)
 
 KEY = "abcdef1234567890abcdef1234567890"
 VOCAB = [f"w{i}x" for i in range(600)]
@@ -219,6 +223,22 @@ class FakeBing:
                 "DiscoveryDate": "/Date(1750000000000)/", "HttpStatus": 200}
 
 
+class ThrottlingBing(FakeBing):
+    """GetUrlInfo answers `ok` times, then throttles the whole account like Bing does."""
+
+    def __init__(self, base, ok, fail_hosts=()):
+        super().__init__(base)
+        self.ok, self.n, self.fail_hosts = ok, 0, fail_hosts
+
+    def url_info(self, site_url, url):
+        self.n += 1
+        if any(h in url for h in self.fail_hosts):
+            raise RuntimeError("GetUrlInfo HTTP 500: server error")
+        if self.n > self.ok:
+            raise RuntimeError('GetUrlInfo HTTP 400: {"ErrorCode":4,"Message":"ERROR!!! ThrottleUser"}')
+        return {"LastCrawledDate": "/Date(-62135596800000)/", "DiscoveryDate": "/Date(1750000000000)/", "HttpStatus": 200}
+
+
 class FakeIndexNow:
     def __init__(self):
         self.calls = []
@@ -292,6 +312,8 @@ def main():
     after = db.execute("SELECT coverage, verdict, error FROM gsc WHERE url=?", (base + "/good-crawled/",)).fetchone()
     check(after["coverage"] == old["coverage"] and after["verdict"] == old["verdict"] and bool(after["error"]),
           "transient GSC errors preserve the last known indexing verdict")
+    check(db.execute("SELECT COUNT(*) FROM gsc_history WHERE coverage LIKE '%503%'").fetchone()[0] == 0,
+          "a failed inspection leaves no history row that could hide a real transition")
     gsc.inspect = original_inspect
     db.execute("UPDATE gsc SET error=NULL, inspected_at='2026-10-25T00:00:00+00:00' WHERE url=?",
                (base + "/good-crawled/",))
@@ -541,6 +563,137 @@ def main():
     check(base in html and "Diagnosis" in html, "HTML report written")
     logs = "".join(p.read_text(encoding="utf-8") for p in (tmp / "logs").glob("*.txt"))
     check(KEY not in logs and KEY not in html, "IndexNow key never appears in logs or report")
+
+    # ---- link placement: running text only, never labels or quoted terms; context is plain text
+    run_ok = "<p>Most runners replace their shoes around 300 miles, so a good training shoe for lifting matters a lot here.</p>"
+    hit = links.find(run_ok, "training shoe", "https://x.example/y/")
+    check(bool(hit) and run_ok[hit[0]:hit[1]] == "training shoe", "an anchor inside a full sentence is accepted")
+    refused = {
+        "a quoted term": "<p>Meanwhile, searches for &#8220;running injury prevention&#8221; plateaued across the whole year.</p>",
+        "a straight-quoted term": '<p>The calculator shows your "shadow number" talents that you are suppressing every single day.</p>',
+        "a list label": "<ul><li>Fish Oil (Omega-3 Fatty Acids):</li></ul>",
+        "a short fragment": "<p>Buy fish oil now</p>",
+        "a lead-in": "<p>Here is what to know about fish oil for older dogs with stiff hips:</p>",
+    }
+    phrases = {"a quoted term": "running injury prevention", "a straight-quoted term": "shadow number"}
+    check(all(not links.find(raw, phrases.get(k, "fish oil"), "https://x.example/y/") for k, raw in refused.items()),
+          "no anchor inside quotation marks, a list label, a fragment or a lead-in sentence")
+    ctx = links.find("<p>Women&#8217;s running shoes with a carbon plate can feel very bouncy for most beginners.</p>",
+                     "carbon plate", "https://x.example/y/")
+    check(bool(ctx) and "&#" not in ctx[2] and "\u2019" in ctx[2], "the context shown to the owner has its HTML entities decoded")
+    db.execute("INSERT OR REPLACE INTO link_corpus(url, site, post_id, post_type, modified, raw) VALUES(?,?,?,?,?,?)",
+               (base + "/", base, POST_IDS["/good-indexed/"], "pages", "2026-10-20T10:00:00", zlib.compress(b"x")))
+    check(links.locate(db, wpc, base + "/") == (POST_IDS["/good-indexed/"], "pages")
+          and links.locate(db, wpc, base + "/good-crawled/") == (POST_IDS["/good-crawled/"], "posts"),
+          "a source is found through the stored corpus (front page, odd permalinks), else by its slug")
+    db.execute("DELETE FROM link_corpus WHERE url=?", (base + "/",))
+
+    # ---- Bing GetUrlInfo: the throttle is per account, so sites take turns and the first throttle ends the check
+    long_ago = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=5)).isoformat()
+    hosts = {f"t{i}.example": f"https://t{i}.example/" for i in (1, 2)}
+    for host in hosts:
+        for i in range(6):
+            u = f"https://{host}/p{i}/"
+            db.execute("INSERT INTO urls(url, site, kind, in_sitemap, first_seen, last_seen) VALUES(?,?,?,?,?,?)",
+                       (u, host, "post", 1, long_ago, long_ago))
+            db.execute("INSERT INTO submissions(url, channel, submitted_at, lastmod, http_status) VALUES(?,?,?,?,?)",
+                       (u, "bing", long_ago, None, 200))
+    bing.PAUSE_S = 0
+    thr = ThrottlingBing(base, ok=5)
+    n_done = bing.check_url_info(db, thr, hosts, max_per_site=6)
+    got = Counter(r[0].split("/")[2] for r in db.execute("SELECT url FROM bing_info WHERE url LIKE 'https://t%'"))
+    check(n_done == 5 and thr.n == 6 and got == {"t1.example": 3, "t2.example": 2},
+          "Bing URL checks alternate between sites, stop at the first throttle, and record only answered URLs")
+    flaky = ThrottlingBing(base, ok=99, fail_hosts=("t1.example",))
+    db.execute("DELETE FROM bing_info")
+    n_done = bing.check_url_info(db, flaky, hosts, max_per_site=6)
+    got = Counter(r[0].split("/")[2] for r in db.execute("SELECT url FROM bing_info WHERE url LIKE 'https://t%'"))
+    check(n_done == 6 and got == {"t2.example": 6} and flaky.n == 3 + 6,
+          "a site whose checks keep failing is dropped after 3 errors without starving the others")
+
+    # ---- the engine's own orchestration (imported as a module so its functions can be called)
+    import indexengine as ie
+    config.LOCK_FILE = tmp / "run.lock"
+    with ie.RunLock():
+        try:
+            with ie.RunLock():
+                second = True
+        except ie.Locked:
+            second = False
+        holder = ie.lock_holder()
+    check(not second and holder and holder[0] == os.getpid() and not config.LOCK_FILE.exists() and ie.lock_holder() is None,
+          "the run lock is exclusive while held and released afterwards")
+    config.LOCK_FILE.write_text(json.dumps({"pid": 2_000_000_000, "at": util.now_iso()}), encoding="utf-8")
+    try:
+        with ie.RunLock():
+            took_over = True
+    except ie.Locked:
+        took_over = False
+    check(took_over and ie.lock_holder() is None, "a lock left by a crashed run (its process is gone) is taken over at once")
+
+    now_local = dt.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+    due = now_local.replace(hour=10, minute=30)
+
+    def sched(status, minutes_after_due):
+        t = (due + dt.timedelta(minutes=minutes_after_due)).astimezone(dt.timezone.utc).isoformat()
+        db.execute("INSERT INTO local_runs(started_at, status, trigger) VALUES(?,?,'schedule')", (t, status))
+
+    db.execute("DELETE FROM local_runs")
+    ok = [ie.daily_due(db, "10:30", now_local.replace(hour=9)) is False, ie.daily_due(db, "10:30", now_local) is True]
+    sched("failed", 1)
+    ok.append(ie.daily_due(db, "10:30", now_local) is True)                        # failed 89 minutes ago: retry
+    sched("failed", 85)
+    ok.append(ie.daily_due(db, "10:30", now_local) is False)                       # failed 5 minutes ago: wait
+    sched("failed", 50)
+    ok.append(ie.daily_due(db, "10:30", now_local.replace(hour=14)) is False)      # 3 failures: give up for today
+    db.execute("DELETE FROM local_runs")
+    sched("running", 10)                                                          # "running" since 10:40, still so at 22:00
+    ok.append(ie.daily_due(db, "10:30", now_local.replace(hour=22)) is True)       # started > 4 h ago: it died, run again
+    db.execute("DELETE FROM local_runs")
+    sched("running", 10)
+    ok.append(ie.daily_due(db, "10:30", now_local.replace(hour=11)) is False)      # 20 minutes in: let it finish
+    db.execute("DELETE FROM local_runs")
+    sched("ok", 1)
+    ok.append(ie.daily_due(db, "10:30", now_local) is False)
+    db.execute("DELETE FROM local_runs")
+    db.commit()
+    check(all(ok), f"the daily run is retried after a failure (30 min apart, 3 tries) and not repeated after success {ok}")
+
+    # the dashboard's pause / disabled sites stay in force when it cannot be reached
+    dashboard.apply_state(db, {"url_state": [], "settings": {"sites_disabled": ["gearuptofit.com"], "submit_paused": True}})
+    check(dashboard.cached_settings(db) == {"sites_disabled": ["gearuptofit.com"], "submit_paused": True},
+          "the last dashboard settings are kept locally")
+    try:
+        ie.run(ie.build_parser().parse_args(["run", "--no-dashboard", "--site", "gearuptofit.com"]))
+        skipped = None
+    except ie.Skipped as e:
+        skipped = str(e)
+    check(skipped is not None and "gearuptofit.com" in skipped,
+          "a run for a paused site is skipped, say why, and works offline from the cached settings")
+    dashboard.apply_state(db, {"url_state": [], "settings": {}})
+
+    # a quick tick that crashes closes its run as failed and does not move the watermark
+    store.set_meta(db, base, fresh_watermark="2026-10-01T00:00:00+00:00")
+    real_changed, real_analyze = fresh.changed, brain.analyze
+    fresh.changed = lambda d, s: {base: [(base + "/brand-new/", "post", "2026-10-25T12:00:00+00:00", None)]}
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    brain.analyze, real_log = boom, ie.log
+    ie.log = lambda *a, **k: None                  # the engine logs the traceback; keep it out of the test output
+    db.commit()
+    try:
+        ie.quick(ie.build_parser().parse_args(["tick", "--no-creds", "--no-submit", "--no-dashboard"]), None, None, {})
+        crashed = False
+    except RuntimeError:
+        crashed = True
+    finally:
+        fresh.changed, brain.analyze, ie.log = real_changed, real_analyze, real_log
+    last = db.execute("SELECT status FROM local_runs WHERE trigger='fresh' ORDER BY rowid DESC LIMIT 1").fetchone()
+    check(crashed and last and last["status"] == "failed"
+          and store.get_meta(db, base)["fresh_watermark"] == "2026-10-01T00:00:00+00:00" and not config.LOCK_FILE.exists(),
+          "a crashed quick tick is recorded as failed, releases the lock and leaves the watermark so nothing is lost")
 
     server.shutdown()
     db.close()

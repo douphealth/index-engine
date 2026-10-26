@@ -58,9 +58,7 @@ def changed(db, sites):
             continue
         # Never acknowledge a partial or failed scan; the next tick must retry it.
         if items:
-            out[site] = items
-        elif newest > wm:
-            store.set_meta(db, site, fresh_watermark=newest.isoformat())
+            out[site] = items          # the watermark moves in acknowledge(), after these are processed
     return out
 
 

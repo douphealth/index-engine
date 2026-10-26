@@ -278,8 +278,9 @@ def inspect_due(db, client, props, max_per_site=None, include_taxonomy=False, on
                                (url, prop, now, res.get("verdict"), res.get("coverage"), res.get("indexing_state"),
                                 res.get("fetch_state"), res.get("robots_state"), res.get("last_crawl"),
                                 res.get("google_canonical"), res.get("user_canonical"), None, now))
-                db.execute("INSERT INTO gsc_history(url, inspected_at, coverage) VALUES(?,?,?)",
-                           (url, now, res.get("coverage") or res.get("error")))
+                if not res.get("error"):             # a failed call is not a verdict; it would hide real transitions
+                    db.execute("INSERT INTO gsc_history(url, inspected_at, coverage) VALUES(?,?,?)",
+                               (url, now, res.get("coverage")))
                 counts[site][res.get("coverage") or "error"] += 1
                 done_n += 1
                 if done_n % 100 == 0 or done_n == total:

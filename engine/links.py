@@ -16,6 +16,7 @@ crawled, not indexed" pages. Rules that keep it safe:
 """
 import datetime as dt
 import hashlib
+import html
 import json
 import math
 import re
@@ -31,7 +32,7 @@ import requests
 
 from . import config, store
 from .triage import BLOCKERS, STOP as _STOP, clean_title
-from .util import SECRETS, bare_host, days_since, get, log, now_iso
+from .util import SECRETS, bare_host, days_since, get, log, norm, now_iso
 
 STRICT_SITES = {"gearuptofit.com"}
 MAX_PER_DAY = 10
@@ -86,20 +87,46 @@ def links_to(html, target):
     return re.search(r"""href\s*=\s*["']""" + re.escape(target.rstrip("/")) + r"""/?["'#?]""", html or "") is not None
 
 
+SENT_END = re.compile(r"[.!?:;](?:&#8221;|&#8217;|&rdquo;|&rsquo;|[\"'\u201d\u2019)\]])*\s+|\n")
+MIN_SENTENCE_WORDS = 8      # an anchor sits inside a real sentence, not a label, caption or list entry
+
+
+def natural(raw, s, e, a, b):
+    """May the words raw[a:b] (inside the text run raw[s:e]) become a link? Not when the sentence around them is too
+    short to be running text ("Fish Oil (Omega-3 Fatty Acids):"), is a lead-in ending in a colon, or when the words sit
+    inside quotation marks (a quoted term or search query reads wrong as a link)."""
+    before, after = raw[s:a], raw[b:e]
+    start = max([m.end() for m in SENT_END.finditer(before)] or [0])
+    m = SENT_END.search(after)
+    end = m.start() + 1 if m else len(after)
+    sentence = before[start:] + raw[a:b] + after[:end]
+    if len(tokens(sentence)) < MIN_SENTENCE_WORDS or sentence.rstrip().endswith(":"):
+        return False
+    text = html.unescape(before[start:])
+    return not (text.count("\u201c") > text.count("\u201d") or text.count('"') % 2 == 1)
+
+
 def find(raw, phrase, target):
-    """First safe occurrence of phrase: (start, end, context) or None. Skips pages that already link to target."""
+    """First safe, natural occurrence of phrase: (start, end, context) or None. Skips pages that already link to
+    target. The context is plain text (HTML entities decoded)."""
     if links_to(raw, target):
         return None
     rx = re.compile(r"(?<![\w-])" + r"\s+".join(map(re.escape, phrase.split())) + r"(?![\w-])", re.I)
-    need = len(tokens(phrase)) + 3                   # inside a sentence, not a bare label or list entry
     for s, e, ok in segments(raw):
-        if not ok or len(tokens(raw[s:e])) < need:
+        if not ok:
             continue
-        m = rx.search(raw, s, e)
-        if m:
-            text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw[max(s, m.start() - 160):min(e, m.end() + 120)])).strip()
-            return m.start(), m.end(), text
+        for m in rx.finditer(raw, s, e):
+            if natural(raw, s, e, m.start(), m.end()):
+                text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", raw[max(s, m.start() - 160):min(e, m.end() + 120)]))).strip()
+                return m.start(), m.end(), text
     return None
+
+
+def locate(db, wpc, url):
+    """(post id, type) of the published post or page at this URL. The stored corpus knows every one of them, including
+    the front page and pages whose permalink is not their slug; the slug lookup is the fallback."""
+    row = db.execute("SELECT post_id, post_type FROM link_corpus WHERE url=?", (norm(url),)).fetchone()
+    return (row["post_id"], row["post_type"]) if row else wpc.find(url)
 
 
 def link_id(source, target):
@@ -497,7 +524,7 @@ def apply(db, links, settings, clients, report):
 
 def _apply_one(db, lk, wpc):
     try:
-        loc = wpc.find(lk["source"])
+        loc = locate(db, wpc, lk["source"])
         if not loc:
             return False, "source is not a published post/page"
         raw, _ = wpc.raw(*loc)
