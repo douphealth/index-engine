@@ -15,8 +15,8 @@ from urllib.parse import quote
 
 import requests
 
-from . import config
-from .util import SECRETS, log
+from . import config, store
+from .util import SECRETS, log, now_iso
 
 
 class Dashboard:
@@ -99,10 +99,20 @@ def apply_state(db, state):
                    [(r["url"], r["site"], int(r.get("ignored") or 0), r.get("requested_at")) for r in rows])
     db.commit()
     settings = state.get("settings") or {}
+    store.set_meta(db, "__dashboard__", settings=settings, pulled_at=now_iso())   # fail closed when it is unreachable
     ignored = sum(1 for r in rows if r.get("ignored"))
     done = sum(1 for r in rows if r.get("requested_at"))
     log(f"[dashboard] pulled: {ignored} ignored URLs, {done} request-indexing marks, settings {sorted(k for k in settings if k != 'engine_last_seen')}")
     return settings
+
+
+def cached_settings(db):
+    """The settings the dashboard last gave us. Used when it cannot be reached, so a pause or a disabled site stays
+    in force instead of silently lapsing."""
+    meta = store.get_meta(db, "__dashboard__")
+    if meta.get("settings"):
+        log(f"[dashboard] not connected: keeping the settings pulled at {str(meta.get('pulled_at'))[:16]}")
+    return meta.get("settings") or {}
 
 
 def safe(fn, *a, what="dashboard call", **kw):

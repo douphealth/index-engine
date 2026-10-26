@@ -2,19 +2,24 @@
 """Offline end-to-end test: a fake WordPress-like site on localhost plus fake Google, Bing and
 IndexNow clients. Exercises every stage and checks each decision. No network beyond 127.0.0.1."""
 import base64
+import datetime as dt
 import json
+import os
 import random
 import shutil
 import tempfile
 import threading
-from collections import defaultdict
+import time
+import zlib
+from collections import Counter, defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
-from . import audit, bing, brain, config, discover, fresh, google, links, model, report, store, submit, triage, util, wp
+from . import (audit, bing, brain, config, dashboard, discover, fresh, google, links, model, report, store, submit, triage,
+               util, wp)
 
 KEY = "abcdef1234567890abcdef1234567890"
 VOCAB = [f"w{i}x" for i in range(600)]
@@ -42,6 +47,7 @@ FRESH = []          # (path, modified_gmt) returned by modified_after queries
 WP_USER, WP_PW = "tester", "abcd efgh ijkl mnop qrst uvwx"
 POST_IDS = {p: 100 + i for i, p in enumerate(PAGES)}
 EDGE = {}           # path -> html an edge cache (Cloudflare) keeps serving on the plain URL
+FAIL_PAGE = []      # page numbers of the modified_after feed that answer HTTP 500 (partial-failure test)
 
 
 def body_text(path, n, dup=False):
@@ -127,7 +133,11 @@ class Handler(BaseHTTPRequestHandler):
                             "content": {"raw": RAW.get(x) or f"<p>{body_text(x, PAGES[x][1], PAGES[x][2].get('dup'))}</p>"}}
                            for x in paths if x in POST_IDS])
             if "modified_after" in q:
-                return js([{"link": f"{base}{x}", "modified_gmt": m, "date_gmt": m} for x, m in FRESH])
+                if int((q.get("page") or ["1"])[0]) in FAIL_PAGE:
+                    return self._send(500, "{}", "application/json")
+                start = (int((q.get("page") or ["1"])[0]) - 1) * int((q.get("per_page") or ["100"])[0])
+                stop = start + int((q.get("per_page") or ["100"])[0])
+                return js([{"link": f"{base}{x}", "modified_gmt": m, "date_gmt": m} for x, m in FRESH[start:stop]])
             return js([{"link": f"{base}{x}", "modified_gmt": "2026-10-20T10:00:00", "date_gmt": "2026-06-01T10:00:00"}
                        for x in ("/good-indexed/", "/not-in-sitemap/")])
         pid = int(p.rsplit("/", 1)[-1]) if p.rsplit("/", 1)[-1].isdigit() else None
@@ -217,6 +227,22 @@ class FakeBing:
                 "DiscoveryDate": "/Date(1750000000000)/", "HttpStatus": 200}
 
 
+class ThrottlingBing(FakeBing):
+    """GetUrlInfo answers `ok` times, then throttles the whole account like Bing does."""
+
+    def __init__(self, base, ok, fail_hosts=()):
+        super().__init__(base)
+        self.ok, self.n, self.fail_hosts = ok, 0, fail_hosts
+
+    def url_info(self, site_url, url):
+        self.n += 1
+        if any(h in url for h in self.fail_hosts):
+            raise RuntimeError("GetUrlInfo HTTP 500: server error")
+        if self.n > self.ok:
+            raise RuntimeError('GetUrlInfo HTTP 400: {"ErrorCode":4,"Message":"ERROR!!! ThrottleUser"}')
+        return {"LastCrawledDate": "/Date(-62135596800000)/", "DiscoveryDate": "/Date(1750000000000)/", "HttpStatus": 200}
+
+
 class FakeIndexNow:
     def __init__(self):
         self.calls = []
@@ -281,6 +307,24 @@ def main():
     used, _ = store.quota_used(db, util.pacific_day(), props[base])
     check(used == n_inspected, "inspection quota is tracked")
 
+    # A failed inspection must not destroy previously verified Google evidence.
+    old = db.execute("SELECT coverage, verdict FROM gsc WHERE url = ?", (base + "/good-crawled/",)).fetchone()
+    original_inspect = gsc.inspect
+    gsc.inspect = lambda prop, url: {"error": "HTTP 503: temporary outage", "http": 503}
+    db.execute("UPDATE gsc SET inspected_at='2026-01-01T00:00:00+00:00' WHERE url=?", (base + "/good-crawled/",))
+    google.inspect_due(db, gsc, props, only_urls=[base + "/good-crawled/"])
+    after = db.execute("SELECT coverage, verdict, error FROM gsc WHERE url=?", (base + "/good-crawled/",)).fetchone()
+    check(after["coverage"] == old["coverage"] and after["verdict"] == old["verdict"] and bool(after["error"]),
+          "transient GSC errors preserve the last known indexing verdict")
+    check(db.execute("SELECT COUNT(*) FROM gsc_history WHERE coverage LIKE '%503%'").fetchone()[0] == 0,
+          "a failed inspection leaves no history row that could hide a real transition")
+    gsc.inspect = original_inspect
+    db.execute("UPDATE gsc SET error=NULL, inspected_at='2026-10-25T00:00:00+00:00' WHERE url=?",
+               (base + "/good-crawled/",))
+
+
+    submit.run(db, sites, bing_client=bng, bing_sites=bsites, indexnow_client=inow, max_per_site=0)
+    check(not inow.calls, "zero submission limit sends nothing")
     submit.run(db, sites, bing_client=bng, bing_sites=bsites, indexnow_client=inow)
     sent = {urlsplit(u).path for c in inow.calls for u in c[3]}
     check(sent and not ({"/gone/", "/redirect-me/", "/noindex/", "/canon-other/", "/private/secret/", "/category/plants/"} & sent),
@@ -477,14 +521,17 @@ def main():
               "the cache purge uses only the app token, purges just that page, caches the zone and scrubs the token")
         n_rep = len(reports)
         links.recheck(db, rep)
-        check(len(reports) == n_rep, "re-check while still cached: no repeated report")
+        check(len(reports) == n_rep and len([c for c in links.requests.calls if c[0] == "POST"]) == len(purges),
+              "re-check while still cached: no repeated report and no repeated purge request during the cool-down")
         del EDGE["/good-indexed/"]
         links.recheck(db, rep)
         check(len(reports) == n_rep + 1 and "visible to visitors" in reports[-1][2]
               and "visible to visitors" in db.execute("SELECT result FROM link_ops WHERE id=?", (lk["id"],)).fetchone()[0],
               "once the cache refreshes, the re-check reports the link as visible to visitors")
+        store.set_meta(db, base, cf_purge_denied=None)               # the owner fixed the token: the cool-down is over
         links.apply(db, [dict(lk, status="undo")], {}, {base: wpc}, rep)
-        check(reports[-1][1] == "undone" and "cache purge: not permitted" in reports[-1][2], "undo also purges the page")
+        check(reports[-1][1] == "undone" and "cache purge: not permitted" in reports[-1][2]
+              and len([c for c in links.requests.calls if c[0] == "POST"]) == len(purges) + 1, "undo also purges the page")
     finally:
         links.requests = real_requests
         config.CF_TOKEN_FILE = tmp / "no-token.txt"
@@ -499,7 +546,26 @@ def main():
     n_calls = len(inow.calls)
     submit.run(db, sites, bing_client=bng, bing_sites=bsites, indexnow_client=inow)
     check(len(inow.calls) == n_calls + 1 and base + "/brand-new/" in inow.calls[-1][3], "a brand-new post is submitted on the same tick")
-    check(not fresh.changed(db, sites), "the watermark moves on: the same post is not picked up twice")
+    check(bool(fresh.changed(db, sites)), "a change remains pending until explicitly acknowledged")
+    fresh.acknowledge(db, ch)
+    check(not fresh.changed(db, sites), "after processing, the watermark prevents duplicate work")
+
+    # more than 100 changed posts are all found (the feed is paged), and a page that fails loses nothing
+    FRESH.clear()
+    store.set_meta(db, base, fresh_watermark="2026-10-01T00:00:00+00:00")
+    FRESH.extend((f"/bulk-{i}/", f"2026-10-24T{i // 60:02d}:{i % 60:02d}:00") for i in range(250))
+    big = fresh.changed(db, sites)
+    check(len(big.get(base, [])) == 250 and store.get_meta(db, base)["fresh_watermark"].startswith("2026-10-01"),
+          "250 changed posts across three feed pages are all found and the watermark has not moved yet")
+    FAIL_PAGE.append(2)
+    partial = fresh.changed(db, sites)
+    check(base not in partial and store.get_meta(db, base)["fresh_watermark"].startswith("2026-10-01"),
+          "when one page of the feed fails, nothing from that site is acknowledged and the whole scan is retried")
+    FAIL_PAGE.clear()
+    fresh.acknowledge(db, fresh.changed(db, sites))
+    check(store.get_meta(db, base)["fresh_watermark"].startswith("2026-10-24T04:09"),
+          "after a clean pass the watermark moves to the newest change")
+    FRESH.clear()
 
     # ---- regression alerts and Google transitions
     FLIP.add("/good-unknown/")
@@ -521,6 +587,170 @@ def main():
     check(base in html and "Diagnosis" in html, "HTML report written")
     logs = "".join(p.read_text(encoding="utf-8") for p in (tmp / "logs").glob("*.txt"))
     check(KEY not in logs and KEY not in html, "IndexNow key never appears in logs or report")
+
+    # ---- link placement: running text only, never labels or quoted terms; context is plain text
+    run_ok = "<p>Most runners replace their shoes around 300 miles, so a good training shoe for lifting matters a lot here.</p>"
+    hit = links.find(run_ok, "training shoe", "https://x.example/y/")
+    check(bool(hit) and run_ok[hit[0]:hit[1]] == "training shoe", "an anchor inside a full sentence is accepted")
+    refused = {
+        "a quoted term": "<p>Meanwhile, searches for &#8220;running injury prevention&#8221; plateaued across the whole year.</p>",
+        "a straight-quoted term": '<p>The calculator shows your "shadow number" talents that you are suppressing every single day.</p>',
+        "a list label": "<ul><li>Fish Oil (Omega-3 Fatty Acids):</li></ul>",
+        "a short fragment": "<p>Buy fish oil now</p>",
+        "a lead-in": "<p>Here is what to know about fish oil for older dogs with stiff hips:</p>",
+    }
+    phrases = {"a quoted term": "running injury prevention", "a straight-quoted term": "shadow number"}
+    check(all(not links.find(raw, phrases.get(k, "fish oil"), "https://x.example/y/") for k, raw in refused.items()),
+          "no anchor inside quotation marks, a list label, a fragment or a lead-in sentence")
+    ctx = links.find("<p>Women&#8217;s running shoes with a carbon plate can feel very bouncy for most beginners.</p>",
+                     "carbon plate", "https://x.example/y/")
+    check(bool(ctx) and "&#" not in ctx[2] and "\u2019" in ctx[2], "the context shown to the owner has its HTML entities decoded")
+    db.execute("INSERT OR REPLACE INTO link_corpus(url, site, post_id, post_type, modified, raw) VALUES(?,?,?,?,?,?)",
+               (base + "/", base, POST_IDS["/good-indexed/"], "pages", "2026-10-20T10:00:00", zlib.compress(b"x")))
+    check(links.locate(db, wpc, base + "/") == (POST_IDS["/good-indexed/"], "pages")
+          and links.locate(db, wpc, base + "/good-crawled/") == (POST_IDS["/good-crawled/"], "posts"),
+          "a source is found through the stored corpus (front page, odd permalinks), else by its slug")
+    db.execute("DELETE FROM link_corpus WHERE url=?", (base + "/",))
+
+    # ---- Bing GetUrlInfo: the throttle is per account, so sites take turns and the first throttle ends the check
+    long_ago = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=5)).isoformat()
+    hosts = {f"t{i}.example": f"https://t{i}.example/" for i in (1, 2)}
+    for host in hosts:
+        for i in range(6):
+            u = f"https://{host}/p{i}/"
+            db.execute("INSERT INTO urls(url, site, kind, in_sitemap, first_seen, last_seen) VALUES(?,?,?,?,?,?)",
+                       (u, host, "post", 1, long_ago, long_ago))
+            db.execute("INSERT INTO submissions(url, channel, submitted_at, lastmod, http_status) VALUES(?,?,?,?,?)",
+                       (u, "bing", long_ago, None, 200))
+    bing.PAUSE_S = 0
+    thr = ThrottlingBing(base, ok=5)
+    n_done = bing.check_url_info(db, thr, hosts, max_per_site=6)
+    got = Counter(r[0].split("/")[2] for r in db.execute("SELECT url FROM bing_info WHERE url LIKE 'https://t%'"))
+    check(n_done == 5 and thr.n == 6 and got == {"t1.example": 3, "t2.example": 2},
+          "Bing URL checks alternate between sites, stop at the first throttle, and record only answered URLs")
+    flaky = ThrottlingBing(base, ok=99, fail_hosts=("t1.example",))
+    db.execute("DELETE FROM bing_info")
+    n_done = bing.check_url_info(db, flaky, hosts, max_per_site=6)
+    got = Counter(r[0].split("/")[2] for r in db.execute("SELECT url FROM bing_info WHERE url LIKE 'https://t%'"))
+    check(n_done == 6 and got == {"t2.example": 6} and flaky.n == 3 + 6,
+          "a site whose checks keep failing is dropped after 3 errors without starving the others")
+
+    # ---- the engine's own orchestration (imported as a module so its functions can be called)
+    import indexengine as ie
+    db.execute("DELETE FROM bing_info")
+    for host, burl in hosts.items():
+        store.set_meta(db, host, bing_site=burl)
+    real_creds, real_client = ie.load_credentials, bing.working_client
+    ie.load_credentials = lambda: (None, ["fake-key"])
+    bing.working_client = lambda keys: ThrottlingBing(base, ok=7)
+    targs = ie.build_parser().parse_args(["tick"])
+    n_tr = ie.bing_trickle(targs, db, list(hosts), {})
+    off = ie.bing_trickle(targs, db, list(hosts), {"bing_trickle": False})
+    ie.load_credentials, bing.working_client = real_creds, real_client
+    check(n_tr == 7 and off == 0, "idle ticks trickle a few Bing crawl checks, stop at the first throttle, and can be switched off")
+    config.LOCK_FILE = tmp / "run.lock"
+    with ie.RunLock():
+        try:
+            with ie.RunLock():
+                second = True
+        except ie.Locked:
+            second = False
+        holder = ie.lock_holder()
+    check(not second and holder and holder[0] == os.getpid() and not config.LOCK_FILE.exists() and ie.lock_holder() is None,
+          "the run lock is exclusive while held and released afterwards")
+    config.LOCK_FILE.write_text(json.dumps({"pid": 2_000_000_000, "at": util.now_iso()}), encoding="utf-8")
+    try:
+        with ie.RunLock():
+            took_over = True
+    except ie.Locked:
+        took_over = False
+    check(took_over and ie.lock_holder() is None, "a lock left by a crashed run (its process is gone) is taken over at once")
+    config.LOCK_FILE.write_text("", encoding="utf-8")                              # a power cut left it empty
+    check(ie.lock_holder() == ("?", None), "an unreadable lock is honoured for a moment (it may be being written)")
+    os.utime(config.LOCK_FILE, (time.time() - 300, time.time() - 300))
+    check(ie.lock_holder() is None, "an unreadable lock older than a minute is not honoured")
+    config.LOCK_FILE.unlink()
+
+    now_local = dt.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+    due = now_local.replace(hour=10, minute=30)
+
+    def sched(status, minutes_after_due):
+        t = (due + dt.timedelta(minutes=minutes_after_due)).astimezone(dt.timezone.utc).isoformat()
+        db.execute("INSERT INTO local_runs(started_at, status, trigger) VALUES(?,?,'schedule')", (t, status))
+
+    db.execute("DELETE FROM local_runs")
+    ok = [ie.daily_due(db, "10:30", now_local.replace(hour=9)) is False, ie.daily_due(db, "10:30", now_local) is True]
+    sched("failed", 1)
+    ok.append(ie.daily_due(db, "10:30", now_local) is True)                        # failed 89 minutes ago: retry
+    sched("failed", 85)
+    ok.append(ie.daily_due(db, "10:30", now_local) is False)                       # failed 5 minutes ago: wait
+    sched("failed", 50)
+    ok.append(ie.daily_due(db, "10:30", now_local.replace(hour=14)) is False)      # 3 failures: give up for today
+    db.execute("DELETE FROM local_runs")
+    sched("running", 10)                                                          # "running" since 10:40, still so at 22:00
+    ok.append(ie.daily_due(db, "10:30", now_local.replace(hour=22)) is True)       # started > 4 h ago: it died, run again
+    db.execute("DELETE FROM local_runs")
+    sched("running", 10)
+    ok.append(ie.daily_due(db, "10:30", now_local.replace(hour=11)) is False)      # 20 minutes in: let it finish
+    db.execute("DELETE FROM local_runs")
+    sched("ok", 1)
+    ok.append(ie.daily_due(db, "10:30", now_local) is False)
+    db.execute("DELETE FROM local_runs")
+    db.commit()
+    check(all(ok), f"the daily run is retried after a failure (30 min apart, 3 tries) and not repeated after success {ok}")
+
+    # nothing writes to a WordPress site unless every switch allows it
+    plain = ie.build_parser().parse_args(["run"])
+    blocked = [ie.writes_allowed(ie.build_parser().parse_args(["run", f]), {}) for f in
+               ("--dry-run", "--no-submit", "--no-links", "--no-creds", "--no-wp")]
+    check(ie.writes_allowed(plain, {}) and not any(blocked) and not ie.writes_allowed(plain, {"submit_paused": True}),
+          "link edits happen only when not paused, dry-run, measure-only, offline or without links")
+
+    class NoDash:
+        def link_result(self, *a, **k):
+            raise AssertionError("a paused site's link must not even be reported on")
+
+    skipped_links = ie.apply_links(db, NoDash(), {"links": [{"id": "0" * 16, "site": "gearuptofit.com", "status": "approved",
+                                                              "source": "https://gearuptofit.com/a/", "target": "https://gearuptofit.com/b/",
+                                                              "anchor": "x"}]}, {"sites_disabled": ["gearuptofit.com"]})
+    check(skipped_links == set(), "approved links on a paused site are left alone")
+
+    # the dashboard's pause / disabled sites stay in force when it cannot be reached
+    dashboard.apply_state(db, {"url_state": [], "settings": {"sites_disabled": ["gearuptofit.com"], "submit_paused": True}})
+    check(dashboard.cached_settings(db) == {"sites_disabled": ["gearuptofit.com"], "submit_paused": True},
+          "the last dashboard settings are kept locally")
+    try:
+        ie.run(ie.build_parser().parse_args(["run", "--no-dashboard", "--site", "gearuptofit.com"]))
+        skipped = None
+    except ie.Skipped as e:
+        skipped = str(e)
+    check(skipped is not None and "gearuptofit.com" in skipped,
+          "a run for a paused site is skipped, say why, and works offline from the cached settings")
+    dashboard.apply_state(db, {"url_state": [], "settings": {}})
+    check(dashboard.cached_settings(db) == {}, "settings the owner has cleared are not resurrected from the local copy")
+
+    # a quick tick that crashes closes its run as failed and does not move the watermark
+    store.set_meta(db, base, fresh_watermark="2026-10-01T00:00:00+00:00")
+    real_changed, real_analyze = fresh.changed, brain.analyze
+    fresh.changed = lambda d, s: {base: [(base + "/brand-new/", "post", "2026-10-25T12:00:00+00:00", None)]}
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    brain.analyze, real_log = boom, ie.log
+    ie.log = lambda *a, **k: None                  # the engine logs the traceback; keep it out of the test output
+    db.commit()
+    try:
+        ie.quick(ie.build_parser().parse_args(["tick", "--no-creds", "--no-submit", "--no-dashboard"]), None, None, {})
+        crashed = False
+    except RuntimeError:
+        crashed = True
+    finally:
+        fresh.changed, brain.analyze, ie.log = real_changed, real_analyze, real_log
+    last = db.execute("SELECT status FROM local_runs WHERE trigger='fresh' ORDER BY rowid DESC LIMIT 1").fetchone()
+    check(crashed and last and last["status"] == "failed"
+          and store.get_meta(db, base)["fresh_watermark"] == "2026-10-01T00:00:00+00:00" and not config.LOCK_FILE.exists(),
+          "a crashed quick tick is recorded as failed, releases the lock and leaves the watermark so nothing is lost")
 
     server.shutdown()
     db.close()

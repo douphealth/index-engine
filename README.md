@@ -82,7 +82,7 @@ python D:\Claude\SEO-Setup\index-engine\indexengine.py tick
 | Requests | Today's "Request indexing" list with direct Search Console links. Mark each one **done**; it stays off the list for 14 days |
 | Fixes | Open fixes with the exact command or wp-admin step. Mark them done or skipped |
 | Runs | Queue, history with totals, and the last run's log |
-| Settings | Enable or disable sites, **pause all submissions**, daily run time, request-list size, and an inspection cap |
+| Settings | Enable or disable sites, **pause everything that changes something** (submissions and link edits), daily run time, request-list size, and an inspection cap |
 
 **Run now** (top right) queues a run for one site or all sites. It can be set to measure only, re-fetch every page, or dry-run.
 
@@ -222,6 +222,16 @@ The task **"Index Engine"** is already registered. It runs `indexengine.py tick`
 - a lock file so runs never overlap
 
 `tick` decides whether anything needs doing. A queued dashboard run goes first; otherwise the daily run happens once, after the time set in the dashboard.
+
+**What it guarantees when things go wrong**
+- **Pause and paused sites are honoured even offline.** The engine keeps the last settings the dashboard gave it. If the dashboard cannot be reached, a paused engine stays paused and a disabled site stays untouched, instead of the settings silently lapsing.
+- **A paused site is never touched.** Not by a scheduled run, a queued run (the dashboard marks it "skipped: paused in Settings", not "done"), a link edit or the fresh-content check. With everything paused, approved links and undo wait too, and the Links page says so.
+- **One run at a time, and a crash cannot block the next.** The lock is taken atomically. A lock left by a crashed or killed run (its process is gone) is taken over at once; a busy lock is not a failure.
+- **A failed daily run is retried** (30 minutes apart, at most 3 times a day) instead of costing the day. A run stuck "running" for more than 4 hours counts as dead.
+- **A crashed quick tick loses nothing.** It is recorded as failed, the lock is released, and the new-post watermark has not moved, so the next tick picks the same posts up again.
+- **A run the PC never finished does not block the queue.** The dashboard closes a run that has been "running" for 3 hours as failed, so you can queue another.
+- **Evidence is never overwritten by an error.** A failed Google inspection keeps the last real verdict and leaves no history row; a Bing lookup is only recorded after Bing answered for that URL.
+- **Bing's lookup limit is shared fairly.** `GetUrlInfo` is throttled per account, so the sites take turns, calls are paced, and the first throttle ends the check until the next run.
 
 To check it:
 

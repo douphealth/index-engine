@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine import (alerts, audit, bing, brain, config, discover, fresh, google, links, publish, report,  # noqa: E402
                     store, submit, wp)
-from engine.dashboard import Dashboard, apply_state, safe  # noqa: E402
+from engine.dashboard import Dashboard, apply_state, cached_settings, safe  # noqa: E402
 from engine.util import load_credentials, log, log_text, now_iso, open_log, parse_ts, utf8_stdout  # noqa: E402
 
 
@@ -38,19 +38,81 @@ class Locked(Exception):
     pass
 
 
+class Skipped(Exception):
+    """A run that had nothing it was allowed to do (every requested site is paused). Not a failure."""
+
+
+def _pid_alive(pid):
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = ctypes.c_void_p
+        handle = k32.OpenProcess(0x1000, False, pid)             # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5                  # access denied: it exists, it is just not ours to open
+        try:
+            code = ctypes.c_ulong()
+            return bool(k32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))) and code.value == 259   # STILL_ACTIVE
+        finally:
+            k32.CloseHandle(ctypes.c_void_p(handle))
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def lock_holder():
+    """(pid, started_at) of the run that holds the lock, or None when it is free, stale or its process is gone."""
+    f = config.LOCK_FILE
+    try:
+        age = time.time() - f.stat().st_mtime
+    except OSError:
+        return None
+    if age >= config.LOCK_STALE_HOURS * 3600:
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ("?", None) if age < 60 else None      # being written right now, or left empty by a power cut
+    return (data.get("pid"), data.get("at")) if _pid_alive(data.get("pid")) else None
+
+
 class RunLock:
-    """One run at a time on this PC (the 30-minute tick and a manual run must not overlap)."""
+    """One run at a time on this PC (the scheduler tick and a manual run must not overlap). Taken atomically; a lock
+    left by a crashed or killed run (its process is gone) is taken over at once instead of blocking for hours."""
 
     def __enter__(self):
         f = config.LOCK_FILE
         f.parent.mkdir(parents=True, exist_ok=True)
-        if f.exists() and time.time() - f.stat().st_mtime < config.LOCK_STALE_HOURS * 3600:
-            raise Locked(f"another run started {time.ctime(f.stat().st_mtime)} is still going (lock {f})")
-        f.write_text(json.dumps({"pid": os.getpid(), "at": now_iso()}), encoding="utf-8")
-        return self
+        for _ in range(3):
+            try:
+                fd = os.open(str(f), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                holder = lock_holder()
+                if holder:
+                    raise Locked(f"another run (pid {holder[0]}, started {holder[1]}) is still going (lock {f})")
+                f.unlink(missing_ok=True)          # its owner is gone
+                continue
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"pid": os.getpid(), "at": now_iso()}))
+            return self
+        raise Locked(f"could not take the run lock {f}")
 
     def __exit__(self, *exc):
-        config.LOCK_FILE.unlink(missing_ok=True)
+        try:
+            if json.loads(config.LOCK_FILE.read_text(encoding="utf-8")).get("pid") == os.getpid():
+                config.LOCK_FILE.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
 
 
 def engines(args, db, sites):
@@ -75,13 +137,21 @@ def wp_clients(sites):
     return out
 
 
+def writes_allowed(args, settings=None):
+    """No WordPress edits in measure-only, dry-run, no-credentials or no-WordPress modes."""
+    return not (settings or {}).get("submit_paused") and not any(getattr(args, flag, False) for flag in
+                   ("no_submit", "dry_run", "no_links", "no_creds", "no_wp"))
+
+
 def apply_links(db, dash, state, settings):
     """Apply approved (or, with autopilot, auto-approved) internal links and process undo requests."""
     def report_(lid, status, result, applied_at):
         safe(dash.link_result, lid, status, result, applied_at, what="report link result")
 
     links.recheck(db, report_)          # applied earlier, hidden by an edge cache until now?
-    todo = [lk for lk in (state or {}).get("links") or [] if lk.get("status") in ("approved", "undo", "proposed")]
+    disabled = set(settings.get("sites_disabled") or [])
+    todo = [lk for lk in (state or {}).get("links") or []
+            if lk.get("site") not in disabled and lk.get("status") in ("approved", "undo", "proposed")]
     if not todo:
         return set()
     clients = wp_clients(sorted({lk["site"] for lk in todo}))
@@ -142,10 +212,17 @@ def run(args, dash=None, state=None, trigger="manual"):
             dash = Dashboard.from_config()
         if dash and state is None:
             state = safe(dash.state, what="pull state")
-        settings = apply_state(db, state) if (dash and state) else {}
+        settings = apply_state(db, state) if (dash and state) else cached_settings(db)
 
         disabled = set(settings.get("sites_disabled") or [])
-        sites = args.site or [s for s in config.SITES if s not in disabled]
+        # Disabled sites are excluded even when explicitly requested from the dashboard.
+        # A local CLI override would need an explicit, separately audited policy.
+        sites = [s for s in (args.site or config.SITES) if s in config.SITES and s not in disabled]
+        if not sites:
+            why = ("paused in Settings: " + ", ".join(sorted(set(args.site or []) & disabled))) if set(args.site or []) & disabled \
+                else "no known site selected"
+            log(f"No enabled sites to run ({why}); nothing was done.")
+            raise Skipped(why)
         if settings.get("submit_paused") and not args.no_submit:
             log("Submissions are paused in the dashboard settings: measuring only.")
             args.no_submit = True
@@ -163,7 +240,7 @@ def run(args, dash=None, state=None, trigger="manual"):
                               (now_iso(), trigger)).lastrowid
         db.commit()
         try:
-            if dash and state and not args.dry_run and not args.no_links:
+            if dash and state and writes_allowed(args, settings):
                 apply_links(db, dash, state, settings)
             results, submitted, intel, proposals = pipeline(db, args, sites)
         except Exception as e:
@@ -185,6 +262,25 @@ def run(args, dash=None, state=None, trigger="manual"):
         return results
 
 
+TRICKLE_MAX = 15            # Bing crawl-status lookups per tick
+
+
+def bing_trickle(args, db, sites, settings):
+    """Between daily runs: a few Bing crawl-status lookups on every tick that has nothing else to do. Bing throttles
+    GetUrlInfo for the whole account (it stops after about ten calls in a burst), so asking a little, often, and
+    stopping at the first throttle finds the highest rate Bing really allows without ever hammering it.
+    Read-only: it stays on while everything else is paused."""
+    if args.no_creds or args.no_bing or settings.get("bing_trickle") is False:
+        return 0
+    _, keys = load_credentials()
+    client = bing.working_client(keys) if keys else None
+    bsites = {s: store.get_meta(db, s).get("bing_site") for s in sites}
+    bsites = {s: burl for s, burl in bsites.items() if burl}           # resolved by the daily run
+    if not client or not bsites:
+        return 0
+    return bing.check_url_info(db, client, bsites, max_per_site=50, max_total=TRICKLE_MAX)
+
+
 def quick(args, dash, state, settings):
     """Between daily runs: apply approved links, then catch new/updated posts and get them indexed within minutes."""
     with RunLock():
@@ -193,11 +289,12 @@ def quick(args, dash, state, settings):
             apply_state(db, state)
         disabled = set(settings.get("sites_disabled") or [])
         sites = [s for s in config.SITES if s not in disabled]
-        touched = apply_links(db, dash, state, settings) if (dash and state) else set()
+        touched = apply_links(db, dash, state, settings) if (dash and state and writes_allowed(args, settings)) else set()
         changes = fresh.changed(db, sites) if settings.get("fresh_check", True) else {}
         if not changes and not touched:
             db.commit()
-            print("Quick tick: nothing new.")
+            n = bing_trickle(args, db, sites, settings)
+            print(f"Quick tick: nothing new{f'; {n} Bing crawl checks' if n else ''}.")
             return
         open_log("fresh")
         log(f"Quick tick: {sum(len(v) for v in changes.values())} new/updated URLs on {len(changes)} sites; "
@@ -205,32 +302,67 @@ def quick(args, dash, state, settings):
         run_id = safe(dash.run_start, "fresh", {"site": ",".join(sorted(changes))}, what="open run") if dash else None
         local_id = db.execute("INSERT INTO local_runs(started_at, status, trigger) VALUES(?, 'running', 'fresh')",
                               (now_iso(),)).lastrowid
+        db.commit()
         submitted = {}
-        if changes:
-            urls = fresh.ingest(db, changes)
-            gclient, bclient, props, bsites = engines(args, db, list(changes))
-            if props:
-                google.inspect_due(db, gclient, props, only_urls=urls)
-            if not settings.get("submit_paused"):
-                submitted = submit.run(db, list(changes), bing_client=bclient, bing_sites=bsites)
-        results, intel = brain.analyze(db, config.SITES)
-        report.write(db, results)
+        try:
+            if changes:
+                urls = fresh.ingest(db, changes)
+                gclient, bclient, props, bsites = engines(args, db, list(changes))
+                if props:
+                    google.inspect_due(db, gclient, props, only_urls=urls)
+                if not (settings.get("submit_paused") or args.no_submit or args.dry_run):
+                    submitted = submit.run(db, list(changes), bing_client=bclient, bing_sites=bsites)
+            results, intel = brain.analyze(db, config.SITES)
+            report.write(db, results)
+            run_summary = upload(dash, db, results, intel, submitted, disabled) if dash else None
+        except Exception as e:
+            log(traceback.format_exc())
+            db.execute("UPDATE local_runs SET finished_at=?, status='failed' WHERE rowid=?", (now_iso(), local_id))
+            db.commit()
+            if dash:
+                safe(dash.put, "log", log_text()[-200_000:], what="upload log")
+                safe(dash.run_finish, run_id, "failed", error=f"{type(e).__name__}: {e}", what="close run")
+            raise                                  # the watermark did not move: the next tick retries these posts
         if dash:
-            run_summary = upload(dash, db, results, intel, submitted, disabled)
             safe(dash.run_finish, run_id, "ok", summary=run_summary, what="close run")
         db.execute("UPDATE local_runs SET finished_at=?, status='ok' WHERE rowid=?", (now_iso(), local_id))
         db.commit()
+        # Only advance after processing succeeds; a crash must not silently lose WordPress updates.
+        if changes:
+            fresh.acknowledge(db, changes)
+
+
+def daily_due(db, hhmm, now=None):
+    """Is today's scheduled run due? Once the set time has passed, yes until one run has finished ok (or is still
+    running). A failed run is retried after 30 minutes, at most 3 times a day, instead of costing the whole day."""
+    now = now or dt.datetime.now()
+    due = now.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:5]), second=0, microsecond=0)
+    if now < due:
+        return False
+    since, now_utc = due.astimezone(dt.timezone.utc), now.astimezone(dt.timezone.utc)
+    stale = dt.timedelta(hours=config.LOCK_STALE_HOURS)
+    failures = []
+    for r in db.execute("SELECT started_at, status FROM local_runs WHERE trigger='schedule' ORDER BY started_at"):
+        t = parse_ts(r["started_at"])
+        if not t or t < since:
+            continue
+        if r["status"] == "ok" or (r["status"] == "running" and now_utc - t < stale):
+            return False
+        failures.append(t)                           # failed, or "running" for longer than any run can take
+    return not failures or (len(failures) < 3 and now_utc - max(failures) >= dt.timedelta(minutes=30))
 
 
 def tick(args):
     """Scheduler entry point (every 10 minutes): heartbeat, then a queued dashboard run, else the daily run when due,
     else a quick tick."""
-    if config.LOCK_FILE.exists() and time.time() - config.LOCK_FILE.stat().st_mtime < config.LOCK_STALE_HOURS * 3600:
+    if lock_holder():
         print("A run is in progress; nothing to do.")
         return
+    db = store.connect()
     dash = None if args.no_dashboard else Dashboard.from_config()
     state = safe(dash.state, what="pull state") if dash else None
-    settings = (state or {}).get("settings") or {}
+    # When the dashboard cannot be reached, keep honouring the last settings (paused / disabled sites) it gave us.
+    settings = (state.get("settings") or {}) if state is not None else cached_settings(db)
     cmd = next((c for c in (state or {}).get("commands", []) if c.get("kind") == "run"), None)
     if cmd:
         o = cmd.get("options") or {}
@@ -240,17 +372,14 @@ def tick(args):
         try:
             run(build_parser().parse_args(argv), dash, state, trigger="dashboard")
             safe(dash.command, cmd["id"], "done", "ok", what="close command")
+        except Skipped as e:
+            safe(dash.command, cmd["id"], "done", f"skipped: {e}", what="close command")
         except Exception as e:
             safe(dash.command, cmd["id"], "failed", f"{type(e).__name__}: {str(e)[:400]}", what="close command")
             raise
         return
 
-    hhmm = settings.get("daily_run_time") or config.DAILY_RUN_TIME
-    now = dt.datetime.now()
-    due = now.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:]), second=0, microsecond=0)
-    db = store.connect()
-    last = db.execute("SELECT MAX(started_at) FROM local_runs WHERE trigger='schedule'").fetchone()[0]
-    if now >= due and not (last and parse_ts(last) >= due.astimezone(dt.timezone.utc)):
+    if daily_due(db, settings.get("daily_run_time") or config.DAILY_RUN_TIME):
         run(build_parser().parse_args(["run"]), dash, state, trigger="schedule")
         return
     quick(args, dash, state, settings)
@@ -317,9 +446,11 @@ def main():
         else:
             from engine import selftest
             sys.exit(selftest.main())
+    except Skipped as e:
+        print(f"Nothing to do: {e}")
     except Locked as e:
         print(e)
-        sys.exit(3)
+        sys.exit(0 if args.command == "tick" else 3)
 
 
 if __name__ == "__main__":

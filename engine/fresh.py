@@ -9,7 +9,7 @@ from .util import get, log, norm, now_iso, parse_ts
 
 
 def changed(db, sites):
-    """{site: [(url, kind, modified_gmt, date_gmt)]} changed since the site's watermark (first call only sets it)."""
+    """Find recent WordPress changes. The watermark advances only after successful processing."""
     out = {}
     for site in sites:
         meta = store.get_meta(db, site)
@@ -22,24 +22,43 @@ def changed(db, sites):
             continue
         since = (wm - dt.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")   # WP compares in site time; margin, then exact filter
         newest, items = wm, []
+        failed = False
         for typ in ("posts", "pages"):
-            try:
-                r = get(f"{base}/wp-json/wp/v2/{typ}", timeout=(10, 60),
-                        params={"modified_after": since, "per_page": 100, "orderby": "modified",
-                                "_fields": "link,modified_gmt,date_gmt", "_ie": int(dt.datetime.now().timestamp())})
-            except Exception as e:
-                log(f"[fresh] {site}: {typ} check failed: {type(e).__name__}")
-                continue
-            if r.status_code != 200 or "json" not in r.headers.get("Content-Type", ""):
-                continue
-            for it in r.json() if isinstance(r.json(), list) else []:
-                mod = parse_ts((it.get("modified_gmt") or "") + "+00:00")
-                if mod and mod > wm and it.get("link"):
-                    items.append((norm(it["link"]), typ[:-1], it["modified_gmt"] + "+00:00", it.get("date_gmt")))
-                    newest = max(newest, mod)
-        store.set_meta(db, site, fresh_watermark=newest.isoformat())
+            page = 1
+            while True:
+                try:
+                    r = get(f"{base}/wp-json/wp/v2/{typ}", timeout=(10, 60),
+                            params={"modified_after": since, "per_page": 100, "page": page,
+                                    "orderby": "modified", "order": "asc",
+                                    "_fields": "link,modified_gmt,date_gmt",
+                                    "_ie": int(dt.datetime.now().timestamp())})
+                    if r.status_code != 200 or "json" not in r.headers.get("Content-Type", ""):
+                        raise RuntimeError(f"HTTP {r.status_code}")
+                    data = r.json()
+                    if not isinstance(data, list):
+                        raise ValueError("WordPress response is not a list")
+                except Exception as e:
+                    log(f"[fresh] {site}: {typ} page {page} failed: {type(e).__name__}")
+                    failed = True
+                    break
+                for it in data:
+                    mod = parse_ts((it.get("modified_gmt") or "") + "+00:00")
+                    if mod and mod > wm and it.get("link"):
+                        items.append((norm(it["link"]), typ[:-1], it["modified_gmt"] + "+00:00", it.get("date_gmt")))
+                        newest = max(newest, mod)
+                if len(data) < 100:
+                    break
+                page += 1
+                if page > 1000:
+                    log(f"[fresh] {site}: pagination safety limit reached")
+                    failed = True
+                    break
+        if failed:
+            # No partial batch is acknowledged; retry all types on the next tick.
+            continue
+        # Never acknowledge a partial or failed scan; the next tick must retry it.
         if items:
-            out[site] = items
+            out[site] = items          # the watermark moves in acknowledge(), after these are processed
     return out
 
 
@@ -59,3 +78,14 @@ def ingest(db, changes):
         log(f"[fresh] {site}: {len(items)} new or updated: " + ", ".join(u for u, *_ in items[:5]) + (" ..." if len(items) > 5 else ""))
     db.commit()
     return urls
+
+def acknowledge(db, changes):
+    """Commit per-site watermarks only after ingest, inspection and submission stages succeed."""
+    for site, items in changes.items():
+        times = [parse_ts(mod) for _, _, mod, _ in items]
+        times = [t for t in times if t is not None]
+        if times:
+            old = parse_ts(store.get_meta(db, site).get("fresh_watermark"))
+            newest = max(times)
+            if old is None or newest > old:
+                store.set_meta(db, site, fresh_watermark=newest.isoformat())

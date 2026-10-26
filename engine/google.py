@@ -154,7 +154,7 @@ def inspection_candidates(db, site, include_taxonomy=False):
     from .triage import value_score
     rows = db.execute("""
         SELECT u.url, u.kind, u.lastmod, a.status, a.noindex, a.canonical_state, a.hops, a.robots_google,
-               g.inspected_at, g.coverage, g.verdict, g.error AS gerr,
+               g.inspected_at, g.last_attempt_at, g.coverage, g.verdict, g.error AS gerr,
                COALESCE(p.gsc_recent_impr,0) AS recent, COALESCE(p.gsc_clicks,0) AS gsc_clicks,
                COALESCE(p.gsc_impr,0) AS gsc_impr, COALESCE(p.bing_clicks,0) AS bing_clicks,
                COALESCE(p.bing_impr,0) AS bing_impr, a.words, o.requested_at,
@@ -171,7 +171,10 @@ def inspection_candidates(db, site, include_taxonomy=False):
         if r["status"] is not None and (r["status"] != 200 or r["noindex"] or r["hops"] or not r["robots_google"]
                                         or r["canonical_state"] == "other"):
             continue                                   # a technical blocker: fix first, inspecting tells us nothing new
-        st = "error" if r["gerr"] else state_of(r["coverage"], r["verdict"])
+        st = state_of(r["coverage"], r["verdict"])
+        # Retry transient API errors later rather than overwriting the last valid verdict.
+        if r["gerr"] and days_since(r["last_attempt_at"]) is not None and days_since(r["last_attempt_at"]) < 1:
+            continue
         age = days_since(r["inspected_at"])
         if st is not None and age is not None and age < config.REINSPECT_DAYS.get(st, 10):
             seen = parse_ts(r["inspected_at"])
@@ -261,14 +264,23 @@ def inspect_due(db, client, props, max_per_site=None, include_taxonomy=False, on
                                    f"Google no longer indexes this page: {res.get('coverage')}.")
                     elif was in ("crawled", "discovered", "unknown") and is_ == "indexed":
                         alerts.add(db, site, url, "newly_indexed", "good", f"Google indexed this page (was: {prev['coverage']}).")
-                db.execute("""INSERT OR REPLACE INTO gsc(url, property, inspected_at, verdict, coverage, indexing_state,
-                              fetch_state, robots_state, last_crawl, google_canonical, user_canonical, error)
-                              VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                           (url, prop, now, res.get("verdict"), res.get("coverage"), res.get("indexing_state"),
-                            res.get("fetch_state"), res.get("robots_state"), res.get("last_crawl"),
-                            res.get("google_canonical"), res.get("user_canonical"), res.get("error")))
-                db.execute("INSERT INTO gsc_history(url, inspected_at, coverage) VALUES(?,?,?)",
-                           (url, now, res.get("coverage") or res.get("error")))
+                if res.get("error"):
+                    # Preserve the last successful inspection and its crawl/indexation evidence.
+                    db.execute("""INSERT INTO gsc(url, property, error, last_attempt_at)
+                                  VALUES(?,?,?,?)
+                                  ON CONFLICT(url) DO UPDATE SET error=excluded.error,
+                                    last_attempt_at=excluded.last_attempt_at""",
+                               (url, prop, res["error"], now))
+                else:
+                    db.execute("""INSERT OR REPLACE INTO gsc(url, property, inspected_at, verdict, coverage, indexing_state,
+                                  fetch_state, robots_state, last_crawl, google_canonical, user_canonical, error, last_attempt_at)
+                                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                               (url, prop, now, res.get("verdict"), res.get("coverage"), res.get("indexing_state"),
+                                res.get("fetch_state"), res.get("robots_state"), res.get("last_crawl"),
+                                res.get("google_canonical"), res.get("user_canonical"), None, now))
+                if not res.get("error"):             # a failed call is not a verdict; it would hide real transitions
+                    db.execute("INSERT INTO gsc_history(url, inspected_at, coverage) VALUES(?,?,?)",
+                               (url, now, res.get("coverage")))
                 counts[site][res.get("coverage") or "error"] += 1
                 done_n += 1
                 if done_n % 100 == 0 or done_n == total:

@@ -1,5 +1,5 @@
 // Queue a run for the engine (or cancel a pending one). One pending run at a time.
-import { handle, HttpError, json, now, readJson, SITE_RE } from "../../lib/http.js";
+import { handle, HttpError, json, now, readJson, SITE_RE, sweepStuckCommands } from "../../lib/http.js";
 
 function cleanOptions(o = {}) {
   const out = {};
@@ -19,6 +19,7 @@ export const onRequestPost = handle(async ({ request, env }) => {
     return json({ ok: Boolean(r.meta.changes) });
   }
   if (body.kind !== "run") throw new HttpError(400, "unknown command");
+  await sweepStuckCommands(env).run();
   const pending = await env.DB.prepare("SELECT * FROM commands WHERE status IN ('pending', 'running') ORDER BY id LIMIT 1").first();
   if (pending) return json({ ok: true, command: pending, note: "a run is already queued or running" });
   const options = JSON.stringify(cleanOptions(body.options));

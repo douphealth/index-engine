@@ -7,6 +7,7 @@ indexable URL is pushed once, then again only when it changes or Bing still has 
 import datetime as dt
 import hashlib
 import re
+import time
 
 import requests
 
@@ -117,9 +118,19 @@ def pull_performance(db, client, bsites):
         log(f"[bing] {site}: {len(agg)} pages with Bing impressions, {sum(1 for c, _ in agg.values() if c)} with clicks")
 
 
-def check_url_info(db, client, bsites, max_per_site=200):
+PAUSE_S = 0.4               # between GetUrlInfo calls: Bing throttles the whole account when they come too fast
+MAX_TOTAL = 300             # per run, across all sites
+SITE_FAIL_LIMIT = 3         # consecutive non-throttle errors before a site's queue is dropped for this run
+
+
+def check_url_info(db, client, bsites, max_per_site=200, max_total=MAX_TOTAL):
     """Ask Bing whether it has crawled URLs we submitted at least 2 days ago and that it has never shown in
-    results (a page with Bing impressions is plainly indexed, so checking it wastes a call). Oldest checks first."""
+    results (a page with Bing impressions is plainly indexed, so checking it wastes a call). Oldest checks first.
+
+    Bing's GetUrlInfo limit is per ACCOUNT (ThrottleUser / ThrottleHost), so the sites take turns, one URL each, and
+    the first throttle ends the whole check: the rest waits for the next run instead of burning calls that all fail.
+    A URL is only marked "checked" after Bing answered for it."""
+    queues = {}
     for site, burl in bsites.items():
         found = db.execute("""SELECT u.url, b.checked_at, MIN(s.submitted_at) AS first_sub FROM urls u
                               JOIN submissions s ON s.url=u.url AND s.http_status BETWEEN 200 AND 299
@@ -129,18 +140,43 @@ def check_url_info(db, client, bsites, max_per_site=200):
         due = [r for r in found if (days_since(r["first_sub"]) or 0) >= 2
                and (r["checked_at"] is None or (days_since(r["checked_at"]) or 0) >= 3)]
         due.sort(key=lambda r: (r["checked_at"] is not None, r["checked_at"] or ""))
-        rows = [r["url"] for r in due[:max_per_site]]
-        crawled = 0
-        for url in rows:
+        if due:
+            queues[site] = (burl, [r["url"] for r in due[:max_per_site]])
+    checked, crawled, fails, total, throttled = {}, {}, {}, 0, None
+    while queues and total < max_total and not throttled:
+        for site in list(queues):
+            burl, urls = queues[site]
+            if not urls:
+                del queues[site]
+                continue
+            url = urls.pop(0)
             try:
                 info = client.url_info(burl, url)
             except Exception as e:
-                log(f"[bing] {site}: GetUrlInfo stopped: {e}")
-                break
+                if "throttle" in str(e).lower():
+                    throttled = str(e)[-70:]
+                    break
+                fails[site] = fails.get(site, 0) + 1
+                log(f"[bing] {site}: GetUrlInfo failed for {url}: {str(e)[:100]}")
+                if fails[site] >= SITE_FAIL_LIMIT:
+                    log(f"[bing] {site}: GetUrlInfo keeps failing - skipping this site for now")
+                    del queues[site]
+                continue
+            fails[site] = 0
             last = bing_date(info.get("LastCrawledDate"))
-            crawled += bool(last)
+            checked[site] = checked.get(site, 0) + 1
+            crawled[site] = crawled.get(site, 0) + bool(last)
             db.execute("INSERT OR REPLACE INTO bing_info VALUES(?,?,?,?,?)",
                        (url, now_iso(), bing_date(info.get("DiscoveryDate")), last, info.get("HttpStatus")))
-        db.commit()
-        if rows:
-            log(f"[bing] {site}: checked {len(rows)} URLs with GetUrlInfo, {crawled} crawled by Bing")
+            total += 1
+            if total >= max_total:
+                break
+            if PAUSE_S:
+                time.sleep(PAUSE_S)
+    db.commit()
+    for site, n in checked.items():
+        left = len(queues.get(site, (None, []))[1])
+        log(f"[bing] {site}: checked {n} URLs with GetUrlInfo, {crawled[site]} crawled by Bing" + (f", {left} left for the next run" if left else ""))
+    if throttled:
+        log(f"[bing] GetUrlInfo throttled after {total} checks ({throttled.strip()}): the rest waits for the next run")
+    return total

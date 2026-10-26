@@ -17,7 +17,7 @@ export const onRequestPost = handle(async ({ request, env }) => {
   const t = now();
   const stmts = [];
   for (const [k, v] of Object.entries(body)) {
-    if (!VALIDATE[k]) throw new HttpError(400, `unknown setting ${k}`);
+    if (!Object.hasOwn(VALIDATE, k)) throw new HttpError(400, `unknown setting ${k}`);
     if (!VALIDATE[k](v)) throw new HttpError(400, `invalid value for ${k}`);
     stmts.push(
       env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
