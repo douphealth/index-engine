@@ -35,3 +35,9 @@ jobs:
         run: |
           code=$(curl -s -o /dev/null -w "%{http_code}" https://index-engine-dashboard.papalexios.workers.dev/api/state)
           test "$code" = "401" || { echo "expected 401 from /api/state without a session, got $code"; exit 1; }
+          code=$(curl -s -o /dev/null -w "%{http_code}" https://index-engine-dashboard.papalexios.workers.dev/api/engine/state)
+          test "$code" = "401" || { echo "expected 401 from /api/engine/state without the engine token, got $code"; exit 1; }
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"password":"x"}' https://index-engine-dashboard.papalexios.workers.dev/api/auth/login)
+          test "$code" = "401" -o "$code" = "429" || { echo "expected 401 (or 429) for a wrong password, got $code"; exit 1; }
+          curl -s https://index-engine-dashboard.papalexios.workers.dev/login | grep -q "Index Engine" || { echo "the login page did not load"; exit 1; }
+          curl -s https://index-engine-dashboard.papalexios.workers.dev/login | grep -q "login.js" || { echo "the login page is missing its script"; exit 1; }

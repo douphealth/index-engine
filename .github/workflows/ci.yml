@@ -3,7 +3,7 @@ name: Engine selftest
 on:
   push:
     branches: [main]
-    paths: ["engine/**", "indexengine.py", "requirements.txt", ".github/workflows/ci.yml"]
+    paths: ["engine/**", "indexengine.py", "requirements.txt", "dashboard/**", ".github/workflows/ci.yml"]
   pull_request:
 
 jobs:
@@ -17,3 +17,23 @@ jobs:
       - run: pip install -r requirements.txt
       # Offline: a fake site on localhost plus fake Google, Bing and IndexNow clients.
       - run: python indexengine.py selftest
+
+  dashboard:
+    # The page scripts are served as they are and the Worker is built by the same command that deploys: check both here,
+    # so a typo cannot reach production.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - name: Syntax-check the page scripts
+        run: for f in public/*.js; do node --check "$f"; done
+      - name: Build the Worker
+        run: npm run build

@@ -33,6 +33,7 @@ function h(tag, attrs = {}, ...kids) {
     if (k === "class") el.className = v;
     else if (k === "text") el.textContent = v;
     else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "href" && !/^(https?:|#|\/)/i.test(String(v))) continue;      // never javascript:, data: ... from crawled data
     else if (k === "style") Object.assign(el.style, v);
     else el.setAttribute(k, v === true ? "" : v);
   }
@@ -57,14 +58,20 @@ function rel(iso) {
 }
 const daysSince = (iso) => (iso ? (Date.now() - new Date(iso).getTime()) / 86400000 : Infinity);
 function toast(msg, ms = 2600) {
+  for (const old of document.querySelectorAll(".toast")) old.remove();         // one at a time, never stacked
   const t = h("div", { class: "toast", role: "status", text: msg });
   document.body.append(t);
   setTimeout(() => t.remove(), ms);
 }
+// Crawled text reaches us with HTML entities (&#8220;). An inert parser turns them into characters; nothing is executed.
+function decodeEntities(text) {
+  return new DOMParser().parseFromString(`<!doctype html><body>${String(text || "")}`, "text/html").body.textContent;
+}
 function oddsSpan(p) {
   if (p === null || p === undefined || p === "") return h("span", { class: "muted", text: "–" });
   const v = Number(p);
-  return h("span", { class: `odds ${v < 0.15 ? "lo" : v < 0.4 ? "mid" : "hi"}`, title: "Estimated chance Google indexes it", text: pct(v) });
+  return h("span", { class: `odds ${v < 0.15 ? "lo" : v < 0.4 ? "mid" : "hi"}`, title: "Estimated chance Google indexes it",
+    text: v > 0 && v < 0.005 ? "<1%" : pct(v) });
 }
 function markIn(text, phrase) {
   const i = (text || "").toLowerCase().indexOf((phrase || "").toLowerCase());
@@ -103,6 +110,8 @@ async function loadSite(site, force) {
   return S.sites[site];
 }
 const setting = (k, dflt) => (S.st.settings[k] ? S.st.settings[k].value : dflt);
+// Paused means paused in Settings now; the published results only know what was true when they were made.
+const isPaused = (site) => (setting("sites_disabled", []) || []).includes(site);
 function preset(v, params, keys) {
   if (!params || v.presetFor === location.hash) return;
   v.presetFor = location.hash;
@@ -131,7 +140,7 @@ function engineStatus() {
   const age = seen ? daysSince(seen.at) * 24 * 60 : Infinity;
   const active = S.st.commands.find((c) => c.status === "running");
   if (active) return { cls: "ok", text: "running now" };
-  if (age < 45) return { cls: "ok", text: `PC online · ${rel(seen.at)}` };
+  if (age < 25) return { cls: "ok", text: `PC online · ${rel(seen.at)}` };
   if (age < 26 * 60) return { cls: "warn", text: `PC seen ${rel(seen.at)}` };
   return { cls: "bad", text: seen ? `PC offline · ${rel(seen.at)}` : "engine not connected" };
 }
@@ -159,7 +168,7 @@ function renderChrome() {
   pill.replaceChildren(h("span", { class: `dot ${es.cls}` }), es.text);
   const sel = document.getElementById("run-site");
   sel.replaceChildren(h("option", { value: "", text: "All enabled sites" }),
-    ...(S.summary ? S.summary.sites : []).map((s) => h("option", { value: s.site, text: s.site })));
+    ...(S.summary ? S.summary.sites : []).map((s) => h("option", { value: s.site, disabled: isPaused(s.site), text: s.site + (isPaused(s.site) ? " (paused in Settings)" : "") })));
   const urgent = S.st.alerts.filter((a) => !a.acked && (a.severity === "high" || a.severity === "warn")).length;
   document.getElementById("b-alerts").textContent = urgent ? String(urgent) : "";
   const waiting = S.st.links.filter((l) => l.status === "proposed").length;
@@ -192,7 +201,7 @@ function requestRate() {
 function priorities() {
   const out = [];
   const add = (o) => out.push({ gain: null, minutes: 5, ...o });
-  const live = S.summary.sites.filter((s) => !s.disabled);
+  const live = S.summary.sites.filter((s) => !isPaused(s.site));
   const liveSet = new Set(live.map((s) => s.site));
   const es = engineStatus();
   const seen = setting("engine_last_seen", null);
@@ -204,6 +213,14 @@ function priorities() {
   if (es.cls === "bad") {
     add({ tier: 0, title: "Turn on your PC: the engine is offline", minutes: 1, cta: "Runs", href: "#/runs",
       why: `${seen ? `Last seen ${rel(seen.at)}` : "Never connected"}. Until it runs, no link is applied, no page is submitted or checked.` });
+  }
+  if (setting("submit_paused", false)) {
+    add({ tier: 0, title: "Everything is paused", minutes: 1, cta: "Resume", href: "#/settings",
+      why: "Submissions and link edits are switched off in Settings, so the engine only measures. Nothing you approve is applied until you resume." });
+  }
+  if (es.cls !== "bad" && daysSince(S.summary.generated_at) > 1.5) {
+    add({ tier: 0, title: "The results are out of date", minutes: 5, cta: "See runs", href: "#/runs",
+      why: `The last full run finished ${rel(S.summary.generated_at)} although your PC is online. Open the run log to see what stopped it.` });
   }
   const lastRun = S.st.runs[0];
   if (lastRun && lastRun.status === "failed") {
@@ -400,7 +417,7 @@ function viewOverview() {
 
   const openAlerts = S.st.alerts.filter((a) => !a.acked);
   const alertCard = h("div", { class: "card stack" }, h("h2", {}, "Alerts ", openAlerts.length ? h("span", { class: "badge", text: String(openAlerts.length) }) : null),
-    openAlerts.length ? h("ul", { class: "plain" }, ...openAlerts.slice(0, 4).map((a) => h("li", { class: "alert-row small" },
+    openAlerts.length ? h("ul", { class: "plain" }, ...[...openAlerts].sort((a, b) => ((({ high: 0, warn: 1, info: 2, good: 3 })[a.severity] ?? 2) - (({ high: 0, warn: 1, info: 2, good: 3 })[b.severity] ?? 2)) || (a.at < b.at ? 1 : -1)).slice(0, 4).map((a) => h("li", { class: "alert-row small" },
       h("span", { class: `sev ${a.severity}` }), h("span", {}, h("b", { text: `${a.site || ""} ` }), a.message))))
       : h("p", { class: "muted small", text: "Nothing needs you. The engine watches every page for regressions on each run." }),
     h("a", { href: "#/alerts", class: "small", text: "All alerts →" }));
@@ -421,7 +438,7 @@ function viewOverview() {
     h("tbody", {}, ...sites.map(({ s, n }) => {
       const lv = lever(s.site);
       return h("tr", { class: "click", onclick: () => (location.hash = `#/site/${s.site}`) },
-        h("td", {}, h("a", { href: `#/site/${s.site}`, text: s.site }), s.disabled ? h("span", { class: "chip", text: " paused" }) : null),
+        h("td", {}, h("a", { href: `#/site/${s.site}`, text: s.site }), isPaused(s.site) ? h("span", { class: "chip", text: " paused" }) : null),
         h("td", { class: "n", text: fmt(n.urls) }),
         h("td", {}, bucketBar(s.counts || {})),
         h("td", { class: "n good", text: fmt(n.indexed) }),
@@ -430,7 +447,7 @@ function viewOverview() {
         h("td", { class: "n", text: fmt(n.unknown) }),
         h("td", { class: "small lever" }, lv ? h("a", { href: lv.href, onclick: (e) => e.stopPropagation(), text: short(lv.title, s.site),
           ...(lv.href.startsWith("http") ? { target: "_blank", rel: "noopener" } : {}) })
-          : h("span", { class: "muted", text: s.disabled ? "paused" : "nothing pending" })));
+          : h("span", { class: "muted", text: isPaused(s.site) ? "paused" : "nothing pending" })));
     })));
 
   return h("div", { class: "stack" }, head, prioCard, kpis,
@@ -548,7 +565,8 @@ function detailRow(site, meta, r, col, st, redraw) {
     try {
       const res = await api.post("/api/url", { url, site, action, ...extra });
       S.urlState.set(url, res.url_state);
-      toast(action === "note" ? "Note saved" : `Marked ${action}`);
+      toast({ note: "Note saved", ignore: "Ignored: hidden from the work lists and never submitted", unignore: "No longer ignored",
+        requested: "Marked as requested", unrequested: "Request mark removed" }[action] || "Saved");
       redraw();
     } catch (e) { toast(e.message); }
   };
@@ -659,18 +677,52 @@ function viewLinks(params) {
   const groups = { proposed: ["proposed"], approved: ["approved", "undo"], applied: ["applied"], other: ["rejected", "failed", "undone"] };
   const all = S.st.links.filter((l) => (!v.site || l.site === v.site) && (!target || l.target === target));
   const shown = all.filter((l) => groups[v.tab].includes(l.status));
+  if (v.tab === "approved") shown.sort((a, b) => (a.updated_at < b.updated_at ? -1 : 1));    // the order the engine works in
   const seen = setting("engine_last_seen", null);
-  const pcNote = seen ? `your PC (last seen ${rel(seen.at)}) adds it within 10 minutes` : "your PC adds it on its next check";
+  const cap = Number(setting("links_per_site_per_day", 5));
+  const paused = setting("submit_paused", false);
+  const pausedSites = new Set(setting("sites_disabled", []));
+  const autopilot = setting("link_autopilot", false);
+  const es = engineStatus();
+  const pcNote = es.cls === "bad" ? "your PC is offline, so it happens when it is switched on"
+    : seen ? `your PC (last seen ${rel(seen.at)}) checks every 10 minutes` : "your PC checks every 10 minutes";
+
+  // What the engine will do with approved links: per site, `cap` in any 24 hours, oldest approval first.
+  const slotsOf = () => {
+    const out = {};
+    for (const site of new Set(S.st.links.map((l) => l.site))) {
+      const used = S.st.links.filter((l) => l.site === site && l.status === "applied" && l.applied_at && daysSince(l.applied_at) < 1);
+      const approved = S.st.links.filter((l) => l.site === site && l.status === "approved").sort((a, b) => (a.updated_at < b.updated_at ? -1 : 1));
+      const free = Math.max(0, cap - used.length);
+      const nextFree = used.map((l) => new Date(l.applied_at).getTime() + 86400000).sort((a, b) => a - b)[0];
+      out[site] = { used: used.length, free, approved: approved.length, next: new Set(approved.slice(0, free).map((l) => l.id)),
+        queued: Math.max(0, approved.length - free), nextFree };
+    }
+    return out;
+  };
+  const blocked = (site) => (paused ? "everything is paused in Settings" : pausedSites.has(site) ? "this site is paused in Settings" : null);
+
   const act = async (ids, action, btn) => {
     const label = btn ? btn.textContent : "";
     if (btn) { btn.disabled = true; btn.textContent = { approve: "Approving…", undo: "Queuing undo…" }[action] || "Saving…"; }
     try {
       const r = await api.post("/api/link", { ids, action });
       if (r.changed) for (const l of S.st.links) if (ids.includes(l.id)) l.status = r.status;
-      const n = `${r.changed} link${r.changed === 1 ? "" : "s"}`;
-      toast(!r.changed ? "Nothing changed: reload the page, the list was out of date"
-        : action === "approve" ? `Approved ${n}: ${pcNote}`
-        : action === "undo" ? `Undo queued for ${n}: ${pcNote.replace("adds it", "removes it")}` : `${n}: ${r.status}`, 5000);
+      let msg;
+      if (!r.changed) msg = "Nothing changed: the list was out of date, so it has been refreshed";
+      else if (action === "approve") {
+        const slots = slotsOf();
+        const sites = [...new Set(S.st.links.filter((l) => ids.includes(l.id)).map((l) => l.site))];
+        const why = sites.map(blocked).find(Boolean);
+        const now = S.st.links.filter((l) => ids.includes(l.id) && l.status === "approved");
+        const soon = now.filter((l) => slots[l.site].next.has(l.id)).length;
+        msg = why ? `Approved ${r.changed}, but ${why}: nothing is applied until you change that.`
+          : `Approved ${r.changed}. ${soon ? `${soon} will be added soon` : "None fits today's limit"}` +
+            `${now.length - soon > 0 ? `${soon ? ", " : ": "}${now.length - soon} wait for a free slot (${cap} per site per 24 hours)` : ""}; ${pcNote}.`;
+      } else if (action === "undo") msg = `Undo queued for ${r.changed}: ${pcNote}.`;
+      else msg = { cancel: "Moved back to Proposed", reject: `Rejected ${r.changed}`, reopen: "Back in Proposed" }[action] || `${r.changed}: ${r.status}`;
+      toast(msg, 7000);
+      if (!r.changed) await loadAll();
       renderChrome();
       render();
     } catch (e) {
@@ -678,14 +730,20 @@ function viewLinks(params) {
       toast(`Not saved: ${e.message}`, 6000);
     }
   };
-  const autopilot = setting("link_autopilot", false);
-  const cap = setting("links_per_site_per_day", 5);
+
   const live = (l) => /visible to visitors/.test(l.result || "");
-  const pending = (l) => l.status === "applied" && !live(l);
-  const seeIt = (l) => `${l.source}${l.source.includes("?") ? "&" : "?"}nc=${Date.now().toString(36)}#:~:text=${encodeURIComponent(l.anchor || "")}`;
-  const state = (l) => l.status === "applied" ? (live(l) ? ["ok", "live for visitors"] : ["warn", "in WordPress, cache refreshing"])
-    : l.status === "approved" ? ["warn", "waiting for your PC"] : l.status === "undo" ? ["warn", "undo waiting for your PC"]
-    : l.status === "failed" ? ["bad", "failed"] : [null, l.status];
+  const seeIt = (l) => `${l.source}${l.source.includes("?") ? "&" : "?"}nc=${Date.now().toString(36)}#:~:text=${encodeURIComponent(decodeEntities(l.anchor))}`;
+  const slots = slotsOf();
+  const state = (l) => {
+    if (l.status === "applied") return live(l) ? ["ok", "live for visitors"] : ["warn", "in WordPress, cache refreshing"];
+    if (l.status === "approved" || l.status === "undo") {
+      const why = blocked(l.site);
+      if (why) return ["bad", `on hold: ${why}`];
+      if (l.status === "undo") return ["warn", "undo waiting for your PC"];
+      return slots[l.site].next.has(l.id) ? ["warn", "next: your PC adds it soon"] : ["warn", "queued: waits for a free slot"];
+    }
+    return l.status === "failed" ? ["bad", "failed"] : [null, l.status];
+  };
   const card = (l) => {
     const [cls, txt] = state(l);
     return h("div", { class: "card stack" },
@@ -695,7 +753,7 @@ function viewLinks(params) {
         l.gain ? h("span", { class: "muted tiny", text: `expected gain ${(+l.gain).toFixed(2)}` }) : null),
       h("div", {}, "On ", h("a", { href: l.source, target: "_blank", rel: "noopener", text: l.source_title || l.source }),
         h("span", { class: "arrow", text: " link to " }), h("a", { href: l.target, target: "_blank", rel: "noopener", text: l.target_title || l.target })),
-      h("div", { class: "small muted" }, "“", ...markIn(l.context, l.anchor), "”"),
+      h("div", { class: "small muted" }, "“", ...markIn(decodeEntities(l.context), decodeEntities(l.anchor)), "”"),
       l.result ? h("div", { class: `tiny ${l.status === "failed" ? "bad" : "muted"}`, text: l.result }) : null,
       h("div", { class: "row" },
         l.status === "proposed" ? [h("button", { class: "btn small primary", onclick: (e) => act([l.id], "approve", e.currentTarget) }, "Approve"),
@@ -706,17 +764,27 @@ function viewLinks(params) {
           h("button", { class: "btn small", onclick: (e) => act([l.id], "undo", e.currentTarget) }, "Undo")] : null,
         ["rejected", "failed", "undone"].includes(l.status) ? h("button", { class: "btn small", onclick: (e) => act([l.id], "reopen", e.currentTarget) }, "Reopen") : null));
   };
-  const noPurge = S.st.links.some((l) => pending(l) && /cached copy/.test(l.result || "") && !/purge: purged/.test(l.result || ""));
-  const waiting = S.st.links.filter((l) => l.status === "approved" || l.status === "undo").length;
+
+  // One plain sentence per site about what will happen to its approved links.
+  const queueNotes = Object.entries(slots).filter(([site, s]) => s.approved && (!v.site || site === v.site)).map(([site, s]) => {
+    const why = blocked(site);
+    const when = s.nextFree ? new Date(s.nextFree).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
+    return h("div", {}, h("b", { text: `${site}: ` }), why ? `${s.approved} approved, on hold because ${why}.`
+      : s.free ? `${Math.min(s.free, s.approved)} go out soon${s.queued ? `, ${s.queued} more follow as slots free up` : ""} (${cap} per site per 24 hours, ${s.used} used).`
+        : `today's limit is reached (${s.used} of ${cap} added in the last 24 hours): ${s.approved} approved wait${when ? `; the next slot frees about ${when}` : ""}.`);
+  });
+  const noPurge = S.st.links.some((l) => l.status === "applied" && !live(l) && /cached copy/.test(l.result || "") && !/purge: purged/.test(l.result || ""));
+  const hold = paused ? "Everything is paused in Settings: approved links are not applied until you resume."
+    : pausedSites.size ? `Paused sites get no link changes: ${[...pausedSites].join(", ")}.` : null;
   return h("div", { class: "stack" }, h("h1", { text: "Internal links" }),
     h("div", { class: "card small stack" },
       h("div", {}, "Links from pages Google already indexes are the strongest lever for pages Google knows but won't index. Each proposal links a phrase that ",
         h("b", { text: "already exists" }), " in the source page's text; nothing else on the page changes."),
-      h("div", {}, `Approve a link and your PC adds it within 10 minutes: at most ${cap} per site per day, with a backup, a check of the page and Undo. `,
+      h("div", {}, `Approve a link and ${pcNote}. It adds at most ${cap} per site in any 24 hours, with a backup, a check of the page and Undo. `,
         `Autopilot is ${autopilot ? "ON (it also applies the best proposals itself, except on gearuptofit)" : "off (only links you approve are applied)"}. `,
         h("a", { href: "#/settings", text: "Settings" }))),
-    waiting ? h("div", { class: "card small note" }, h("b", { text: `${waiting} waiting for your PC. ` }),
-      seen ? `It last checked in ${rel(seen.at)} and checks every 10 minutes while it is on.` : "It has not checked in yet.") : null,
+    hold ? h("div", { class: "card small note" }, h("b", { text: "On hold. " }), hold, " ", h("a", { href: "#/settings", text: "Open Settings" })) : null,
+    queueNotes.length ? h("div", { class: "card small note stack" }, h("b", { text: "What happens to approved links" }), ...queueNotes) : null,
     noPurge ? h("div", { class: "card small note stack" },
       h("div", {}, h("b", { text: "Links are in WordPress, but Cloudflare keeps serving the old copy of those pages for up to 4 hours. " }),
         "Visitors and Google see a link once the cache refreshes; each card says when. To make links show at once, let the engine clear the cache of just that page:"),
@@ -732,7 +800,8 @@ function viewLinks(params) {
       h("select", { "aria-label": "Site", onchange: (e) => { v.site = e.target.value; render(); } },
         h("option", { value: "", text: "All sites" }), ...[...new Set(S.st.links.map((l) => l.site))].map((s) => h("option", { value: s, selected: v.site === s, text: s }))),
       h("span", { class: "spacer" }),
-      v.tab === "proposed" && shown.length ? h("button", { class: "btn small", onclick: (e) => act(shown.slice(0, 100).map((l) => l.id), "approve", e.currentTarget) },
+      v.tab === "proposed" && shown.length ? h("button", { class: "btn small", title: `Your PC still adds at most ${cap} per site per 24 hours`,
+        onclick: (e) => act(shown.slice(0, 100).map((l) => l.id), "approve", e.currentTarget) },
         `Approve all ${Math.min(100, shown.length)} shown`) : null),
     shown.length ? shown.map(card) : h("div", { class: "card empty", text: v.tab === "proposed" ? "No proposals waiting. New ones appear after the daily run." : "Nothing here." }));
 }
@@ -740,10 +809,12 @@ function viewLinks(params) {
 function viewAlerts() {
   const ack = async (body) => { try { await api.post("/api/alert", body); await loadAll(); render(); } catch (e) { toast(e.message); } };
   const open = S.st.alerts.filter((a) => !a.acked);
+  const urgency = { high: 0, warn: 1, info: 2, good: 3 };
+  const ordered = [...S.st.alerts].sort((a, b) => (a.acked - b.acked) || ((urgency[a.severity] ?? 2) - (urgency[b.severity] ?? 2)) || (a.at < b.at ? 1 : -1));
   return h("div", { class: "stack" }, h("div", { class: "row" }, h("h1", { text: "Alerts" }), h("span", { class: "spacer" }),
     open.length ? h("button", { class: "btn small", onclick: () => ack({ all: true }) }, "Acknowledge all") : null),
     h("p", { class: "muted small", text: "Raised automatically: an indexable page that turns noindex, 404s, redirects or loses its canonical; content that shrinks; a sitemap that drops URLs; a site whose pages stop answering; pages entering or leaving Google's index." }),
-    S.st.alerts.length ? S.st.alerts.map((a) => h("div", { class: `card alert-row ${a.acked ? "acked" : ""}` },
+    S.st.alerts.length ? ordered.map((a) => h("div", { class: `card alert-row ${a.acked ? "acked" : ""}` },
       h("span", { class: `sev ${a.severity}`, title: a.severity }),
       h("div", { style: { flex: "1", minWidth: "0" } }, h("div", {}, h("b", { text: `${a.site || "portfolio"} · ` }), a.message),
         a.url ? h("a", { class: "tiny", href: a.url, target: "_blank", rel: "noopener", text: a.url }) : null,
@@ -857,10 +928,11 @@ function viewSettings() {
   };
   const field = (label, input, help) => h("div", { class: "stack" }, h("label", { class: "stack small" }, label, input), help ? h("div", { class: "muted tiny", text: help }) : null);
   return h("div", { class: "stack" }, h("h1", { text: "Settings" }),
-    h("div", { class: "card stack" }, h("h2", { text: "Sites" }), h("div", { class: "grid kpis" }, ...checks),
-      h("div", { class: "muted tiny", text: "Unticked sites are skipped by scheduled and queued runs." })),
+    h("div", { class: "card stack" }, h("h2", { text: "Sites" }), h("div", { class: "grid sites-grid" }, ...checks),
+      h("div", { class: "muted tiny", text: "Unticked sites are skipped by every run, link edit and fresh-content check, even when you pick one in Run now." })),
     h("div", { class: "card stack" }, h("h2", { text: "Engine" }),
-      h("label", { class: "chk" }, paused, "Pause all submissions (Bing, IndexNow, Search Console sitemaps)"),
+      h("label", { class: "chk" }, paused, "Pause everything that changes something: submissions (Bing, IndexNow, sitemaps) and link edits on your sites"),
+      h("div", { class: "muted tiny", text: "While paused the engine only measures. Approved links wait; Undo waits too." }),
       field("Daily run time on your PC", time, "The engine checks every 10 minutes and runs once a day after this time. Google's inspection quota resets at midnight Pacific (10:00 in Greece)."),
       field("Request-indexing list size per site", queue, "Search Console allows roughly 10 manual requests a day per property."),
       field("Max URL inspections per site per run", inspect, "Leave empty to use the full daily quota (about 1,950)."),
@@ -930,7 +1002,19 @@ document.getElementById("logout").addEventListener("click", async () => {
   location.replace("/login");
 });
 window.addEventListener("hashchange", render);
-setInterval(async () => { if (!document.hidden) { await loadAll().catch(() => {}); } }, 120000);
+const signature = () => JSON.stringify([S.st && S.st.links.map((l) => `${l.id}${l.status}${(l.result || "").length}`).join(","),
+  S.st && S.st.commands.map((c) => `${c.id}${c.status}`).join(","), S.st && S.st.runs.slice(0, 3).map((r) => `${r.id}${r.status}`).join(","),
+  S.st && S.st.alerts.filter((a) => !a.acked).length, S.st && S.st.fixes.map((f) => f.status).join(""), S.summary && S.summary.generated_at,
+  S.st && S.st.settings.engine_last_seen && S.st.settings.engine_last_seen.updated_at]);
+// Every 2 minutes: reload, and redraw the page only when something changed and you are not in the middle of typing.
+setInterval(async () => {
+  if (document.hidden) return;
+  const before = S.st ? signature() : "";
+  await loadAll().catch(() => {});
+  const route = location.hash.replace(/^#\/?/, "").split(/[/?]/)[0];
+  const busy = document.querySelector("dialog[open]") || /^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || "");
+  if (signature() !== before && !busy && route !== "settings") render();
+}, 120000);
 
 loadAll().then(render).catch((e) => {
   document.getElementById("app").replaceChildren(h("div", { class: "card empty", text: `Could not load: ${e.message}` }));

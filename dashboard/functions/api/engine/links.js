@@ -17,6 +17,7 @@ export const onRequestPost = handle(async ({ request, env }) => {
   }
   for (const p of proposals) {
     if (!/^[0-9a-f]{16}$/.test(String(p.id)) || !SITE_RE.test(String(p.site))) continue;
+    if (!/^https?:\/\//i.test(String(p.source)) || !/^https?:\/\//i.test(String(p.target))) continue;     // real pages only
     stmts.push(env.DB.prepare(
       `INSERT INTO link_proposals (id, site, source, source_title, target, target_title, anchor, context, score, gain, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?)

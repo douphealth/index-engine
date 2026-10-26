@@ -1,12 +1,13 @@
 // The engine on the owner's PC pulls settings, URL decisions, queued commands and link work; doubles as its heartbeat.
-import { handle, json, now } from "../../../lib/http.js";
+import { handle, json, now, sweepStuckCommands } from "../../../lib/http.js";
 
 // Sites whose own rules forbid unapproved changes (gearuptofit AGENTS.md): never auto-approved.
 const STRICT_SITES = ["gearuptofit.com"];
 
 export const onRequestGet = handle(async ({ request, env }) => {
   const host = (request.headers.get("X-Engine-Host") || "").slice(0, 80);
-  const [settings, urls, commands, links] = await env.DB.batch([
+  const [, settings, urls, commands, links] = await env.DB.batch([
+    sweepStuckCommands(env),
     env.DB.prepare("SELECT key, value FROM settings"),
     env.DB.prepare("SELECT url, site, ignored, requested_at FROM url_state WHERE ignored = 1 OR requested_at IS NOT NULL"),
     env.DB.prepare("SELECT * FROM commands WHERE status = 'pending' ORDER BY id"),

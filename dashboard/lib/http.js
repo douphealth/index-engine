@@ -57,4 +57,14 @@ export function handle(fn) {
 
 export const now = () => new Date().toISOString();
 
+// A run the engine claimed but never reported on (PC switched off, process killed) must not block the queue for ever:
+// after this long it is closed as failed so the owner can queue another.
+export const STUCK_RUN_HOURS = 3;
+export function sweepStuckCommands(env) {
+  const cutoff = new Date(Date.now() - STUCK_RUN_HOURS * 3600 * 1000).toISOString();
+  return env.DB.prepare(
+    "UPDATE commands SET status = 'failed', finished_at = ?, result = ? WHERE status = 'running' AND picked_at < ?"
+  ).bind(now(), `The engine stopped before finishing (no report for ${STUCK_RUN_HOURS} hours).`, cutoff);
+}
+
 export const SITE_RE = /^[a-z0-9.-]{3,80}$/;
