@@ -955,16 +955,19 @@ function viewSettings() {
 }
 
 /* ------------------------------------------------------------------ router */
+const safeDecode = (x) => { try { return decodeURIComponent(x); } catch { return x; } };   // a hand-typed "%" must not break the page
+
 async function render() {
   const app = document.getElementById("app");
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
-  const [route, arg] = path.split("/");
+  const [asked, arg] = path.split("/");
+  const route = ["site", "plan", "links", "alerts", "requests", "fixes", "runs", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
   const params = new URLSearchParams(query || "");
   setTab(route === "site" ? "" : route || "");
-  document.title = `${route === "site" && arg ? decodeURIComponent(arg) : (route ? route[0].toUpperCase() + route.slice(1) : "Overview")} · Index Engine`;
+  document.title = `${route === "site" && arg ? safeDecode(arg) : (route ? route[0].toUpperCase() + route.slice(1) : "Overview")} · Index Engine`;
   try {
     let node;
-    if (route === "site" && arg) node = await viewSite(decodeURIComponent(arg), params);
+    if (route === "site" && arg) node = await viewSite(safeDecode(arg), params);
     else if (route === "plan") node = viewPlan(params);
     else if (route === "links") node = viewLinks(params);
     else if (route === "alerts") node = viewAlerts();
