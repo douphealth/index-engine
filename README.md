@@ -28,8 +28,8 @@ your PC (Windows task, every 10 min)                    Cloudflare: index-engine
 
 - **An indexation-odds model trained on your own sites.** Every page Google has judged teaches the model what gets pages indexed on these sites.
   - It is an L2 logistic regression with 5-fold cross-validation.
-  - On 23 Oct 2026 it trained on 2,711 verdicts, with a within-site AUC of 0.85.
-  - Strongest signal: links from pages Google already indexes.
+  - Cross-validation computes each site's rate from the training fold rather than its held-out labels. Other features, including links from indexed pages, still use current portfolio-wide verdicts, so the reported AUC can be optimistic and is not proof of future accuracy.
+  - Model drivers vary between runs; associations do not prove that changing a feature will change indexing.
   - Each page gets odds plus a plain-English "what holds it back". If the data can't support a model, it says so and falls back to fixed estimates.
 - **Best next actions.** The model simulates each action and ranks them portfolio-wide by expected gain (page value × rise in odds). The actions are: add links from indexed pages, request indexing, de-duplicate, add substance, source claims. The request-indexing list is ranked the same way.
 - **Internal-link autopilot.**
@@ -48,8 +48,8 @@ your PC (Windows task, every 10 min)                    Cloudflare: index-engine
   - a site stops answering;
   - a page enters or leaves Google's index.
 - **Trust-risk scanner.** It flags phrasings that read as invented first-hand experience, ratings or statistics (guardrail 4), with the exact sentences.
-- **Measured impact.** It tracks pages gained or lost in Google over 30 days, and the success rate of requests, new links and Bing submissions. The measured request success rate feeds back into the model.
-- **Inspections where they matter.** Pages you requested or that received links are re-inspected 2–3 days later, so the effect is measured, not assumed.
+- **Observed outcomes, not causal impact.** It tracks Google index transitions over 30 days and summarizes the last known status of older requests, links and submissions. The action summaries cover historical records, include missing or stale verdicts, and do not prove an action caused indexing. The request summary is also used as a heuristic in the model.
+- **Follow-up inspections.** Pages you requested or that received links are re-inspected 2–3 days later. These observations can help monitor changes but cannot establish whether an action caused them.
 
 ## Commands
 

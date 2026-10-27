@@ -10,6 +10,7 @@ Rules that keep this from being spam:
 """
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -33,13 +34,50 @@ def indexable_rows(db, site, include_taxonomy=False):
     return [r for r in rows if include_taxonomy or r["kind"] in config.SUBMIT_KINDS]
 
 
+def _latest_successes(db, rows, channel):
+    """Fetch the same winning submission as the per-URL query, in bounded batches."""
+    urls = list(dict.fromkeys(r["url"] for r in rows))
+    if not urls:
+        return {}
+    # Leave room for the channel parameter, including on connections with a lowered limit.
+    limit = db.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    if limit == 1:
+        # quote() alone truncates TEXT at embedded NULs; encode it as a hex blob.
+        channel_sql = db.execute("SELECT CASE typeof(?1) WHEN 'text' THEN "
+                                 "'CAST(X''' || hex(?1) || ''' AS TEXT)' "
+                                 "ELSE quote(?1) END", {"1": channel}).fetchone()[0]
+        channel_params = ()
+    else:
+        channel_sql = "?"
+        channel_params = (channel,)
+    chunk_size = min(900, max(1, limit - len(channel_params)))
+    latest = {}
+    for start in range(0, len(urls), chunk_size):
+        chunk = urls[start:start + chunk_size]
+        placeholders = ",".join("(?)" for _ in chunk)
+        query = f"""
+            WITH requested(url) AS (VALUES {placeholders})
+            SELECT requested.url AS requested_url, s.rowid AS submission_rowid,
+                   s.submitted_at, s.lastmod
+            FROM requested LEFT JOIN submissions s ON s.rowid=(
+                SELECT rowid FROM submissions
+                WHERE url=requested.url AND channel={channel_sql} AND http_status BETWEEN 200 AND 299
+                ORDER BY submitted_at DESC, rowid DESC LIMIT 1
+            )"""
+        for last in db.execute(query, (*chunk, *channel_params)):
+            if last["submission_rowid"] is not None:
+                latest[last["requested_url"]] = last
+    return latest
+
+
 def due(db, rows, channel):
+    rows = list(rows)
+    latest = _latest_successes(db, rows, channel)
     out = []
     for r in rows:
         # Within each tier, URLs Bing has never shown come first: on a tight quota they gain the most.
         shown = 1 if r["bing_impr"] else 0
-        last = db.execute("SELECT submitted_at, lastmod FROM submissions WHERE url=? AND channel=? AND http_status BETWEEN 200 AND 299 "
-                          "ORDER BY submitted_at DESC, rowid DESC LIMIT 1", (r["url"], channel)).fetchone()
+        last = latest.get(r["url"])
         if last is None:
             out.append((0, shown, -value_score(r), r["url"], r["lastmod"]))
             continue

@@ -73,7 +73,14 @@ def ingest(db, changes):
                           ON CONFLICT(url) DO UPDATE SET in_wp=1, lastmod=excluded.lastmod, last_seen=excluded.last_seen,
                             published=COALESCE(urls.published, excluded.published)""",
                        (url, site, kind, modified, now_iso(), now_iso(), published))
-            audit.save(db, audit.fetch_page(url, rp), modified)
+            rec = audit.fetch_page(url, rp)
+            # Network errors, bot challenges, rate limits and server failures are not
+            # a successful audit. Keep the previous audit and retry this entire batch
+            # next tick instead of advancing past an unprocessed change.
+            status = rec.get("status")
+            if rec.get("error") or status is None or status == 429 or status >= 500:
+                raise RuntimeError(f"fresh audit failed for {url} (HTTP {status or 'unavailable'})")
+            audit.save(db, rec, modified)
             urls.append(url)
         log(f"[fresh] {site}: {len(items)} new or updated: " + ", ".join(u for u, *_ in items[:5]) + (" ..." if len(items) > 5 else ""))
     db.commit()
