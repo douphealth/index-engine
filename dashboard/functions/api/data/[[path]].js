@@ -3,7 +3,7 @@
 import { handle, json, SITE_RE } from "../../../lib/http.js";
 
 function keyFor(parts) {
-  if (parts.length === 1 && (parts[0] === "summary" || parts[0] === "log")) return parts[0];
+  if (parts.length === 1 && (parts[0] === "summary" || parts[0] === "log" || parts[0] === "health")) return parts[0];
   if (parts.length === 2 && parts[0] === "site" && SITE_RE.test(parts[1])) return `site:${parts[1]}`;
   return null;
 }
