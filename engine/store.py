@@ -67,6 +67,7 @@ CREATE INDEX IF NOT EXISTS link_corpus_site ON link_corpus(site);
 -- Internal links the engine inserted (for verification, impact tracking and undo).
 CREATE TABLE IF NOT EXISTS link_ops(id TEXT PRIMARY KEY, site TEXT, source TEXT, target TEXT, anchor TEXT, post_id INT,
   post_type TEXT, status TEXT, applied_at TEXT, backup TEXT, result TEXT);
+CREATE INDEX IF NOT EXISTS link_ops_target_status_at ON link_ops(target, status, applied_at);
 
 -- The indexation-odds model's last training (coefficients, quality).
 CREATE TABLE IF NOT EXISTS model(trained_at TEXT, data TEXT);

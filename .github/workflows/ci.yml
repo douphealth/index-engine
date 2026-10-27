@@ -3,7 +3,7 @@ name: Engine selftest
 on:
   push:
     branches: [main]
-    paths: ["engine/**", "indexengine.py", "requirements.txt", "dashboard/**", ".github/workflows/ci.yml"]
+    paths: ["engine/**", "tests/**", "indexengine.py", "requirements.txt", "dashboard/**", ".github/workflows/ci.yml"]
   pull_request:
 
 jobs:
@@ -16,6 +16,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       # Offline: a fake site on localhost plus fake Google, Bing and IndexNow clients.
+      - run: python -m unittest discover -s tests -v
       - run: python indexengine.py selftest
 
   dashboard:

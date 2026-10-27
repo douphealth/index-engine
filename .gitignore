@@ -11,6 +11,7 @@ dashboard/.dev.vars
 .env.*
 
 # Tooling
+.venv/
 dashboard/node_modules/
 dashboard/.wrangler/
 dashboard/dist/

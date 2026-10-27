@@ -269,17 +269,32 @@ def corpus(db, site):
         "SELECT url, raw FROM link_corpus WHERE site=?", (site,))}
 
 
-def candidates(raw, keys):
+def candidate_starts(keys):
+    """Index possible first words by phrase length; reusable across a site's pages."""
+    starts = {n: set() for n in (5, 4, 3, 2)}
+    for key in keys:
+        if len(key) in starts:
+            starts[len(key)].add(key[0])
+    return starts
+
+
+def candidates(raw, keys, starts=None):
     """{key: (start, end)} for the first safe occurrence in raw of each phrase key."""
     found = {}
+    if starts is None:
+        starts = candidate_starts(keys)
+    if not any(starts.values()):
+        return found
     for s, e, ok in segments(raw):
         if not ok:
             continue
         toks = tokens(raw[s:e])
         for n in (5, 4, 3, 2):
-            if len(toks) < n + 3:                        # inside a sentence, not a bare label or list entry
+            if not starts[n] or len(toks) < n + 3:       # inside a sentence, not a bare label or list entry
                 continue
             for i in range(len(toks) - n + 1):
+                if toks[i][0] not in starts[n]:
+                    continue
                 key = tuple(t for t, _, _ in toks[i:i + n])
                 if key not in keys or key in found:
                     continue
@@ -336,8 +351,9 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
             r = rows.get(u)
             strength[u] = (2.0 if b == "INDEXED" else 1.0) + math.log1p((r["gsc_clicks"] + r["bing_clicks"]) if r else 0)
         hits, used = defaultdict(list), defaultdict(int)     # target -> [(rank, source, start, end)]; phrase -> pages
+        starts = candidate_starts(keys)
         for src, raw in texts.items():
-            for key, (s, e) in candidates(raw, keys).items():
+            for key, (s, e) in candidates(raw, keys, starts).items():
                 used[key] += 1
                 t = keys[key]
                 if src in strength and t != src and not links_to(raw, t):
