@@ -183,6 +183,74 @@ function setTab(route) {
   }
 }
 
+/* ------------------------------------------------------------------ guided action center */
+function viewActionCenter() {
+  if (!S.summary) return noData();
+  const v = (S.view.__guide ||= { focus: "", q: "" });
+  const derive = () => IndexGuide.derive(S.summary, S.st, { focus: v.focus });
+  const overall = IndexGuide.derive(S.summary, S.st);
+  const choose = (site) => { v.focus = site; render(); };
+  const data = derive();
+  const fmtNum = (n) => fmt(n);
+  const el = (type, cls, text) => h(type, { class: cls, text });
+  const action = (href, label, primary = false) => h("a", { class: "btn " + (primary ? "primary" : ""), href }, label);
+  const status = (ok, label, warning) => h("span", { class: "pill" }, h("span", { class: "dot " + (ok ? "ok" : warning ? "bad" : "warn") }), label);
+  const headline = h("section", { class: "guide-hero card" },
+    h("div", { class: "guide-eyebrow", text: "WEBSITE INDEXATION CONTROL CENTER" }),
+    h("h1", { text: "Know what matters. Fix it. Verify the result." }),
+    h("p", { class: "muted", text: "A practical workflow for every connected website. All numbers come from the last successful engine upload—not a live Google index count." }),
+    h("div", { class: "row" }, status(data.connected, data.connected ? "Engine reporting" : "Engine offline / delayed", !data.connected),
+      status(data.fresh, data.fresh ? "Data updated recently" : "Results are stale", !data.fresh),
+      data.paused ? status(false, "Changes paused", true) : status(true, "Changes enabled"),
+      h("span", { class: "pill", text: fmtNum(overall.activeSites) + " / " + fmtNum(overall.totalSites) + " sites enabled" })),
+    h("div", { class: "row" }, h("label", { class: "guide-filter" }, h("span", { class: "small muted", text: "Focus on" }),
+      h("select", { "aria-label": "Focus website", onchange: e => choose(e.target.value) },
+        h("option", { value: "", text: "All websites" }),
+        ...overall.sites.map(site => h("option", { value: site.site, selected: site.site === v.focus,
+          text: site.site + (site.enabled ? "" : " (paused)") })))),
+      action("#/runs", "Run history"), action("#/settings", "Automation settings")));
+  const stats = h("div", { class: "guide-stats" },
+    ...[[fmtNum(data.indexed), "Last observed indexed"],
+      [fmtNum(data.toImprove), "Known not indexed"],
+      [fmtNum(data.problems), "Technical exclusions / failures"],
+      [fmtNum(data.proposed), "Link proposals"],
+      [fmtNum(data.highAlerts), "Urgent alerts"]]
+      .map(([number,label]) => h("div", { class: "card guide-stat" }, h("strong", { text: number }), el("span", "muted small", label))));
+  const steps = h("section", { class: "guide-section" }, h("div", { class: "row" },
+    h("h2", { text: "Your next four steps" }), h("span", { class: "spacer" }),
+    h("span", { class: "muted small", text: "Complete in order; prioritize technical fixes before content work" })),
+    h("div", { class: "guide-steps" }, ...data.steps.map(step => h("article", { class: "card guide-step " + step.status },
+      h("div", { class: "row" }, h("span", { class: "guide-step-number", text: String(step.number) }),
+        h("div", { class: "guide-step-heading" }, h("h3", { text: step.title }), el("span", "muted small", step.metric))),
+      h("p", { class: "muted small", text: step.detail }),
+      action(step.href, step.cta, step.status === "attention")))));
+  const filtered = overall.sites.filter(site => (site.site.toLowerCase().includes(v.q.toLowerCase())) && (!v.focus || site.site === v.focus));
+  const cards = h("section", { class: "guide-section" },
+    h("div", { class: "row" }, h("h2", { text: "Your websites" }), h("span", { class: "spacer" }),
+      h("input", { type: "search", value: v.q, placeholder: "Find website", "aria-label": "Find website",
+        oninput: e => { v.q = e.target.value; draw(); } })),
+    h("div", { class: "guide-sites", id: "guide-site-list" }));
+  const draw = () => {
+    const items = overall.sites.filter(site => site.site.toLowerCase().includes(v.q.toLowerCase()) && (!v.focus || site.site === v.focus));
+    cards.querySelector("#guide-site-list").replaceChildren(...(items.length ? items.map(site => h("article", { class: "card guide-site" },
+      h("div", { class: "row" }, h("a", { class: "guide-site-title", href: "#/site/" + encodeURIComponent(site.site), text: site.site }),
+        h("span", { class: "spacer" }), status(site.enabled, site.enabled ? "Enabled" : "Paused", !site.enabled)),
+      h("div", { class: "guide-mini-stats" },
+        h("span", {}, h("b", { text: fmtNum(site.indexed) }), " indexed"),
+        h("span", {}, h("b", { text: fmtNum(site.crawled) }), " crawled / not indexed"),
+        h("span", {}, h("b", { text: fmtNum(site.blockers) }), " blocked")),
+      h("div", { class: "muted small", text: site.gsc ? "GSC property detected" : "GSC property missing from the last report" }),
+      h("div", { class: "row" }, action("#/site/" + encodeURIComponent(site.site), "Inspect URLs", true),
+        action("#/plan?site=" + encodeURIComponent(site.site), "Action plan")))) :
+      [h("div", { class: "card empty", text: "No matching website." })]));
+  };
+  draw();
+  return h("div", { class: "stack guide-root" }, headline, stats, steps, cards,
+    h("div", { class: "card guide-footnote small muted" },
+      "Evidence standard: indexation predictions are estimates, not outcomes. Inspect GSC URL evidence after changes. ",
+      action("#/overview", "Open full analytics")));
+}
+
 /* ------------------------------------------------------------------ views */
 function noData() {
   return h("div", { class: "card empty" }, h("h2", { text: "No data yet" }),
@@ -550,7 +618,7 @@ async function viewSite(site, params) {
 
   drawTable();
   wrap.append(
-    h("div", { class: "row" }, h("a", { href: "#/", text: "← Portfolio" })),
+    h("div", { class: "row" }, h("a", { href: "#/", text: "← Action Center" })),
     h("div", { class: "row" }, h("h1", { text: site }), h("span", { class: "spacer" }),
       h("a", { class: "btn small", href: `https://${site}/`, target: "_blank", rel: "noopener" }, "Open site"),
       h("button", { class: "btn small", onclick: () => openRunDialog(site) }, "Run this site")),
@@ -962,13 +1030,14 @@ async function render() {
   const app = document.getElementById("app");
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
   const [asked, arg] = path.split("/");
-  const route = ["site", "plan", "links", "alerts", "requests", "fixes", "runs", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
+  const route = ["site", "overview", "plan", "links", "alerts", "requests", "fixes", "runs", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
   const params = new URLSearchParams(query || "");
   setTab(route === "site" ? "" : route || "");
   document.title = `${route === "site" && arg ? safeDecode(arg) : (route ? route[0].toUpperCase() + route.slice(1) : "Overview")} · Index Engine`;
   try {
     let node;
     if (route === "site" && arg) node = await viewSite(safeDecode(arg), params);
+    else if (route === "overview") node = viewOverview();
     else if (route === "plan") node = viewPlan(params);
     else if (route === "links") node = viewLinks(params);
     else if (route === "alerts") node = viewAlerts();
@@ -976,7 +1045,7 @@ async function render() {
     else if (route === "fixes") node = viewFixes();
     else if (route === "runs") node = viewRuns();
     else if (route === "settings") node = viewSettings();
-    else node = viewOverview();
+    else node = viewActionCenter();
     app.replaceChildren(node);
   } catch (e) {
     app.replaceChildren(h("div", { class: "card empty", text: `Could not load: ${e.message}` }));
