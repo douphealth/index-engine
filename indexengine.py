@@ -401,7 +401,7 @@ def print_status(db, sites):
 
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["run", "tick", "publish", "status", "seed", "selftest"])
+    ap.add_argument("command", choices=["run", "tick", "publish", "status", "seed", "selftest", "doctor"])
     ap.add_argument("--site", action="append", help="limit to a site (repeatable)")
     ap.add_argument("--dry-run", action="store_true", help="decide everything, submit and change nothing")
     ap.add_argument("--no-submit", action="store_true", help="skip the submission stage")
@@ -438,6 +438,9 @@ def main():
                 setattr(args, flag, True)
             args.inspect_max, args.bing_check = 0, 0
             run(args, trigger="publish")
+        elif args.command == "doctor":
+            from engine import doctor
+            doctor.run(online=not args.no_creds, publish=not args.no_dashboard and not args.no_creds)
         elif args.command == "status":
             print_status(store.connect(), args.site or config.SITES)
         elif args.command == "seed":
