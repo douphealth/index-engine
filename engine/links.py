@@ -252,15 +252,33 @@ def refresh_corpus(db, site, wpc):
     full = age is None or age >= CORPUS_FULL_DAYS
     after = None if full else meta.get("corpus_watermark")
     n, newest = 0, meta.get("corpus_watermark") or ""
-    if full:
-        db.execute("DELETE FROM link_corpus WHERE site=?", (site,))
-    for item in wpc.corpus(after=after):
-        db.execute("INSERT OR REPLACE INTO link_corpus VALUES(?,?,?,?,?,?)",
-                   (item["url"], site, item["id"], item["type"], item["modified"], zlib.compress(item["raw"].encode("utf-8"))))
-        newest = max(newest, item["modified"] or "")
-        n += 1
-    store.set_meta(db, site, corpus_watermark=newest, **({"corpus_full_at": now_iso()} if full else {}))
-    db.commit()
+    # set_meta commits independently, so write the metadata here as part of the
+    # same savepoint as the corpus. A failed fetch must also undo earlier pages.
+    db.execute("SAVEPOINT refresh_link_corpus")
+    try:
+        if full:
+            db.execute("DELETE FROM link_corpus WHERE site=?", (site,))
+        for item in wpc.corpus(after=after):
+            db.execute("INSERT OR REPLACE INTO link_corpus VALUES(?,?,?,?,?,?)",
+                       (item["url"], site, item["id"], item["type"], item["modified"], zlib.compress(item["raw"].encode("utf-8"))))
+            newest = max(newest, item["modified"] or "")
+            n += 1
+        meta = store.get_meta(db, site)
+        meta["corpus_watermark"] = newest
+        if full:
+            meta["corpus_full_at"] = now_iso()
+        db.execute("INSERT INTO site_meta(site, data) VALUES(?, ?) "
+                   "ON CONFLICT(site) DO UPDATE SET data=excluded.data", (site, json.dumps(meta)))
+        # Commit while the savepoint still exists, so even a commit error can
+        # roll back just this refresh without discarding the caller's work.
+        db.commit()
+    except BaseException:
+        # SQLite can already have rolled back the entire transaction on some
+        # errors; don't mask the original exception if the savepoint is gone.
+        if db.in_transaction:
+            db.execute("ROLLBACK TO SAVEPOINT refresh_link_corpus")
+            db.execute("RELEASE SAVEPOINT refresh_link_corpus")
+        raise
     return n
 
 

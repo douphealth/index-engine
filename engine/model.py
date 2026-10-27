@@ -45,6 +45,31 @@ MIN_CLASS = 20
 MIN_AUC = 0.60
 
 
+def _site_counts(sites, y):
+    counts = defaultdict(lambda: [0.0, 0])
+    for site, label in zip(sites, y):
+        counts[site][0] += label
+        counts[site][1] += 1
+    return counts
+
+
+def _site_rate(indexed, n):
+    # Preserve the existing prior for sites with no known labels.
+    return (indexed + 1) / (n + 4) if n else 0.2
+
+
+def _site_rates(sites, counts, own_labels=None):
+    """Rates from counts alone, optionally removing each row's own label."""
+    rates = []
+    for i, site in enumerate(sites):
+        indexed, n = counts.get(site, (0, 0))
+        if own_labels is not None:
+            indexed -= own_labels[i]
+            n -= 1
+        rates.append(_site_rate(indexed, n))
+    return rates
+
+
 def _link_counts(db):
     """{dst_without_slash: [all, body, from_indexed]} from pages that actually serve their own content."""
     counts = defaultdict(lambda: [set(), set(), set()])
@@ -70,12 +95,8 @@ def frame(db):
         FROM triage t JOIN urls u ON u.url=t.url LEFT JOIN audits a ON a.url=t.url LEFT JOIN perf p ON p.url=t.url
         LEFT JOIN gsc g ON g.url=t.url""").fetchall()
     links = _link_counts(db)
-    known = defaultdict(lambda: [0, 0])
-    for r in rows:
-        if r["bucket"] in POS | NEG:
-            known[r["site"]][0] += r["bucket"] in POS
-            known[r["site"]][1] += 1
-    site_rate = {s: (i + 1) / (n + 4) for s, (i, n) in known.items()}
+    labelled = [r for r in rows if r["bucket"] in POS | NEG]
+    known = _site_counts([r["site"] for r in labelled], [int(r["bucket"] in POS) for r in labelled])
     out = []
     for r in rows:
         if r["bucket"] not in SCORED:
@@ -83,7 +104,11 @@ def frame(db):
         flags = set((r["flags"] or "").split(","))
         inl = links.get(r["url"].rstrip("/"), [0, 0, 0])
         age = days_since(r["published"] or r["first_seen"])
-        raw = {"site_rate": site_rate.get(r["site"], 0.2), "inl_all": inl[0], "inl_body": inl[1], "inl_indexed": inl[2],
+        indexed, n = known.get(r["site"], (0, 0))
+        if r["bucket"] in POS | NEG:
+            indexed -= int(r["bucket"] in POS)
+            n -= 1
+        raw = {"site_rate": _site_rate(indexed, n), "inl_all": inl[0], "inl_body": inl[1], "inl_indexed": inl[2],
                "words": r["words"] or 0, "near_dup": int("NEAR_DUPLICATE" in flags), "thin": int("THIN" in flags),
                "trust": int("TRUST_RISK" in flags), "bing_impr": r["bing_impr"], "bing_click": int(r["bing_clicks"] > 0),
                "age": age if age is not None else 365, "depth": len([s for s in urlsplit(r["url"]).path.split("/") if s]),
@@ -154,13 +179,19 @@ def _fold(url, k=5):
 
 def cross_validate(X, y, sites, folds):
     """Out-of-fold predictions; returns (pooled AUC, within-site AUC). Within-site is what matters for choosing
-    which pages of a site to work on: pooled AUC is flattered by big differences between sites."""
+    which pages of a site to work on: pooled AUC is flattered by big differences between sites.
+    Site rates are rebuilt per fold: leave-one-out for training, training labels only for validation."""
+    X, y, sites, folds = np.asarray(X), np.asarray(y), np.asarray(sites), np.asarray(folds)
     oof = np.zeros(len(y))
     for f in sorted(set(folds)):
         test = folds == f
         if test.all() or len(set(y[~test])) < 2:
             return None, None
-        oof[test] = predict(fit(X[~test], y[~test]), X[test])
+        train_X, test_X = X[~test].astype(float, copy=True), X[test].astype(float, copy=True)
+        counts = _site_counts(sites[~test], y[~test])
+        train_X[:, NAMES.index("site_rate")] = _site_rates(sites[~test], counts, y[~test])
+        test_X[:, NAMES.index("site_rate")] = _site_rates(sites[test], counts)
+        oof[test] = predict(fit(train_X, y[~test]), test_X)
     pooled = auc(y, oof)
     per, weight = [], []
     for s in sorted(set(sites)):
@@ -181,7 +212,9 @@ def train(records):
         meta.update(quality="insufficient", note=f"needs at least {MIN_CLASS} indexed and {MIN_CLASS} non-indexed pages with Google verdicts")
         return None, meta
     X = np.array([vector(r["raw"]) for r in lab])
-    pooled, within = cross_validate(X, y, np.array([r["site"] for r in lab]), np.array([_fold(r["url"]) for r in lab]))
+    sites = np.array([r["site"] for r in lab])
+    pooled, within = cross_validate(X, y, sites, np.array([_fold(r["url"]) for r in lab]))
+    X[:, NAMES.index("site_rate")] = _site_rates(sites, _site_counts(sites, y), y)
     m = fit(X, y)
     meta["auc"] = round(pooled, 3) if pooled is not None else None
     meta["auc_within_site"] = round(within, 3) if within is not None else None

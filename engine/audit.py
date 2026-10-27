@@ -228,7 +228,7 @@ def fetch_page(url, rp):
 
 
 def due_rows(db, sites, force=False, max_per_site=None):
-    rows = db.execute(f"""SELECT u.url, u.site, u.lastmod, a.checked_at, a.lastmod_at_check
+    rows = db.execute(f"""SELECT u.url, u.site, u.lastmod, a.checked_at, a.lastmod_at_check, a.error, a.status
                           FROM urls u LEFT JOIN audits a ON a.url=u.url
                           WHERE (u.in_sitemap=1 OR u.in_wp=1) AND u.site IN ({','.join('?' * len(sites))})""",
                       list(sites)).fetchall()
@@ -236,7 +236,8 @@ def due_rows(db, sites, force=False, max_per_site=None):
     for r in rows:
         age = days_since(r["checked_at"])
         changed = r["lastmod"] and r["lastmod"] != r["lastmod_at_check"]
-        if force or age is None or age > config.AUDIT_MAX_AGE_DAYS or changed:
+        retry_error = r["error"] or r["status"] == 429 or (r["status"] is not None and r["status"] >= 500)
+        if force or retry_error or age is None or age > config.AUDIT_MAX_AGE_DAYS or changed:
             per_site[r["site"]].append((0 if age is None else 1, r["url"], r["site"], r["lastmod"]))
     out = {}
     for site, items in per_site.items():

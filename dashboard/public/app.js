@@ -414,9 +414,10 @@ function viewOverview() {
       h("div", { class: "kpi" }, h("div", { class: "v good", text: `+${fmt(imp.gained || 0)}` }), h("div", { class: "l", text: "entered Google's index" })),
       h("span", { class: "spacer" }),
       h("div", { class: "kpi" }, h("div", { class: "v bad", text: `−${fmt(imp.lost || 0)}` }), h("div", { class: "l", text: "dropped out" }))),
-    h("div", { class: "small" }, h("b", { text: "Requests: " }), rateTxt((imp.requests || {}).measured, (imp.requests || {}).indexed), " indexed within 7+ days"),
-    h("div", { class: "small" }, h("b", { text: "New links: " }), rateTxt((imp.links || {}).measured, (imp.links || {}).indexed), " targets indexed"),
-    h("div", { class: "small" }, h("b", { text: "Bing: " }), rateTxt((imp.bing || {}).measured, (imp.bing || {}).crawled_or_shown), " submitted URLs crawled or shown"));
+    h("div", { class: "small" }, h("b", { text: "Requests: " }), rateTxt((imp.requests || {}).measured, (imp.requests || {}).indexed), " last reported indexed among requests at least 7 days old"),
+    h("div", { class: "small" }, h("b", { text: "New links: " }), rateTxt((imp.links || {}).measured, (imp.links || {}).indexed), " targets last reported indexed among links at least 7 days old"),
+    h("div", { class: "small" }, h("b", { text: "Bing: " }), rateTxt((imp.bing || {}).measured, (imp.bing || {}).crawled_or_shown), " submitted URLs crawled since submission or shown in Bing"),
+    h("div", { class: "muted tiny", text: "Action totals cover all eligible historical records, not just the period above. Current status may be based on older observations; these associations do not establish that an action caused indexing." }));
 
   const openAlerts = S.st.alerts.filter((a) => !a.acked);
   const alertCard = h("div", { class: "card stack" }, h("h2", {}, "Alerts ", openAlerts.length ? h("span", { class: "badge", text: String(openAlerts.length) }) : null),
@@ -628,14 +629,14 @@ function viewPlan(params) {
   const total = rows.reduce((t, a) => t + (a.p_after - a.p_now), 0);
 
   const drivers = (m.drivers || []).filter((d) => DRIVER[d.feature]).slice(0, 6);
-  const modelCard = h("div", { class: "card stack" }, h("h2", { text: "What decides indexing on your sites" }),
+  const modelCard = h("div", { class: "card stack" }, h("h2", { text: "Signals associated with indexing" }),
     m.n ? h("p", { class: "small" }, `Learned from ${fmt(m.n)} pages Google has judged (${fmt(m.indexed)} indexed). `,
       m.auc_within_site ? `Ranking accuracy within a site, on pages held out of training (AUC): ${m.auc_within_site} - ${m.quality}. ` : "",
       m.auc ? `Across all sites: ${m.auc}. ` : "", m.note || "") : h("p", { class: "muted small", text: m.note || "No model yet." }),
     drivers.length ? h("ul", { class: "plain small" }, ...drivers.map((d) => h("li", {},
       h("span", { class: d.direction === "raises" ? "good" : "bad", text: d.direction === "raises" ? "▲ " : "▼ " }),
       `${DRIVER[d.feature]} → ${d.direction === "raises" ? "higher" : "lower"} odds`))) : null,
-    h("p", { class: "muted tiny", text: "Correlations in your own data, not proof of cause. Odds are re-estimated after every run, and actions you take are measured on the Overview." }));
+    h("p", { class: "muted tiny", text: "Correlations, not proof of cause. Validation may be optimistic because some link features use verdicts from all pages. Action scenarios are heuristics, not guaranteed gains; the Overview shows status associations, not measured effects." }));
 
   const doIt = (a) => {
     if (a.action === "request") {

@@ -69,28 +69,44 @@ def walk_sitemaps(base, roots, site_host, cap=300):
         except Exception as e:
             errors.append(f"{sm}: {e}")
             continue
-        if tree.tag.lower().endswith("sitemapindex"):
-            for el in tree.iter(SM + "sitemap"):
-                loc = (el.findtext(SM + "loc") or "").strip()
+        if tree.tag not in (SM + "sitemapindex", SM + "urlset", "sitemapindex", "urlset"):
+            errors.append(f"{sm}: unexpected XML root {tree.tag}")
+            continue
+        ns = SM if tree.tag.startswith(SM) else ""
+        if tree.tag.endswith("sitemapindex"):
+            for el in tree.iter(ns + "sitemap"):
+                loc = (el.findtext(ns + "loc") or "").strip()
                 if loc and loc not in seen:
                     queue.append(loc)
+                elif not loc:
+                    errors.append(f"{sm}: sitemap entry without loc")
             continue
         kind = kind_from_sitemap(sm)
         # Only <url><loc>, never <image:loc> (image entries inflated page counts in an earlier export).
-        for el in tree.iter(SM + "url"):
-            loc = (el.findtext(SM + "loc") or "").strip()
-            if not loc or ASSET_RE.search(urlsplit(loc).path) or not same_site(loc, site_host):
+        for el in tree.iter(ns + "url"):
+            loc = (el.findtext(ns + "loc") or "").strip()
+            if not loc:
+                errors.append(f"{sm}: URL entry without loc")
+                continue
+            if ASSET_RE.search(urlsplit(loc).path) or not same_site(loc, site_host):
                 continue
             key = norm(loc)
-            lastmod = (el.findtext(SM + "lastmod") or "").strip() or None
+            lastmod = (el.findtext(ns + "lastmod") or "").strip() or None
             old = found.get(key)
             if old is None or (old[0] not in SPECIFIC and kind in SPECIFIC):
                 found[key] = (kind, sm, lastmod or (old[2] if old else None))
+    if any(sm not in seen for sm in queue):
+        errors.append(f"sitemap limit reached ({cap})")
     return found, seen, errors
 
 
 def wp_published(base, site_host, max_pages=60):
     """Published posts and pages from the public WP REST API: {url: (kind, modified_gmt, date_gmt)}. None if not WordPress."""
+    return _wp_published_scan(base, site_host, max_pages)[0]
+
+
+def _wp_published_scan(base, site_host, max_pages=60):
+    """Return the observed URLs and whether both collections were fully scanned."""
     out = {}
     for typ in ("posts", "pages"):
         page = 1
@@ -100,26 +116,55 @@ def wp_published(base, site_host, max_pages=60):
                         timeout=(10, 90))
             except Exception as e:
                 log(f"  WP REST {typ} p{page}: {e}")
-                return out if out else None
+                return out or None, False
             if r.status_code != 200 or "json" not in r.headers.get("Content-Type", ""):
-                if page == 1 and typ == "posts":
-                    return None          # not WordPress, or REST closed
-                break
+                log(f"  WP REST {typ} p{page}: HTTP {r.status_code} or non-JSON response")
+                return out or None, False
             try:
                 items = r.json()
             except ValueError:
-                break
-            if not isinstance(items, list) or not items:
-                break
+                log(f"  WP REST {typ} p{page}: invalid JSON")
+                return out or None, False
+            if not isinstance(items, list):
+                log(f"  WP REST {typ} p{page}: unexpected response")
+                return out or None, False
+            invalid_item = False
             for it in items:
                 link = it.get("link") if isinstance(it, dict) else None
+                if not isinstance(link, str) or not link:
+                    invalid_item = True
+                    continue
                 if link and same_site(link, site_host):
                     out[norm(link)] = (typ[:-1], it.get("modified_gmt"), it.get("date_gmt"))
-            total = int(r.headers.get("X-WP-TotalPages", page) or page)
+            if invalid_item:
+                log(f"  WP REST {typ} p{page}: item without link")
+                return out or None, False
+            raw_total = r.headers.get("X-WP-TotalPages")
+            try:
+                total = int(raw_total) if raw_total not in (None, "") else None
+                if total is not None and (total < 0 or (total == 0 and (items or page > 1)) or (total > 0 and page > total)):
+                    raise ValueError("inconsistent page count")
+            except (TypeError, ValueError):
+                log(f"  WP REST {typ} p{page}: invalid page count")
+                return out or None, False
+            if not items:
+                if total is not None and page < total:
+                    log(f"  WP REST {typ} p{page}: empty page before final page")
+                    return out or None, False
+                break
+            if total is None:
+                # Without a total, a full page cannot establish that there are no more.
+                if len(items) < 100:
+                    break
+                page += 1
+                continue
             if page >= total:
                 break
             page += 1
-    return out
+        else:
+            log(f"  WP REST {typ}: page limit reached ({max_pages})")
+            return out or None, False
+    return out, True
 
 
 def run(db, sites, use_wp=True):
@@ -139,14 +184,15 @@ def run(db, sites, use_wp=True):
                 except Exception:
                     pass
         found, read, errors = walk_sitemaps(base, roots, host)
-        wp = wp_published(base, host) if use_wp else None
+        sitemap_complete = bool(roots) and not errors
+        wp, wp_complete = _wp_published_scan(base, host) if use_wp else (None, False)
         now = now_iso()
         before = store.get_meta(db, site).get("sitemap_count") or 0
-        if before >= 20 and len(found) < 0.9 * before:
+        if sitemap_complete and before >= 20 and len(found) < 0.9 * before:
             alerts.add(db, site, None, "sitemap_shrank", "high",
                        f"Sitemaps now list {len(found)} URLs, down from {before}. Check for a plugin, Worker or setting change.")
 
-        if found:
+        if sitemap_complete:
             db.execute("UPDATE urls SET in_sitemap=0 WHERE site=?", (site,))
         for url, (kind, sm, lastmod) in found.items():
             db.execute("""INSERT INTO urls(url, site, kind, sitemap, lastmod, in_sitemap, first_seen, last_seen)
@@ -154,22 +200,27 @@ def run(db, sites, use_wp=True):
                           ON CONFLICT(url) DO UPDATE SET kind=excluded.kind, sitemap=excluded.sitemap,
                             lastmod=COALESCE(excluded.lastmod, urls.lastmod), in_sitemap=1, last_seen=excluded.last_seen""",
                        (url, site, kind, sm, lastmod, now, now))
-        missing = 0
         if wp is not None:
-            db.execute("UPDATE urls SET in_wp=0 WHERE site=?", (site,))
+            if wp_complete:
+                db.execute("UPDATE urls SET in_wp=0 WHERE site=?", (site,))
             for url, (kind, modified, published) in wp.items():
-                if url not in found:
-                    missing += 1
                 db.execute("""INSERT INTO urls(url, site, kind, lastmod, in_wp, first_seen, last_seen, published)
                               VALUES(?,?,?,?,1,?,?,?)
                               ON CONFLICT(url) DO UPDATE SET in_wp=1, last_seen=excluded.last_seen,
                                 lastmod=COALESCE(urls.lastmod, excluded.lastmod), published=excluded.published,
                                 kind=CASE WHEN urls.kind IN ('post','page','product','taxonomy') THEN urls.kind ELSE excluded.kind END""",
                            (url, site, kind, modified, now, now, published))
+        counts = db.execute("SELECT COALESCE(SUM(in_sitemap), 0), COALESCE(SUM(in_wp), 0), "
+                            "COALESCE(SUM(CASE WHEN in_wp=1 AND in_sitemap=0 THEN 1 ELSE 0 END), 0) "
+                            "FROM urls WHERE site=?", (site,)).fetchone()
+        sitemap_count, wp_count, missing = counts
         db.commit()
+        previous_meta = store.get_meta(db, site)
         store.set_meta(db, site, base=base, robots=robots, sitemap_roots=roots, sitemaps_read=read,
-                       sitemap_errors=errors[:20], wp=wp is not None, wp_count=len(wp or {}),
-                       sitemap_count=len(found), missing_from_sitemap=missing, discovered_at=now)
+                       sitemap_errors=errors[:20], sitemap_complete=sitemap_complete,
+                       wp=(wp is not None or bool(previous_meta.get("wp"))), wp_complete=wp_complete, wp_count=wp_count,
+                       sitemap_count=sitemap_count, missing_from_sitemap=missing, discovered_at=now)
+        wp_status = (f"WP observed={len(wp or {})}, inventory={wp_count}, in no sitemap={missing}"
+                     + ("" if wp_complete else " (incomplete)") if use_wp else "WP disabled")
         log(f"  sitemaps read={len(read)} urls={len(found)} errors={len(errors)}"
-            + (f" | WP published={len(wp)}, in no sitemap={missing} (the audit sorts noindexed from truly missing)"
-               if wp is not None else " | not WordPress / REST closed"))
+            + (" (incomplete)" if not sitemap_complete else "") + f" | {wp_status}")

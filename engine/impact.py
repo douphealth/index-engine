@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""What actually worked: Google index gains and losses, and the success rate of each kind of action.
+"""Observed indexing transitions and status summaries for past actions.
 
-Measured, not assumed: a request counts as a success when the page is indexed 7+ days later; an internal link when
-its target is; a Bing submission when Bing has crawled the URL (or shown it) since.
+These figures are associations, not causal effects. Request and link status may predate the action;
+Bing impressions may also predate submission. Missing verdicts remain in the totals.
 """
 import datetime as dt
 from collections import defaultdict
