@@ -352,6 +352,12 @@ def daily_due(db, hhmm, now=None):
     return not failures or (len(failures) < 3 and now_utc - max(failures) >= dt.timedelta(minutes=30))
 
 
+def claim_command(dash, command_id):
+    """Fail closed: a queued command must be atomically claimed before any run."""
+    response = safe(dash.command, command_id, "running", what="claim command") if dash else None
+    return isinstance(response, dict) and response.get("ok") is True
+
+
 def tick(args):
     """Scheduler entry point (every 10 minutes): heartbeat, then a queued dashboard run, else the daily run when due,
     else a quick tick."""
@@ -368,7 +374,11 @@ def tick(args):
         o = cmd.get("options") or {}
         argv = ["run"] + (["--site", o["site"]] if o.get("site") else []) + (["--no-submit"] if o.get("no_submit") else []) \
             + (["--force-audit"] if o.get("force_audit") else []) + (["--dry-run"] if o.get("dry_run") else [])
-        safe(dash.command, cmd["id"], "running", what="claim command")
+        # A command is owned only if the Worker atomically accepted its claim.
+        # Never execute after an HTTP failure, cancelled command or competing worker claim.
+        if not claim_command(dash, cmd["id"]):
+            log("[queue] command not claimed; skipping execution to prevent duplicate writes")
+            return
         try:
             run(build_parser().parse_args(argv), dash, state, trigger="dashboard")
             safe(dash.command, cmd["id"], "done", "ok", what="close command")
@@ -401,7 +411,7 @@ def print_status(db, sites):
 
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["run", "tick", "publish", "status", "seed", "selftest"])
+    ap.add_argument("command", choices=["run", "tick", "publish", "status", "seed", "selftest", "doctor"])
     ap.add_argument("--site", action="append", help="limit to a site (repeatable)")
     ap.add_argument("--dry-run", action="store_true", help="decide everything, submit and change nothing")
     ap.add_argument("--no-submit", action="store_true", help="skip the submission stage")
@@ -438,6 +448,9 @@ def main():
                 setattr(args, flag, True)
             args.inspect_max, args.bing_check = 0, 0
             run(args, trigger="publish")
+        elif args.command == "doctor":
+            from engine import doctor
+            doctor.run(online=not args.no_creds, publish=not args.no_dashboard and not args.no_creds)
         elif args.command == "status":
             print_status(store.connect(), args.site or config.SITES)
         elif args.command == "seed":
