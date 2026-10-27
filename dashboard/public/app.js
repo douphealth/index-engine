@@ -23,7 +23,7 @@ const DRIVER = {
 };
 const ACTION_SHORT = { add_links: "Add links", request: "Request indexing", differentiate: "De-duplicate", expand: "Add substance", fix_trust: "Source claims" };
 
-const S = { summary: null, st: null, sites: {}, view: {} };
+const S = { summary: null, st: null, sites: {}, view: {}, health: null };
 
 /* ------------------------------------------------------------------ helpers */
 function h(tag, attrs = {}, ...kids) {
@@ -102,6 +102,7 @@ async function loadAll() {
   const [summary, st] = await Promise.all([api.get("/api/data/summary"), api.get("/api/state")]);
   S.summary = summary;
   S.st = st;
+  S.health = await api.get("/api/data/health").catch(() => null);
   S.urlState = new Map(st.url_state.map((u) => [u.url, u]));
   renderChrome();
 }
@@ -1023,6 +1024,28 @@ function viewSettings() {
         "Google's Indexing API is never used for articles: Google limits it to job-posting and livestream pages." })));
 }
 
+function viewConnections() {
+  const r = S.health;
+  if (!r) return h("div", { class: "stack" }, h("h1", { text: "Connections" }),
+    h("div", { class: "card stack" }, h("h2", { text: "No verified connection report yet" }),
+      h("p", { class: "muted", text: "Run python indexengine.py doctor on the computer running the engine. The report uses read-only API checks and uploads no credential values." }),
+      h("a", { class: "btn", href: "#/runs", text: "See engine runs" })));
+  const status = v => h("span", { class: "pill" }, h("span", { class: "dot " + (v === "ok" ? "ok" : ["missing", "error"].includes(v) ? "bad" : "warn") }), v);
+  const sourceCards = Object.entries(r.sources || {}).map(([name,info]) => h("article", { class: "card stack" },
+    h("b", { text: name.replaceAll("_", " ") }), status(info.status), h("p", { class: "small muted", text: info.detail })));
+  const rows = (r.sites || []).map(site => h("tr", {},
+    h("td", { text: site.site }), ...["google", "bing", "indexnow", "wordpress"].map(k => h("td", {}, status(site[k] || "unverified")))));
+  return h("div", { class: "stack" }, h("h1", { text: "Connections" }),
+    h("p", { class: "muted", text: "Read-only connection checks; configured is not verified. No credentials are stored in this report." }),
+    h("div", { class: "row" }, h("span", { class: "pill", text: "Checked: " + (r.checked_at ? new Date(r.checked_at).toLocaleString() : "unknown") }),
+      h("span", { class: "pill", text: "Mode: " + (r.mode || "unknown") })),
+    h("div", { class: "guide-sites" }, ...sourceCards),
+    h("h2", { text: "Website coverage" }),
+    h("div", { class: "tablewrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ...["Website","Google","Bing","IndexNow","WordPress"].map(k => h("th", { text: k })))),
+      h("tbody", {}, ...rows))));
+}
+
 /* ------------------------------------------------------------------ router */
 const safeDecode = (x) => { try { return decodeURIComponent(x); } catch { return x; } };   // a hand-typed "%" must not break the page
 
@@ -1030,7 +1053,7 @@ async function render() {
   const app = document.getElementById("app");
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
   const [asked, arg] = path.split("/");
-  const route = ["site", "overview", "plan", "links", "alerts", "requests", "fixes", "runs", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
+  const route = ["site", "overview", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
   const params = new URLSearchParams(query || "");
   setTab(route === "site" ? "" : route || "");
   document.title = `${route === "site" && arg ? safeDecode(arg) : (route ? route[0].toUpperCase() + route.slice(1) : "Overview")} · Index Engine`;
@@ -1044,6 +1067,7 @@ async function render() {
     else if (route === "requests") node = viewRequests(params);
     else if (route === "fixes") node = viewFixes();
     else if (route === "runs") node = viewRuns();
+    else if (route === "connections") node = viewConnections();
     else if (route === "settings") node = viewSettings();
     else node = viewActionCenter();
     app.replaceChildren(node);
