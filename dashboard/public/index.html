@@ -7,6 +7,7 @@
 <title>Index Engine</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/app.css">
+<script src="/guide.js" defer></script>
 <script src="/app.js" defer></script>
 </head>
 <body>
@@ -14,7 +15,8 @@
   <div class="top-in">
     <a class="brand" href="#/"><img src="/favicon.svg" alt="">Index Engine</a>
     <nav class="tabs" id="tabs">
-      <a href="#/" data-r="">Overview</a>
+      <a href="#/" data-r="">Action Center</a>
+      <a href="#/overview" data-r="overview">Analytics</a>
       <a href="#/plan" data-r="plan">Plan</a>
       <a href="#/requests" data-r="requests">Requests</a>
       <a href="#/links" data-r="links">Links<span class="badge" id="b-links"></span></a>
@@ -29,7 +31,7 @@
     <button class="btn" id="logout" type="button" title="Sign out">Sign out</button>
   </div>
 </header>
-<main id="app"><div class="empty">Loading…</div></main>
+<main id="app" tabindex="-1"><div class="empty">Loading…</div></main>
 
 <dialog id="run-dlg">
   <form method="dialog" class="stack" id="run-form">
