@@ -1,7 +1,10 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { derive } = require("../public/guide.js");
+// The browser script assigns IndexGuide on globalThis. This package uses
+// `"type": "module"`, so requiring the .js file yields no CommonJS exports.
+require("../public/guide.js");
+const { derive } = globalThis.IndexGuide;
 
 const NOW = Date.parse("2026-10-27T12:00:00Z");
 const sample = () => ({
