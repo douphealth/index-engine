@@ -156,6 +156,23 @@ td.lever { max-width: 280px; }
 .note { border-left: 3px solid var(--warn); }
 ol.tight { margin: 0; padding-left: 20px; display: grid; gap: 2px; }
 
+/* revival */
+.chip.v { font-weight: 600; }
+.chip.v.bad { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+.chip.v.good { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
+.chart.tall { height: 200px; }
+.chart .mark { stroke: var(--muted); stroke-dasharray: 3 3; opacity: .6; }
+tr.sel td { background: var(--soft); }
+.bars { display: grid; gap: 12px; }
+.bar-row { display: grid; gap: 3px; min-width: 0; }
+.bar-row .track { height: 8px; border-radius: 4px; background: var(--soft); overflow: hidden; }
+.bar-row .track span { display: block; height: 100%; background: var(--bad); border-radius: 4px; }
+.finding { display: flex; gap: 10px; align-items: flex-start; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.stat-grid .s { display: grid; gap: 1px; }
+.stat-grid .s b { font-size: 20px; font-variant-numeric: tabular-nums; }
+details.card > summary { cursor: pointer; }
+
 /* funnel */
 .funnel { display: grid; gap: 10px; }
 .funnel .step { display: grid; gap: 3px; }

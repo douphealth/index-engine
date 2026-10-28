@@ -310,6 +310,18 @@ function priorities() {
     }
   }
 
+  for (const s of live) {
+    for (const k of ["bing", "google"]) {
+      const t = s.traffic && s.traffic[k];
+      if (t && t.clicks.verdict === "declining") {
+        add({ tier: 0, site: s.site, minutes: 20, cta: "See Revival", href: `#/revival?site=${encodeURIComponent(s.site)}`,
+          title: `${ENGINE[k]} clicks fell ${Math.abs(Math.round(t.clicks.pct))}% on ${s.site}`,
+          why: `${fmt(t.clicks_prev)} to ${fmt(t.clicks_now)} clicks in the latest 28 days vs the 28 before (${t.clicks.confidence} confidence). ` +
+            "Revival shows which pages lost them and what holds each back." });
+      }
+    }
+  }
+
   // ---- quick wins: ranked by expected pages per minute
   const proposed = S.st.links.filter((l) => l.status === "proposed" && liveSet.has(l.site));
   for (const [site, ls] of Object.entries(bySite(proposed))) {
@@ -369,6 +381,15 @@ function priorities() {
       add({ tier: 2, site: s.site, title: `${plural(fl.NOT_IN_SITEMAP, "indexable page")} missing from the ${s.site} sitemaps`, minutes: 10,
         why: "Google finds pages much faster through the sitemap. Check the SEO plugin's sitemap settings for these.",
         cta: "See pages", href: `#/site/${s.site}?flag=NOT_IN_SITEMAP` });
+    }
+  }
+
+  const FINDING_TITLE = { index_bloat: (s, f) => `Bing holds ${s.bing_health.ratio}× more pages than ${s.site} has URLs`,
+    robots_blocked: (s) => `Bing keeps requesting URLs that ${s.site}'s robots.txt blocks`, server_errors: (s) => `Bing meets server errors on ${s.site}`,
+    missing_pages: (s) => `Bing hits missing pages on ${s.site}`, duplicate_urls: (s, f) => `${s.site} serves ${f.count} pages at two addresses` };
+  for (const s of live) {
+    for (const f of [...((s.bing_health || {}).findings || []), ...(s.revival_findings || [])]) {
+      add({ tier: 2, site: s.site, title: (FINDING_TITLE[f.kind] || (() => f.kind))(s, f), why: f.message, minutes: 15, cta: "See details", href: `#/revival?site=${encodeURIComponent(s.site)}` });
     }
   }
 
@@ -523,7 +544,7 @@ function viewOverview() {
           : h("span", { class: "muted", text: isPaused(s.site) ? "paused" : "nothing pending" })));
     })));
 
-  return h("div", { class: "stack" }, head, prioCard, kpis,
+  return h("div", { class: "stack" }, head, prioCard, kpis, trafficCard(),
     h("div", { class: "cols" },
       h("div", { class: "card" }, h("h2", { text: "Google indexed share of checked URLs" }), trendChart()),
       h("div", { class: "card" }, h("h2", { text: "Where pages get stuck" }), funnel(t))),
@@ -550,13 +571,195 @@ function trendChart() {
     svg("text", { x: W - P - 60, y: H - 4 }, new Date(t1).toLocaleDateString()));
 }
 
+/* ------------------------------------------------------------------ revival: traffic, Bing health, where the lost clicks went
+   Everything here is read from the engine's upload: daily clicks from Bing and Google, Bing's own crawl report, and per-page
+   changes between the latest 28 days and the 28 before. Associations in the engines' data, not causes. */
+const VERDICT = { declining: ["bad", "Clear drop"], growing: ["good", "Clear rise"], stable: ["", "No clear change"], too_little_data: ["", "Too little data"] };
+const dsign = (p) => (p === null || p === undefined ? "–" : `${p > 0 ? "+" : ""}${Math.round(p)}%`);
+const KIND = {
+  live: ["Live pages that lost visibility", "Indexable and answering normally, so the page itself lost rankings or demand."],
+  blocked: ["Pages that are blocked", "noindex, redirect, canonical elsewhere, robots.txt or errors: a fix, or a decision you already made."],
+  gone: ["Removed pages", "The URL now answers 404 or 410."],
+  moved: ["Pages that redirect elsewhere", "Their clicks may now be counted on the page they redirect to."],
+  unlisted: ["Live but not in your sitemap or WordPress list", "Nothing tracks or submits these."],
+  unchecked: ["Not in your list, not checked yet", "Small losses are checked a few at a time on each run."],
+};
+const ENGINE = { bing: "Bing", google: "Google" };
+
+function verdictChip(t) {
+  if (!t) return h("span", { class: "muted small", text: "no data" });
+  const [cls, label] = VERDICT[t.clicks.verdict];
+  return h("span", { class: `chip v ${cls}`, text: label,
+    title: t.clicks.confidence ? `${t.clicks.confidence} confidence (${t.clicks.z} standard errors)` : "A change must be at least 25% and clearly more than chance" });
+}
+
+function clicksChart(series, label) {
+  if (!series || series.length < 14) return h("p", { class: "muted small", text: "The chart appears once there are two weeks of data." });
+  const W = 640, H = 190, P = 32, n = series.length;
+  const pts = series.map((_, i) => {
+    const w = series.slice(Math.max(0, i - 6), i + 1);
+    return [w.reduce((s, r) => s + r[1], 0) / w.length, w.reduce((s, r) => s + r[3], 0) / w.length];     // 7-day averages
+  });
+  const ymax = Math.max(1, ...pts.map((p) => Math.max(p[0], p[1]))) * 1.12;
+  const x = (i) => P + (i / (n - 1)) * (W - 2 * P);
+  const y = (val) => H - P + 4 - (val / ymax) * (H - 2 * P);
+  const line = (k) => pts.map((p, i) => `${x(i).toFixed(1)},${y(p[k]).toFixed(1)}`).join(" ");
+  const mark = (i, text) => [svg("line", { class: "mark", x1: x(i), x2: x(i), y1: P - 8, y2: H - P + 4 }), svg("text", { x: x(i) + 3, y: P - 1 }, text)];
+  return svg("svg", { class: "chart tall", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": label },
+    ...[0, 0.5, 1].map((f) => svg("line", { class: "grid-line", x1: P, x2: W - P, y1: y(ymax * f / 1.12), y2: y(ymax * f / 1.12) })),
+    ...[0, 0.5, 1].map((f) => svg("text", { x: 2, y: y(ymax * f / 1.12) + 4 }, String(Math.round(ymax * f / 1.12)))),
+    ...(n >= 56 ? [...mark(n - 56, "previous 28 days"), ...mark(n - 28, "latest 28 days")] : []),
+    svg("polyline", { class: "l2", points: line(0) }),
+    svg("polyline", { class: "l1", points: line(1) }),
+    svg("text", { x: P, y: H - 4 }, series[0][0]),
+    svg("text", { x: W - P - 56, y: H - 4 }, series[n - 1][0]));
+}
+const chartLegend = () => h("div", { class: "legend small muted" },
+  h("span", {}, h("span", { class: "sw", style: { background: "var(--accent)" } }), " Bing clicks per day"),
+  h("span", {}, h("span", { class: "sw", style: { background: "var(--b-indexed)" } }), " Google clicks per day"),
+  h("span", { text: "7-day averages" }));
+
+async function viewRevival(params) {
+  if (!S.summary) return noData();
+  const sites = S.summary.sites.filter((s) => !isPaused(s.site) && s.traffic && (s.traffic.bing || s.traffic.google));
+  const intro = h("div", { class: "stack" }, h("h1", { text: "Revival" }),
+    h("p", { class: "muted", text: "Search traffic is the goal; indexation is only a means. This page shows, from Bing's and Google's own daily reports, where each " +
+      "site's clicks are moving and which pages explain it. It shows associations in the engines' data. It cannot tell you why a page lost clicks." }));
+  if (!sites.length) {
+    return h("div", { class: "stack" }, intro, h("div", { class: "card empty", text: "No traffic history yet. The next engine run records daily clicks and impressions from Bing and Google, and Bing's crawl report." }));
+  }
+  const v = (S.view.__revival ||= { site: "" });
+  preset(v, params, ["site"]);
+  const eng = (s, k) => s.traffic[k] || null;
+  const lostOf = (s) => ["bing", "google"].reduce((n, k) => n + Math.max(0, ((eng(s, k) || {}).clicks_prev || 0) - ((eng(s, k) || {}).clicks_now || 0)), 0);
+  const attention = (s) => ["bing", "google"].some((k) => eng(s, k) && eng(s, k).clicks.verdict === "declining");
+  const findingsOf = (s) => [...((s.bing_health || {}).findings || []), ...(s.revival_findings || [])];
+  const order = [...sites].sort((a, b) => (attention(b) - attention(a)) || (lostOf(b) - lostOf(a)) || (findingsOf(b).length - findingsOf(a).length));
+  const chosen = sites.some((s) => s.site === v.site) ? v.site : order[0].site;
+  const open = (site) => { location.hash = `#/revival?site=${encodeURIComponent(site)}`; };
+
+  // ---- all sites together
+  const sum = (k, f) => sites.reduce((n, s) => n + ((eng(s, k) || {})[f] || 0), 0);
+  const big = (k) => {
+    const now = sum(k, "clicks_now"), prev = sum(k, "clicks_prev");
+    return h("div", { class: "kpi" }, h("div", { class: `v ${now < prev ? "bad" : now > prev ? "good" : ""}`, text: fmt(now) }),
+      h("div", { class: "l", text: `${ENGINE[k]} clicks, latest 28 days (${dsign(prev ? ((now - prev) / prev) * 100 : null)} vs ${fmt(prev)} before)` }));
+  };
+  const ends = [...new Set(sites.flatMap((s) => ["bing", "google"].map((k) => (eng(s, k) || {}).end).filter(Boolean)))].sort();
+  const together = h("div", { class: "card stack" }, h("h2", { text: "All sites together" }),
+    h("div", { class: "row" }, big("bing"), h("span", { class: "spacer" }), big("google")),
+    clicksChart(S.summary.portfolio_series, "Daily clicks from Bing and Google, all sites"), chartLegend(),
+    h("div", { class: "muted tiny", text: `Latest 28 days of data vs the 28 before, each engine ending on its last reported day (${ends.join(", ")}). ` +
+      "Totals are sums of the sites below; whether a change is real is judged for each site, not for the sum." }));
+
+  // ---- one row per site
+  const rows = order.map((s) => {
+    const b = eng(s, "bing"), g = eng(s, "google"), hl = s.bing_health, nf = findingsOf(s).length;
+    const change = (t) => (t ? [h("span", { class: t.clicks.pct < 0 ? "bad" : t.clicks.pct > 0 ? "good" : "", text: dsign(t.clicks.pct) }), " ", verdictChip(t)] : [h("span", { class: "muted", text: "–" })]);
+    return h("tr", { class: `click ${s.site === chosen ? "sel" : ""}`, tabindex: "0", role: "button", "aria-label": `Show ${s.site}`, onclick: () => open(s.site),
+      onkeydown: (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); open(s.site); } } },
+      h("td", {}, h("b", { text: s.site })),
+      h("td", { class: "n", text: b ? fmt(b.clicks_now) : "–" }), h("td", {}, ...change(b)),
+      h("td", { class: "n hide-sm", text: g ? fmt(g.clicks_now) : "–" }), h("td", { class: "hide-sm" }, ...change(g)),
+      h("td", { class: "n hide-sm", title: hl ? `${fmt(hl.in_index)} pages in Bing's index, ${fmt(hl.known_urls)} URLs the engine can find` : "" },
+        hl ? `${fmt(hl.in_index)} / ${fmt(hl.known_urls)}` : "–"),
+      h("td", { class: "n", text: nf ? String(nf) : "–" }));
+  });
+  const table = h("div", { class: "tablewrap" }, h("table", {},
+    h("thead", {}, h("tr", {}, ...["Site", "Bing clicks", "Bing change", "Google clicks", "Google change", "Bing index / URLs", "Findings"].map((x, i) =>
+      h("th", { class: [1, 3, 5, 6].includes(i) ? `n${[3, 5].includes(i) ? " hide-sm" : ""}` : i === 4 ? "hide-sm" : null, text: x })))),
+    h("tbody", {}, ...rows)));
+  const method = h("details", { class: "card small" }, h("summary", { class: "muted", text: "How a change is judged" }),
+    h("p", { text: "Each site's clicks in the latest 28 days are compared with the 28 days before. A change is called a clear drop or rise only when it is at least 25% " +
+      "and more than 3 standard errors for count data (the square root of the two totals added). Below 50 clicks in both windows it is called too little data, " +
+      "however large the percentage. Daily traffic is noisier than a pure count, so medium confidence is indicative, not proof." }));
+
+  // ---- the chosen site
+  const site = sites.find((s) => s.site === chosen);
+  const data = await loadSite(chosen);
+  const rev = (data && data.revival) || null;
+  const detail = h("div", { class: "stack" }, h("h2", { text: chosen }),
+    h("div", { class: "row" }, ...["bing", "google"].filter((k) => eng(site, k)).map((k) => h("span", { class: "pill" }, `${ENGINE[k]}: `, verdictChip(eng(site, k)),
+      h("span", { class: "muted small", text: ` ${fmt(eng(site, k).clicks_prev)} to ${fmt(eng(site, k).clicks_now)} clicks` })))),
+    rev ? h("p", { text: rev.headline }) : null,
+    h("div", { class: "card stack" }, h("h3", { text: "Clicks per day" }), clicksChart(data && data.traffic_series, `Daily clicks, ${chosen}`), chartLegend()));
+
+  if (rev && (rev.clicks_lost || rev.clicks_gained)) {
+    const maxLost = Math.max(1, ...Object.values(rev.lost_by_kind).map((k) => k.clicks_lost));
+    const live = (rev.lost_by_kind.live || {}).clicks_lost || 0;
+    const cov = rev.coverage && rev.coverage.now;
+    detail.append(h("div", { class: "card stack" }, h("h3", { text: "Where the lost clicks went" }),
+      h("p", { class: "small", text: `${fmt(rev.pages_lost)} pages lost ${fmt(rev.clicks_lost)} clicks; ${fmt(rev.pages_gained)} pages gained ${fmt(rev.clicks_gained)}.` +
+        (rev.clicks_lost ? ` ${fmt(live)} of the lost clicks (${Math.round((live / rev.clicks_lost) * 100)}%) were on live, indexable pages.` : "") }),
+      h("div", { class: "bars" }, ...Object.entries(KIND).filter(([k]) => rev.lost_by_kind[k]).map(([k, [title, note]]) => h("div", { class: "bar-row" },
+        h("div", { class: "row small" }, h("b", { text: title }), h("span", { class: "spacer" }),
+          h("span", { class: "num", text: `${fmt(rev.lost_by_kind[k].clicks_lost)} clicks on ${fmt(rev.lost_by_kind[k].pages)} pages` })),
+        h("div", { class: "track" }, h("span", { style: { width: `${Math.max(2, (rev.lost_by_kind[k].clicks_lost / maxLost) * 100)}%` } })),
+        h("div", { class: "muted tiny", text: note })))),
+      h("div", { class: "muted tiny", text: cov === null || cov === undefined ? "" :
+        `Coverage: the page rows account for ${Math.round(cov * 100)}% of this site's clicks in the latest window. The engines report some low-volume traffic only at site level, so page totals can be lower than the site total.` })));
+  }
+
+  const findings = findingsOf(site);
+  if (findings.length) {
+    detail.append(h("div", { class: "card stack" }, h("h3", { text: "What deserves a look" }),
+      ...findings.map((f) => h("div", { class: "finding small" }, h("span", { class: `sev ${f.severity}` }), h("span", { text: f.message })))));
+  }
+  const hl = site.bing_health;
+  if (hl) {
+    const stat = (v2, l) => h("div", { class: "s" }, h("b", { text: v2 }), h("span", { class: "muted tiny", text: l }));
+    detail.append(h("div", { class: "card stack" }, h("h3", { text: `Bing's crawl report (${hl.day})` }),
+      h("div", { class: "stat-grid" }, stat(fmt(hl.in_index), "pages in Bing's index"), stat(fmt(hl.known_urls), "URLs the engine can find"),
+        stat(hl.ratio === null ? "–" : `${hl.ratio}×`, "index vs known URLs"), stat(dsign(hl.growth_pct), "index size, 30 days"),
+        stat(fmt(hl.crawled_week), "pages crawled, last 7 days"), stat(fmt(hl.c4xx_week), "missing pages (4xx) hit"),
+        stat(fmt(hl.c5xx_week + (hl.timeouts_week || 0) + (hl.dns_week || 0)), "server errors / timeouts"), stat(fmt(hl.robots_week), "blocked by robots.txt")),
+      h("div", { class: "muted tiny", text: "From Bing Webmaster Tools' crawl statistics. \"Pages in index\" is Bing's own figure; the engine cannot list those pages, so use Index Explorer in Bing Webmaster Tools to see them." })));
+  }
+
+  if (rev && rev.losers.length) {
+    const path = (u) => { try { return new URL(u).pathname; } catch { return u; } };
+    detail.append(h("div", { class: "stack" }, h("h3", { text: `Pages to recover first (${rev.losers.length} biggest losses)` }),
+      h("div", { class: "tablewrap" }, h("table", {},
+        h("thead", {}, h("tr", {}, ...["Page", "Clicks", "Change", "What holds it back / what to do"].map((x, i) => h("th", { class: i === 1 || i === 2 ? "n" : null, text: x })))),
+        h("tbody", {}, ...rev.losers.map((l) => h("tr", {},
+          h("td", { class: "page" }, h("a", { href: `#/site/${encodeURIComponent(chosen)}?q=${encodeURIComponent(path(l.url))}`, text: l.title || path(l.url) }),
+            h("div", { class: "u", text: l.url })),
+          h("td", { class: "n", text: `${fmt(l.prev)} → ${fmt(l.now)}`, title: `Bing ${l.bing_prev} → ${l.bing_now}, Google ${l.google_prev} → ${l.google_now}` }),
+          h("td", { class: "n bad", text: fmt(l.delta) }),
+          h("td", { class: "small" }, h("span", { class: "chip", text: (KIND[l.kind] || [l.kind])[0] }), h("div", { text: l.todo })))))))));
+  }
+  if (rev && rev.gainers.length) {
+    detail.append(h("details", { class: "card small" }, h("summary", { class: "muted", text: `Pages that gained the most (${rev.gainers.length})` }),
+      h("div", { class: "stack" }, ...rev.gainers.map((g) => h("div", {}, h("b", { class: "good", text: `+${fmt(g.delta)} ` }),
+        h("a", { href: g.url, target: "_blank", rel: "noopener", text: g.title || g.url }), h("span", { class: "muted tiny", text: `  ${fmt(g.prev)} → ${fmt(g.now)}` }))))));
+  }
+  return h("div", { class: "stack" }, intro, together, h("h3", { text: "Sites, most in need first" }), table, method, detail);
+}
+
+/* A compact traffic card for the Analytics page. */
+function trafficCard() {
+  const sites = S.summary.sites.filter((s) => !isPaused(s.site) && s.traffic && (s.traffic.bing || s.traffic.google));
+  if (!sites.length) return null;
+  const sum = (k, f) => sites.reduce((n, s) => n + (((s.traffic[k] || {})[f]) || 0), 0);
+  const big = (k) => {
+    const now = sum(k, "clicks_now"), prev = sum(k, "clicks_prev");
+    return h("div", { class: "kpi" }, h("div", { class: `v ${now < prev ? "bad" : now > prev ? "good" : ""}`, text: fmt(now) }),
+      h("div", { class: "l", text: `${ENGINE[k]} clicks, latest 28 days (${dsign(prev ? ((now - prev) / prev) * 100 : null)})` }));
+  };
+  const drops = sites.filter((s) => ["bing", "google"].some((k) => s.traffic[k] && s.traffic[k].clicks.verdict === "declining")).length;
+  return h("div", { class: "card stack" }, h("div", { class: "row" }, h("h2", { text: "Search traffic", style: { margin: "0" } }), h("span", { class: "spacer" }),
+    h("a", { href: "#/revival", class: "small", text: drops ? `${drops} site${drops > 1 ? "s" : ""} with a clear drop: open Revival →` : "Open Revival →" })),
+    h("div", { class: "row" }, big("bing"), h("span", { class: "spacer" }), big("google")),
+    clicksChart(S.summary.portfolio_series, "Daily clicks, all sites"), chartLegend());
+}
+
 async function viewSite(site, params) {
   const meta = S.summary && S.summary.sites.find((s) => s.site === site);
   if (!meta) return h("div", { class: "card empty", text: `No data for ${site} yet.` });
   const data = await loadSite(site);
   if (!data) return h("div", { class: "card empty", text: `No URL data for ${site} yet.` });
   const v = (S.view[site] ||= { bucket: "", flag: "", q: "", ignored: false, page: 0, open: null });
-  preset(v, params, ["bucket", "flag"]);
+  preset(v, params, ["bucket", "flag", "q"]);
   const col = Object.fromEntries(data.cols.map((c, i) => [c, i]));
   const n = siteNumbers(meta);
   const wrap = h("div", {});
@@ -1053,7 +1256,7 @@ async function render() {
   const app = document.getElementById("app");
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
   const [asked, arg] = path.split("/");
-  const route = ["site", "overview", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
+  const route = ["site", "overview", "revival", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
   const params = new URLSearchParams(query || "");
   setTab(route === "site" ? "" : route || "");
   document.title = `${route === "site" && arg ? safeDecode(arg) : (route ? route[0].toUpperCase() + route.slice(1) : "Overview")} · Index Engine`;
@@ -1061,6 +1264,7 @@ async function render() {
     let node;
     if (route === "site" && arg) node = await viewSite(safeDecode(arg), params);
     else if (route === "overview") node = viewOverview();
+    else if (route === "revival") node = await viewRevival(params);
     else if (route === "plan") node = viewPlan(params);
     else if (route === "links") node = viewLinks(params);
     else if (route === "alerts") node = viewAlerts();

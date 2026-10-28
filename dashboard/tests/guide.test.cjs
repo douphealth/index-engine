@@ -44,7 +44,7 @@ test("shows real counts without treating uninspected URLs as confirmed non-index
   assert.equal(d.toImprove, 38);
   assert.equal(d.requests, 1); // ignored and recently marked are excluded
   assert.equal(d.proposed, 1);
-  assert.equal(d.steps.length, 4);
+  assert.equal(d.steps.length, 5);
   assert.equal(d.steps[1].href, "#/site/one.example");
 });
 
@@ -86,8 +86,8 @@ test("keeps indexing submissions separate from observed outcomes", () => {
   const { summary, state } = sample();
   const d = derive(summary, state, { now: NOW });
   assert.equal(d.impact.gained, 3);
-  assert.match(d.steps[3].detail, /not proof/);
-  assert.equal(d.steps[3].href, "#/overview");
+  assert.match(d.steps[4].detail, /not proof/);
+  assert.equal(d.steps[4].href, "#/overview");
 });
 
 test("does not crash while a first run is pending or data are empty", () => {
@@ -95,7 +95,7 @@ test("does not crash while a first run is pending or data are empty", () => {
   assert.equal(d.urls, 0);
   assert.equal(d.activeSites, 0);
   assert.equal(d.steps[0].status, "attention");
-  assert.equal(d.steps[3].status, "attention");
+  assert.equal(d.steps[4].status, "attention");
 });
 
 test("assesses connected status only from recent heartbeats", () => {
@@ -110,4 +110,47 @@ test("Google indexed share is withheld for a small sample", () => {
   const d = derive(summary, state, { now: NOW });
   assert.equal(d.sites[0].share, 35 / 73);
   assert.equal(d.sites[1].share, null);
+});
+
+const withTraffic = (verdicts) => {
+  const { summary, state } = sample();
+  summary.sites[0].traffic = {
+    bing: { clicks: { verdict: verdicts.bing, pct: -33, confidence: "high" }, clicks_prev: 1037, clicks_now: 695, end: "2026-10-25" },
+    google: { clicks: { verdict: verdicts.google, pct: 5, confidence: null }, clicks_prev: 40, clicks_now: 42, end: "2026-10-25" },
+  };
+  return { summary, state };
+};
+
+test("a clear traffic drop becomes the step that points at Revival", () => {
+  const { summary, state } = withTraffic({ bing: "declining", google: "stable" });
+  const d = derive(summary, state, { now: NOW });
+  assert.equal(d.drops.length, 1);
+  assert.deepEqual([d.drops[0].site, d.drops[0].src, d.drops[0].prev, d.drops[0].now], ["one.example", "bing", 1037, 695]);
+  const step = d.steps[2];
+  assert.equal(step.title, "Recover lost search traffic");
+  assert.equal(step.status, "attention");
+  assert.equal(step.href, "#/revival?site=one.example");
+  assert.match(step.detail, /Bing clicks fell 33% \(1,037 to 695\)/);
+});
+
+test("traffic that is only noisy or small is never called a drop", () => {
+  const { summary, state } = withTraffic({ bing: "stable", google: "too_little_data" });
+  const d = derive(summary, state, { now: NOW });
+  assert.equal(d.drops.length, 0);
+  assert.equal(d.steps[2].status, "clear");
+  assert.equal(d.steps[2].metric, "No clear traffic drop");
+});
+
+test("without any traffic history the step says so instead of reporting good news", () => {
+  const { summary, state } = sample();
+  const d = derive(summary, state, { now: NOW });
+  assert.equal(d.hasTraffic, false);
+  assert.equal(d.steps[2].metric, "No traffic history yet");
+  assert.equal(d.steps[2].status, "ready");
+});
+
+test("a paused site's traffic drop is not raised", () => {
+  const { summary, state } = withTraffic({ bing: "declining", google: "stable" });
+  state.settings.sites_disabled = { value: ["one.example"] };
+  assert.equal(derive(summary, state, { now: NOW }).drops.length, 0);
 });
