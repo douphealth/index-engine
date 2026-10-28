@@ -128,6 +128,23 @@ class EditTests(unittest.TestCase):
         with self.assertRaises(rec.Drift):
             rec.transform(mention, [("quote", "Dr. Lena Cho", 1)])
 
+    def test_sub_is_strict_once_and_repeatable(self):
+        raw = "<p>I tell my clients to stretch.</p>"
+        new, notes, _ = rec.transform(raw, [("sub", "I tell my clients to stretch.", "Stretch.")])
+        self.assertEqual(new, "<p>Stretch.</p>")
+        again, notes, _ = rec.transform(new, [("sub", "I tell my clients to stretch.", "Stretch.")])
+        self.assertEqual(again, new)
+        self.assertTrue(notes[0].startswith("already done"))
+        with self.assertRaises(rec.Drift):
+            rec.transform("<p>other</p>", [("sub", "I tell my clients to stretch.", "Stretch.")])
+        with self.assertRaises(rec.Drift):
+            rec.transform("<p>a a</p>", [("sub", "a", "b")])                                        # two copies: refused
+
+    def test_a_quote_named_by_raw_entity_text_is_cut_not_skipped(self):
+        raw = "<blockquote><p>&#8220;In my practice, I&#8217;ve observed x&#8221;</p></blockquote>\n<p>keep</p>"
+        new, _, _ = rec.transform(raw, [("quote", "In my practice, I&#8217;ve observed", 1)])
+        self.assertEqual(new, "<p>keep</p>")
+
     def test_a_page_that_would_still_carry_a_claim_is_a_problem(self):
         bad = dict(PAGE, edits=[("cut", "<li>By John Doe, NASM-certified trainer.</li>")])
         new, _, _ = rec.transform(RAW, bad["edits"])

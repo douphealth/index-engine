@@ -1,5 +1,5 @@
 @echo off
-rem gearuptofit recover-first cleanup, start to finish, in the order AGENTS.md requires: canary page, look at it, the rest of batch 1, batch 2, verify.
+rem gearuptofit recover-first cleanup, start to finish, in the order AGENTS.md requires: canary page, look at it, the rest of batch 1, batch 2, then the second wave (batches 3-5), verify.
 rem Every step stops this window on an error. Undo any batch with the --rollback command the run prints.
 setlocal
 set "S=D:\Claude\SEO-Setup\index-engine\fixes\gutf_recover_20261028.py"
@@ -26,6 +26,19 @@ python "%S%" --batch 1 --apply || exit /b 1
 echo.
 echo === Step 4 of 4: batch 2 ===
 python "%S%" --batch 2 --apply || exit /b 1
+
+echo.
+echo.
+echo === Second wave: batches 3, 4 and 5 (the other flagged pages). Read this dry run first. ===
+python "%S%" --batch 3 || exit /b 1
+python "%S%" --batch 4 || exit /b 1
+python "%S%" --batch 5 || exit /b 1
+echo.
+echo Press Ctrl+C to stop here and keep only batches 1 and 2, or
+pause
+python "%S%" --batch 3 --apply || exit /b 1
+python "%S%" --batch 4 --apply || exit /b 1
+python "%S%" --batch 5 --apply || exit /b 1
 
 echo.
 echo === Verify (read-only) ===

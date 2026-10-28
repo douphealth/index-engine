@@ -32,6 +32,7 @@ STATE_WORDS = {"INDEXED": "Google lists it", "CRAWLED_NOT_INDEXED": "Google craw
 FLAG_WORDS = {"ORPHAN": "no page on the site links to it", "NO_BODY_LINKS": "linked only from menus or sidebars",
               "THIN": "thin content", "NEAR_DUPLICATE": "shares most of its text with another page",
               "DUPLICATE_TITLE": "its title duplicates another page's", "TRUST_RISK": "contains unverified first-hand claims",
+              "HEAVY_PAGE": "served as a very heavy page (pasted image data)",
               "SLOW": "slow to load", "SOFT_404": "reads like an error page"}
 
 
@@ -63,11 +64,15 @@ def _diagnose(kind, row, probe):
         todo = "Add contextual links from pages that rank (Links page)."
     elif "THIN" in (row["flags"] or "") or "NEAR_DUPLICATE" in (row["flags"] or ""):
         todo = "Make it clearly different and more substantial, or consolidate it after checking both engines' clicks."
+    elif "HEAVY_PAGE" in (row["flags"] or ""):
+        todo = "Remove the pasted base64 image data so the page is not megabytes of HTML (the size is in the page's flag detail)."
     elif "TRUST_RISK" in (row["flags"] or ""):
-        todo = "Source or remove the flagged claims."
+        todo = "Remove the flagged claims or give each a named, checkable source; never replace them with invented experience."
     else:
-        todo = ("It is live and technically fine, so the loss points to rankings or demand: compare its queries in Bing Webmaster "
-                "(Search Performance, this page) and improve it with first-hand, sourced detail.")
+        todo = ("It is live and technically fine, so the loss points to rankings or demand, not a defect: compare its queries in Bing "
+                "Webmaster (Search Performance, this page) and see whether impressions or click-through fell. Add real, checkable "
+                "substance (named sources, facts you can verify); never invented first-hand detail. If many pages fell together over "
+                "weeks, expect no single-page fix.")
     return ("live", ("; ".join(bits) + ". " if bits else "") + todo)
 
 

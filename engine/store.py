@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS model(trained_at TEXT, data TEXT);
 MIGRATIONS = [
     "ALTER TABLE urls ADD COLUMN published TEXT",
     "ALTER TABLE audits ADD COLUMN trust TEXT",
+    "ALTER TABLE audits ADD COLUMN bytes INT",
+    "ALTER TABLE audits ADD COLUMN inline_b64 INT",
     "ALTER TABLE triage ADD COLUMN odds REAL",
     "ALTER TABLE triage ADD COLUMN why TEXT",
     "ALTER TABLE gsc ADD COLUMN last_attempt_at TEXT",

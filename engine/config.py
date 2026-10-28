@@ -45,6 +45,8 @@ CONNECT_TIMEOUT, READ_TIMEOUT = 15, 90
 AUDIT_MAX_AGE_DAYS = 7          # re-fetch a page after this, or sooner if its sitemap lastmod moves
 SLOW_MS = 10_000                # pages slower than this are a crawl-rate risk
 THIN_WORDS = 250                # main-content words below this = thin
+HEAVY_PAGE_BYTES = 1_000_000    # HTML served above this is a heavy page (this portfolio's normal article is 150-250 KB)
+HEAVY_B64_CHARS = 20_000        # embedded base64 image data above this makes a page heavy on its own
 
 # ---------------------------------------------------------------- Google
 # URL Inspection API: 2,000 queries/day and 600/minute per property

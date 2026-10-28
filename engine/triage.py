@@ -105,6 +105,7 @@ def load_site(db, site):
         SELECT u.url, u.kind, u.lastmod, u.in_sitemap, u.in_wp,
                a.checked_at, a.status, a.final_url, a.hops, a.ctype, a.ms, a.noindex, a.noindex_src, a.robots_google,
                a.robots_bing, a.canonical, a.canonical_state, a.title, a.h1, a.words, a.sketch, a.error AS aerr, a.trust,
+               a.bytes, a.inline_b64,
                u.published,
                g.inspected_at, g.verdict, g.coverage, g.last_crawl, g.google_canonical, g.error AS gerr,
                COALESCE(p.gsc_clicks,0) AS gsc_clicks, COALESCE(p.gsc_impr,0) AS gsc_impr,
@@ -254,6 +255,11 @@ def detail(bucket, flags, r, dup, dup_title, inl):
         hits = json.loads(r["trust"] or "[]")
         out.append(f"{len(hits)} phrasing(s) read as first-hand experience or statistics, e.g. \"{hits[0]['excerpt'][:140]}\": "
                    "give each a named, checkable source or remove it (portfolio guardrail 4).")
+    if "HEAVY_PAGE" in flags:
+        mb = (r["bytes"] or 0) / 1_000_000
+        img = f", of which {(r['inline_b64'] or 0) / 1000:,.0f} KB is image data pasted into the HTML" if r["inline_b64"] else ""
+        out.append(f"The server sends {mb:.1f} MB of HTML{img}. Move pictures to the media library and remove pasted base64 images "
+                   "(a data: URI is also not a valid image URL in structured data); a normal article here is about 0.2 MB.")
     if "SOFT_404" in flags:
         out.append("Looks like an error page (title says not found).")
     return " ".join(out)
@@ -317,7 +323,7 @@ def link_plan(rows, buckets, inl_src, per_site=200):
 
 
 def site_diagnosis(counts, meta, missing=0, conflicts=0, excluded=None, blocked_earners=(0, 0), near_dup=(0, 0), thin=0,
-                   trust=0):
+                   trust=0, heavy=0):
     """Plain-English verdict for the whole site."""
     excluded = excluded or Counter()
     indexable = sum(n for b, n in counts.items() if b not in BLOCKERS and b != "NOT_CHECKED")
@@ -339,6 +345,10 @@ def site_diagnosis(counts, meta, missing=0, conflicts=0, excluded=None, blocked_
         msgs.append(("site", f"{trust} indexable pages contain phrasings that read as invented first-hand experience, ratings or "
                              "statistics (flag TRUST_RISK; the sentences are on each URL). Google's quality systems weigh this "
                              "site-wide: source each claim or remove it, worst pages first."))
+    if heavy:
+        msgs.append(("fix", f"{plural(heavy, 'indexable page')} {'is' if heavy == 1 else 'are'} very heavy: over 1 MB of HTML, or carrying "
+                            "whole images pasted in as base64, in the page or its schema (flag HEAVY_PAGE; the size is on each URL). "
+                            "Heavy pages are slower for visitors and crawlers: remove the pasted image data."))
     if thin >= 10:
         msgs.append(("info", f"{thin} indexable pages have under {config.THIN_WORDS} words of main content in the HTML the server "
                              "sends (hub/listing pages can be fine; articles rarely are)."))
@@ -363,7 +373,7 @@ def site_diagnosis(counts, meta, missing=0, conflicts=0, excluded=None, blocked_
             msgs.append(("site", f"Google indexes {idx:.0%} of the checked pages. It looked at, then passed over, {quality:.0%}{seen}. "
                                   "That pattern is a judgment about the whole site, not a discovery problem: re-submitting URLs, "
                                   "pinging, or any 'instant indexing' service will not change it. What does: fewer, better pages "
-                                  "(merge or drop pages with no clicks on either engine), real first-hand substance on the pages "
+                                  "(merge or drop pages with no clicks on either engine), real, checkable substance on the pages "
                                   "that remain, and links from the pages Google already trusts."))
         elif unknown >= 0.2:
             msgs.append(("discovery", f"{unknown:.0%} of checked pages are unknown to Google and Search Console has not read a "
@@ -409,6 +419,8 @@ def run(db, sites, with_manual=True):
                 flags.append("IGNORED")
             if r["trust"] and bucket not in BLOCKERS:
                 flags.append("TRUST_RISK")
+            if bucket not in BLOCKERS and ((r["bytes"] or 0) >= config.HEAVY_PAGE_BYTES or (r["inline_b64"] or 0) >= config.HEAVY_B64_CHARS):
+                flags.append("HEAVY_PAGE")
             extra = detail(bucket, flags, r, dups.get(r["url"]), dup_title.get(r["url"]), inl)
             if r["inspected_at"] and r["coverage"] and bucket not in BLOCKERS and not r["recent"]:
                 reason += f" [Google checked {r['inspected_at'][:10]}]"
@@ -431,9 +443,10 @@ def run(db, sites, with_manual=True):
         nd = [r for r in rows if "NEAR_DUPLICATE" in buckets[r["url"]][1] and buckets[r["url"]][0] not in BLOCKERS]
         thin = sum(1 for b, f in buckets.values() if "THIN" in f and b not in BLOCKERS)
         trust = sum(1 for b, f in buckets.values() if "TRUST_RISK" in f)
+        heavy = sum(1 for b, f in buckets.values() if "HEAVY_PAGE" in f)
         diag = site_diagnosis(counts, meta, sum(1 for _, f in buckets.values() if "NOT_IN_SITEMAP" in f), conflicts, excluded,
                               (len(earners), sum(r["bing_clicks"] for r in earners)),
-                              (len(nd), sum(1 for r in nd if r["bing_clicks"])), thin, trust)
+                              (len(nd), sum(1 for r in nd if r["bing_clicks"])), thin, trust, heavy)
         plan = link_plan(rows, buckets, inl_src)
         manual = manual_queue(db, site, rows, buckets, owner) if with_manual else []
         snap = {"total": len(rows), "audited": audited, "buckets": dict(counts), "conflicts": conflicts,

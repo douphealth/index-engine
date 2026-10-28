@@ -58,11 +58,26 @@ It will not overwrite a page that was edited after the script ran unless you add
 - If `site_guard.py check` alerts only on these pages and you accept that, run `python site_guard\site_guard.py snapshot`.
 - Re-check in two to four weeks on the Revival page. This cleans up trust and page weight; it is not a promise of more clicks.
 
+## Second wave: the other flagged pages (batches 3, 4 and 5) - prepared, NOT yet applied
+
+The first two batches fixed the 15 pages that earned Bing clicks or carried the page-weight defect. Batches 3 to 5 cover 18 more indexable pages the trust scan flags (8 + 8 + 2). They are in the script, and the dry run against the live pages shows every cut and skips nothing, but they have not been written to the site: the environment refused the live write for them, and a new approval is needed.
+
+The same rules apply: dry run first, a verified backup, a canary page, a rollback command. Two kinds of edit are new: cutting an invented quote *and its attribution line*, and recasting a first-person sentence as a plain instruction ("I tell my clients to imagine a laser beam..." becomes "Imagine a laser beam..."), which adds no claim. To run them: `run-gutf-recover-20261028.cmd`, or `--batch 3 --apply`, then 4, then 5.
+
+Deliberately NOT in the script, because a cut would leave a broken or still-invented page:
+- `garmin-forerunner-55-review` and `bmi-and-body-composition`: invented first-person stories run through the whole page. They need a rewrite.
+- `walking-to-reduce-belly-fat`: built around an invented 68-volunteer experiment. Only the invented quote on it is cut; the experiment needs a rewrite.
+- `best-almond-butter`: built around an invented tasting panel. Only the invented quotes and the explicit "We tested N" lines are cut.
+- `heart-rate-zone-calculator`: cites real researchers (Seiler, Karvonen, San Millan). The old scanner's flag is a false positive; leave it.
+- `best-running-shoes-for-plantar-fasciitis`: no longer matches anything.
+
+The scanner was widened on 28 Oct (quotes credited to a named expert with a title or institution but no year, unverifiable bylines, placeholder names, invented experiments, invented testing panels). On the local copy of the site it now flags about three times as many indexable posts as before. Those extra posts are a prompt to verify, not a verdict, and none of them is edited by this script; they are the next editorial job.
+
 ## Not touched (editorial calls, yours)
 
 - Dr. Andy Galpin and Dr. Daniel Lieberman mentioned inline in the paleo post.
 - "[1]" and "[2]" citation markers with no references list (smartwatch posts).
 - "Published: October 1, 2025 | Updated: October 1, 2025" in the paleo post's author box.
 - Invisible "Image generation failed" HTML comments in the paleo post.
-- 24 other indexable gearuptofit pages that the Index Engine flags for invented claims but that earned no Bing clicks in the last 8 weeks, and the same family of problem (invented doctors, invented quotes) very likely exists on pages the engine's scanner cannot see: it only recognises a named doctor followed by a year.
+- The other indexable gearuptofit pages the Index Engine flags for invented claims (22 remained after the first two batches; 18 of them are the second wave above), and the same family of problem (invented doctors, invented quotes) very likely exists on pages the engine's scanner cannot see: it only recognises a named doctor followed by a year.
 - `/weight-loss/is-mediterranean-diet-the-healthiest-in-the-world/` (7.7 MB of stored content) and 6 other oversized posts are noindex (pruned), so they were left alone.

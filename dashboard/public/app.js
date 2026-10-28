@@ -397,7 +397,7 @@ function priorities() {
   const CONTENT = {
     fix_trust: ["Source or remove unverified claims", "Phrasings that read as invented first-hand tests, ratings or statistics. Google weighs this across the whole site."],
     differentiate: ["Merge or differentiate near-duplicates", "Pages sharing most of their text with another page are what Google most often leaves crawled, not indexed. Check Bing clicks before merging."],
-    expand: ["Add real substance to short pages", "The main content is short. Add first-hand, sourced detail, not filler."],
+    expand: ["Add real substance to short pages", "The main content is short. Add real, checkable substance (named sources, facts you can verify), not filler and never invented experience."],
     add_links: ["Add internal links by hand", "No natural anchor was found automatically. Link to these from related pages Google already indexes."],
   };
   for (const s of live) {
