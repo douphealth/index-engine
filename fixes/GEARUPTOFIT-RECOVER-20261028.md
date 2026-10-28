@@ -64,6 +64,8 @@ The first two batches fixed the 15 pages that earned Bing clicks or carried the 
 
 The same rules apply: dry run first, a verified backup, a canary page, a rollback command. Two kinds of edit are new: cutting an invented quote *and its attribution line*, and recasting a first-person sentence as a plain instruction ("I tell my clients to imagine a laser beam..." becomes "Imagine a laser beam..."), which adds no claim. To run them: `run-gutf-recover-20261028.cmd`, or `--batch 3 --apply`, then 4, then 5.
 
+Follow-up, batch 6 (applied): on `best-almond-butter` the invented "We tested 27 brands. Three won..." text was also left in the page's FAQ structured data, as the whole answer to one FAQ question. Batch 6 removes that one question and answer from the schema (the other 11 stay), so structured data no longer carries a claim the page does not make. It is a separate batch so batches 1 to 5 stay exactly reproducible.
+
 Deliberately NOT in the script, because a cut would leave a broken or still-invented page:
 - `garmin-forerunner-55-review` and `bmi-and-body-composition`: invented first-person stories run through the whole page. They need a rewrite.
 - `walking-to-reduce-belly-fat`: built around an invented 68-volunteer experiment. Only the invented quote on it is cut; the experiment needs a rewrite.

@@ -29,16 +29,18 @@ python "%S%" --batch 2 --apply || exit /b 1
 
 echo.
 echo.
-echo === Second wave: batches 3, 4 and 5 (the other flagged pages). Read this dry run first. ===
+echo === Second wave: batches 3 to 6 (the other flagged pages). Read this dry run first. ===
 python "%S%" --batch 3 || exit /b 1
 python "%S%" --batch 4 || exit /b 1
 python "%S%" --batch 5 || exit /b 1
+python "%S%" --batch 6 || exit /b 1
 echo.
 echo Press Ctrl+C to stop here and keep only batches 1 and 2, or
 pause
 python "%S%" --batch 3 --apply || exit /b 1
 python "%S%" --batch 4 --apply || exit /b 1
 python "%S%" --batch 5 --apply || exit /b 1
+python "%S%" --batch 6 --apply || exit /b 1
 
 echo.
 echo === Verify (read-only) ===
