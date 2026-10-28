@@ -232,6 +232,24 @@ class ApplyTests(unittest.TestCase):
                 status_code=200, text="<p>We tested 150 miles</p>", content=b"x", headers={})):
             self.assertEqual(rec.verify_live(1, None), 1)
 
+    def test_verify_ignores_the_themes_tiny_inline_images_on_the_plain_url(self):
+        import contextlib
+        import io
+        tiny = '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">'
+        big = '<img src="data:image/jpeg;base64,' + "A" * 2500 + '">'
+
+        def fake(path, plain=False):
+            text = ("<p>clean</p>" + tiny) if not plain else ("<p>clean</p>" + (big if path == "/old/" else tiny))
+            return types.SimpleNamespace(status_code=200, text=text, content=text.encode(), headers={"cf-cache-status": "HIT"})
+        pages = [dict(PAGE, id=1, path="/new/"), dict(PAGE, id=2, path="/old/")]
+        buf = io.StringIO()
+        with Env(), patch.object(rec, "PAGES", pages), patch.object(rec, "served", side_effect=fake), contextlib.redirect_stdout(buf):
+            self.assertEqual(rec.verify_live(1, None), 0)
+        out = buf.getvalue()
+        self.assertIn("cleaned 200", out)
+        self.assertIn("old cached copy 200", out)
+        self.assertIn("1 of 2 already show the cleaned page", out)
+
     def test_real_page_list_respects_the_batch_limits(self):
         for batch in (1, 2):
             self.assertLessEqual(sum(1 for p in rec.PAGES if p["batch"] == batch), rec.MAX_PER_BATCH)

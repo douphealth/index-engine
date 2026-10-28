@@ -560,18 +560,23 @@ def apply_batch(wpc, plans, args):
           "run `python site_guard\\site_guard.py snapshot`. Do not resubmit these URLs for indexing.")
 
 
+PASTED_IMAGE = re.compile(r"image/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{2000,}")
+
+
 def verify_live(batch, only):
     """Read-only check of the live pages: how many are clean, and what the plain URL (what visitors and Bing get) still serves.
     Returns the number of pages whose ?nc= copy is not clean yet."""
     todo = [p for p in PAGES if (batch is None or p["batch"] == batch) and (not only or p["id"] in only)]
-    pending = 0
+    pending = visible = 0
+    watches_images = lambda p: bool(p.get("schema")) or any(e[0] == "figures" for e in p["edits"])      # noqa: E731
     print(f"{'?nc= copy':34} {'plain URL (visitors, Bing)':36} page")
     for p in todo:
         try:
             r = served(p["path"])
             text = html.unescape(r.text)
             left = [g for g in p["gone"] if g in text]
-            data_uris = len(re.findall(r"data:image/[a-z]+;base64", r.text)) if p.get("schema") else 0
+            # only whole pasted images count: the theme's own tiny inline icons are not the defect
+            data_uris = len(PASTED_IMAGE.findall(r.text)) if p.get("schema") else 0
             broken = len(re.findall(r'src="image/[a-z]+;base64', r.text)) if any(e[0] == "figures" for e in p["edits"]) else 0
             clean = r.status_code == 200 and not left and not data_uris and not broken
             nc = f"{'CLEAN' if clean else 'NOT CLEAN'} {r.status_code} {len(r.content) // 1024:,} KB" + (f" still:{left}" if left else "") \
@@ -580,14 +585,19 @@ def verify_live(batch, only):
             pl = served(p["path"], plain=True)
             plain_text = html.unescape(pl.text)
             old = [g for g in p["gone"] if g in plain_text]
+            heavy = len(PASTED_IMAGE.findall(pl.text)) if watches_images(p) else 0
+            shows_new = pl.status_code == 200 and not old and not heavy
+            visible += shows_new
             age = pl.headers.get("age")
-            pn = f"{'clean' if not old and 'data:image/' not in pl.text else 'old copy'} {pl.status_code} {pl.headers.get('cf-cache-status')}" \
+            pn = f"{'cleaned' if shows_new else 'old cached copy'} {pl.status_code} {pl.headers.get('cf-cache-status')}" \
                  + (f" age {int(age) // 60} min" if age and age.isdigit() else "")
         except Exception as e:
             nc, pn = f"ERROR {type(e).__name__}", ""
             pending += 1
         print(f"{nc[:34]:34} {pn[:36]:36} [{p['id']}] {p['path']}")
-    print(f"\n{len(todo) - pending} of {len(todo)} pages clean on the ?nc= copy.")
+    print(f"\n{len(todo) - pending} of {len(todo)} pages clean on the ?nc= copy (the server's own copy).")
+    print(f"{visible} of {len(todo)} already show the cleaned page on the plain URL (what visitors and Bing get); the rest still serve "
+          "Cloudflare's older copy and refresh by themselves as each cache entry expires (about 4 hours after its last refresh).")
     return pending
 
 
