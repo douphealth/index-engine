@@ -27,7 +27,7 @@ LASTMOD = "2026-10-20T10:00:00+00:00"
 PAGES = {   # path: (title, words, extra)
     "/good-indexed/": ("Ceramic Planter Drainage Guide", 900, {}),
     "/good-crawled/": ("Calathea Ceramic Planter Drainage", 700, {}),
-    "/good-discovered/": ("Ceramic Planter Drainage Mistakes", 800, {}),
+    "/good-discovered/": ("Ceramic Planter Drainage Mistakes", 800, {"heavy": True}),
     "/good-unknown/": ("Monstera Aerial Roots Explained", 750, {}),
     "/noindex/": ("Thank You", 400, {"noindex": True}),
     "/canon-other/": ("Drainage Guide Print Version", 900, {"canonical": "/good-indexed/"}),
@@ -170,6 +170,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/good-crawled/":
             text += " In my practice my clients often ask how often to water."
         inner = RAW[path] if path in RAW else f"<p>{text}</p><p>{links}</p>"
+        if extra.get("heavy"):                       # a whole image pasted into the page as base64
+            inner += '<img src="data:image/jpeg;base64,' + "QUJD" * 6250 + '" alt="pasted">'
         return (f"<!doctype html><html><head>{head}</head><body><header>{nav}</header><main><article>"
                 f"<h1>{title}</h1><div class='entry-content'>{inner}</div></article></main>"
                 f"<aside>sidebar words here</aside><footer>footer</footer></body></html>")
@@ -437,6 +439,11 @@ def main():
     # ---- intelligence: trust scan, odds model, best actions, impact
     t3 = {urlsplit(r["url"]).path: dict(r) for r in db.execute("SELECT * FROM triage")}
     check("TRUST_RISK" in t3["/good-crawled/"]["flags"], "invented first-hand claims are flagged (trust scan)")
+    aw = db.execute("SELECT bytes, inline_b64 FROM audits WHERE url=?", (base + "/good-discovered/",)).fetchone()
+    check(aw and aw["bytes"] > 25000 and aw["inline_b64"] >= 25000, "the audit records page weight and pasted base64 image data")
+    check("HEAVY_PAGE" in t3["/good-discovered/"]["flags"] and "HEAVY_PAGE" not in t3["/good-indexed/"]["flags"],
+          "a page carrying pasted base64 images is flagged HEAVY_PAGE, a normal page is not")
+    check(any("HEAVY_PAGE" in str(m) for m in res[base]["diagnosis"]), "the site diagnosis mentions the heavy page")
     rng = np.random.default_rng(7)
     X = rng.normal(size=(400, len(model.NAMES)))
     y = ((X[:, 1] + 0.5 * X[:, 0] + rng.normal(scale=0.6, size=400)) > 0).astype(float)

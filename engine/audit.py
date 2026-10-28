@@ -113,14 +113,34 @@ TRUST_PATTERNS = [
     ("rating with review count", r"\b[3-5]\.\d\s*(?:/\s*5|out of 5|stars?)?\s*\(?\s*(?:from |based on )?[\d,]{3,}\s+(?:reviews|ratings)\b"),
     ("named doctor + year", r"\bDr\.\s+[A-Z][\w'-]+(?:\s+[A-Z][\w'-]+)?,?\s*\(?20\d\d\)?"),
     ("study claim to verify", r"\b[Aa] (?:20\d\d|recent|new) (?:study|survey|trial) (?:by|from|at|of) (?:Dr\.|Professor|researchers at)"),
+    # Added 28 Oct 2026 from what the patterns above missed on a real site: quotes credited to a named expert with a job title or
+    # institution but no year, bylines nobody can check, placeholder names, invented experiments and invented testing panels.
+    ("named expert quote", r"[—–-]\s*(?:\w+ ){0,8}by\s+(?:Dr\.|Prof\.|Professor)\s+[A-Z][\w'’-]+(?:\s+[A-Z][\w'’-]+)?"
+                           r"|[—–-]\s*(?:Dr\.|Prof\.|Professor)\s+[A-Z][\w'’-]+(?:\s+[A-Z][\w'’-]+)?,"),
+    ("named expert says", r"\b(?:says|said|according to|explains|notes)\s+(?:Dr\.|Prof\.|Professor)\s+[A-Z][\w'’-]+(?:\s+[A-Z][\w'’-]+)?,\s*[a-zA-Z]"),
+    ("named expert in brackets", r"\(\s*(?:Dr\.|Prof\.)\s+[A-Z][\w'’-]+(?:\s+[A-Z][\w'’-]+)?,\s*[A-Za-z][^)]{2,60}\)"),
+    ("author byline to verify", r"\b(?:Written|Reviewed|Medically reviewed|Fact[- ]checked) by:?\s*(?:Dr\.|Prof\.)\s+[A-Z]"),
+    ("placeholder name", r"\b(?:By\s+)?(?:John|Jane) Doe\b"),
+    ("invented experiment", r"\bI (?:split|recruited|enrolled|surveyed|tracked) \d+ (?:volunteers|participants|runners|people|clients|lifters)\b"),
+    ("claimed testing panel", r"\b(?:our|my) (?:panel|team|lab|experts?|dietitians?|nutritionists?|testers?)\b[^.]{0,80}\b(?:blind-tested|tested|evaluated|rated)\b"),
+    ("tested everything", r"\b(?:we|I)(?:'ve| have)? (?:personally )?(?:blind-tested|tested|reviewed) (?:every|each|all|dozens of|hundreds of)\b"),
 ]
-TRUST_RE = [(label, re.compile(rx, re.I if "Dr\\." not in rx else 0)) for label, rx in TRUST_PATTERNS]
+# Patterns that name people are case-sensitive on purpose: a capital letter is part of the signal.
+TRUST_RE = [(label, re.compile(rx, 0 if ("Dr\\." in rx or "[A-Z]" in rx) else re.I)) for label, rx in TRUST_PATTERNS]
 
 
-def trust_scan(text, limit=6):
-    hits = []
+# Whole images pasted into the HTML (an <img src> or a JSON-LD "url" holding base64): they make a page megabytes heavy, and a
+# data: URI is not a valid structured-data image URL. Only payloads over 2,000 characters count (tiny inline icons are fine).
+INLINE_B64 = re.compile(r"(?:data:)?image/[a-z0-9.+-]+;base64,([A-Za-z0-9+/=]{2000,})")
+
+
+def trust_scan(text, limit=8):
+    hits, spans = [], []
     for label, rx in TRUST_RE:
         for m in rx.finditer(text):
+            if any(m.start() < e and s < m.end() for s, e in spans):
+                continue                                    # the same words were already matched by another pattern
+            spans.append((m.start(), m.end()))
             a, b = max(0, m.start() - 90), min(len(text), m.end() + 60)
             hits.append({"kind": label, "excerpt": re.sub(r"\s+", " ", text[a:b]).strip()})
             if len(hits) >= limit:
@@ -158,7 +178,8 @@ def _noindex(meta_robots, x_robots):
 def fetch_page(url, rp):
     rec = {"url": url, "checked_at": now_iso(), "status": None, "final_url": None, "hops": 0, "ctype": "",
            "ms": None, "noindex": 0, "noindex_src": None, "canonical": None, "canonical_state": None,
-           "title": "", "h1": "", "words": 0, "sketch": "[]", "out_links": 0, "error": None, "trust": None, "links": []}
+           "title": "", "h1": "", "words": 0, "sketch": "[]", "out_links": 0, "error": None, "trust": None, "links": [],
+           "bytes": None, "inline_b64": None}
     rec["robots_google"] = int(rp.can_fetch("Googlebot", url))
     rec["robots_bing"] = int(rp.can_fetch("bingbot", url))
     t0 = time.time()
@@ -171,6 +192,7 @@ def fetch_page(url, rp):
         rec["error"] = type(e).__name__ + ": " + str(e)[:200]
         return rec
     rec["ms"] = int((time.time() - t0) * 1000)
+    rec["bytes"] = len(body)
     rec["status"], rec["final_url"], rec["hops"] = r.status_code, norm(r.url), len(r.history)
     rec["ctype"] = r.headers.get("Content-Type", "").split(";")[0].strip()
     x_robots = r.headers.get("X-Robots-Tag", "")
@@ -188,6 +210,7 @@ def fetch_page(url, rp):
         html = body.decode(enc, errors="replace")
     except LookupError:
         html = body.decode("utf-8", errors="replace")
+    rec["inline_b64"] = sum(len(m) for m in INLINE_B64.findall(html))
     p = PageParser()
     try:
         p.feed(html)

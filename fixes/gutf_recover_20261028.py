@@ -26,6 +26,10 @@ other text changes. Read the dry run: every cut is printed in full.
   * 1 post (outdoor running etiquette) with two <img src="image/jpeg;base64,..."> tags that have no "data:" prefix, so browsers cannot display
     them (1.1 MB of dead weight): the two figures are removed, and the decoded JPEGs are saved next to the backup in case you want them back
 
+Second wave (batches 3 to 5, prepared 28 Oct): 18 more indexable pages the trust scan flags. Same rules and the same dry run. Pages whose
+invented material runs through the whole text (two review/story pages, one invented experiment, one invented tasting panel) are NOT cut here:
+they need a rewrite. See the guide.
+
 Left for you (not edited, because they are editorial calls): Dr. Andy Galpin / Dr. Daniel Lieberman mentioned inline in the paleo post;
 "[1]" / "[2]" citation markers with no references list; "Published: ... Updated: ..." dates in the paleo author box; invisible
 "Image generation failed" HTML comments in the paleo post; whatever else on these pages is unsourced. These pages need a proper editorial
@@ -124,6 +128,81 @@ PAGES = [
          edits=[("quote", "Dr. Elena Torres", 2), ("quote", "Dr. Lisa Chen", 1), SCHEMA], gone=["Elena Torres", "Lisa Chen"], schema=True),
     dict(batch=2, id=77265, path="/running/outdoor-running-etiquette/", why="two <img> tags with src 'image/jpeg;base64,...' (no data: prefix): broken, 1.1 MB",
          edits=[("figures", 2)], gone=[]),
+    # ---- second wave (28 Oct): the other indexable pages the trust scan flags. Pages that cannot be fixed by cutting are NOT here:
+    # garmin-forerunner-55-review and bmi-and-body-composition (invented first-person stories throughout) and the walking-to-reduce-belly-fat
+    # experiment need a rewrite; heart-rate-zone-calculator cites real researchers; best-running-shoes-for-plantar-fasciitis is no longer flagged.
+    dict(batch=3, id=3189, path="/running/risks-of-running-as-a-beginner/",
+         why="quote attributed to 'Dr. Lee Saxby, 2026 biomechanics report'",
+         edits=[("quote", "Dr. Lee Saxby", 1)],
+         gone=["Lee Saxby"]),
+    dict(batch=3, id=68133, path="/fitness/why-back-and-biceps-workouts-are-effective/",
+         why="3 quotes attributed to 'Dr. Layne Norton' (twice) and 'Dr. Eric Helms' at conferences/podcasts nobody can source",
+         edits=[("quote", "Dr. Layne Norton", 2), ("quote", "Dr. Eric Helms", 1)],
+         gone=["Muscle Science Review", "ISSN Conference Keynote", "Eric Helms"]),
+    dict(batch=3, id=79446, path="/running/master-proper-running-form/",
+         why="'I tell my clients to imagine...' recast as a plain instruction",
+         edits=[("sub", "I tell my clients to imagine a laser beam from the crown of their head through their spine, exiting between their feet.", "Imagine a laser beam from the crown of your head through your spine, exiting between your feet.")],
+         gone=["I tell my clients"]),
+    dict(batch=3, id=78770, path="/fitness/advanced-fitness-techniques/",
+         why="'I program this for 100% of my clients... a 31% reduction in reported muscle soreness'",
+         edits=[("cut", " I program this for 100% of my clients on off-days. The result? A 31% reduction in reported muscle soreness.")],
+         gone=["my clients on off-days"]),
+    dict(batch=3, id=73650, path="/nutrition/what-to-eat-before-a-half-marathon/",
+         why="'I tell my clients: ...'",
+         edits=[("cut", " I tell my clients: &#8220;You&#8217;re not just eating food; you&#8217;re loading biochemical energy pellets.&#8221;")],
+         gone=["I tell my clients"]),
+    dict(batch=3, id=60149, path="/fitness/roller-skating-vs-running-which-is-better-for-your-health/",
+         why="quotes attributed to 'Dr. Lina Lecoq, Oslo Sports Lab, 2025' and 'Dr. Lena Ortiz, 2025 ACSM Conference' (the second says 'For my clients over 40')",
+         edits=[("quote", "Dr. Lina Lecoq", 1), ("quote", "Dr. Lena Ortiz", 1)],
+         gone=["Lina Lecoq", "Lena Ortiz", "For my clients over 40"]),
+    dict(batch=3, id=45805, path="/fitness/exercising-easier-when-you-feel-overwhelmed/",
+         why="'Some of my clients never progress past Week 2'",
+         edits=[("cut", " Some of my clients never progress past Week 2, and that&#8217;s perfectly fine.")],
+         gone=["Some of my clients"]),
+    dict(batch=3, id=71748, path="/fitness/beginners-guide-to-pilates/",
+         why="'I tell my clients: ... 80% more likely' and 'my clients' progress accelerate by 300%'",
+         edits=[("cut", " I tell my clients: &#8220;If your mat is rolled out, you&#8217;re 80% more likely to practice.&#8221;"), ("cut", " I was skeptical until I saw my clients&#8217; progress accelerate by 300% with guided correction.")],
+         gone=["I tell my clients", "my clients"]),
+    dict(batch=4, id=71670, path="/health/what-is-your-metabolic-age/",
+         why="'In my practice, this awareness is the #1 motivator for clients'",
+         edits=[("cut", " In my practice, this awareness is the #1 motivator for clients to commit to lasting change.")],
+         gone=["In my practice"]),
+    dict(batch=4, id=64298, path="/fitness/improve-posture-with-hiit-workouts/",
+         why="quote attributed to 'Dr. Lena Ortiz, 2025 ACSM Annual Meeting Keynote'",
+         edits=[("quote", "Dr. Lena Ortiz", 1)],
+         gone=["Lena Ortiz"]),
+    dict(batch=4, id=61777, path="/fitness/why-is-it-important-to-assess-flexibility/",
+         why="quote attributed to 'Dr. Lisa Chow, sports physiotherapist' ('our 2025 athlete cohort') and 'protocols... I see in my clinic'",
+         edits=[("quote", "Dr. Lisa Chow", 1), ("cut", " Here are protocols based on the most common restrictions I see in my clinic.")],
+         gone=["Lisa Chow", "in my clinic"]),
+    dict(batch=4, id=56726, path="/running/the-best-running-sneakers-for-achilles-tendonitis/",
+         why="quote attributed to 'Dr. Kristin Lewis, DPM, 2025 Clinical Guidelines' (only the quote and its cite line: the product card after it stays) and 'in my lab'",
+         edits=[("cut", "<p style=\"font-size: 1.3rem; font-weight: 700; color: #6d28d9; margin: 0 0 0.5rem 0; font-style: italic;\">\u201cControl four variables\u2014insole prescription, heel drop, weekly load changes, and surface polarity\u2014and you\u2019ve already halved recurrence rates regardless of age or mileage.\u201d</p>\n<p><cite style=\"font-size: 0.9rem; color: #7c3aed; font-style: normal; font-weight: 600;\">\u2014 Dr. Kristin Lewis, DPM, Foot &amp; Ankle Australia, 2025 Clinical Guidelines</cite>\n</p>\n"), ("sub", "2026 shoes that routinely pass this test in my lab:", "2026 shoes that routinely pass this test:")],
+         gone=["Kristin Lewis", "in my lab"]),
+    dict(batch=4, id=55368, path="/health/how-long-does-it-take-for-your-stomach-to-shrink/",
+         why="quote attributed to 'Dr. Aisha Malik, 2025 Journal of Gastrointestinal Motility (Vol. 31, Issue 4)'",
+         edits=[("quote", "Dr. Aisha Malik", 1)],
+         gone=["Aisha Malik"]),
+    dict(batch=4, id=54377, path="/weight-loss/eating-right-for-an-endomorphic-body-type/",
+         why="'I cycle my clients through three phases' recast as a plain instruction",
+         edits=[("sub", "I cycle my clients through three phases every 10\u201314 days:", "Cycle through three phases every 10\u201314 days:")],
+         gone=["I cycle my clients"]),
+    dict(batch=4, id=71002, path="/health/how-to-speed-up-metabolism-after-60/",
+         why="'I'm a data geek, so I test everything' and 'gives my clients a' recast as 'gives you a'",
+         edits=[("cut", "I\u2019m a data geek, so I test everything. "), ("sub", " gives my clients a ", " gives you a ")],
+         gone=["data geek", "gives my clients"]),
+    dict(batch=4, id=53249, path="/fitness/walking-to-reduce-belly-fat/",
+         why="quote attributed to 'Dr. Kenji Ohmura, Stanford Metabolic Lab, 2025' (the invented first-person walking experiment on this page needs a rewrite and is NOT touched)",
+         edits=[("quote", "Dr. Kenji Ohmura", 1)],
+         gone=["Kenji Ohmura"], check_trust=False),
+    dict(batch=5, id=46762, path="/nutrition/good-vs-bad-calories/",
+         why="quotes attributed to 'Dr. Sarah Chen, MD' and a first-person 'In my practice, I've observed...' quote",
+         edits=[("quote", "Dr. Sarah Chen", 1), ("quote", "In my practice, I&#8217;ve observed", 1)],
+         gone=["Sarah Chen", "In my practice, I"]),
+    dict(batch=5, id=21774, path="/nutrition/best-almond-butter/",
+         why="two quotes attributed to 'Dr. Lena Torres' under two different titles, and 'We tested 12 / 27 brands' (the invented tasting panel elsewhere on this page needs a rewrite and is NOT touched)",
+         edits=[("cut", "We tested 12 butter brands in 2025. Only 5 met strict organic standards. "), ("cut", "<p>Only three organic almond butter brands passed our 2025 testing standards. They met strict criteria: USDA-certified organic, no added oils, low sodium, and 75% fewer additives than industry average. Taste, texture, and nutrition matter. We tested 27 brands. Three won. All backed by clinical data showing improved satiety and lipid profiles [1].</p>\n"), ("quote", "Dr. Lena Torres", 2)],
+         gone=["Lena Torres", "We tested 12", "We tested 27"]),
 ]
 
 
@@ -137,6 +216,15 @@ def cut_text(raw, text):
     if raw.count(text) != 1:
         raise Drift(f"expected exactly 1 copy of {text[:60]!r}, found {raw.count(text)}")
     return raw.replace(text, "", 1), [text]
+
+
+def sub_text(raw, old, new):
+    """Replace one exact phrase (a first-person claim recast as a plain instruction). Repeatable once done."""
+    if raw.count(old) == 1:
+        return raw.replace(old, new, 1), [f"{old}  =>  {new}"]
+    if raw.count(old) == 0 and raw.count(new) >= 1:
+        return raw, [f"already done: {short(new, 60)}"]
+    raise Drift(f"expected exactly 1 copy of {old[:60]!r}, found {raw.count(old)}")
 
 
 def cut_quote(raw, who, n=1):
@@ -242,8 +330,11 @@ def transform(raw, edits):
         # Text cuts stay strict, so a page that changed underneath the script is refused, never guessed at.
         if e[0] == "cut":
             raw, n = cut_text(raw, e[1])
+        elif e[0] == "sub":
+            raw, n = sub_text(raw, e[1], e[2])
         elif e[0] == "quote":
-            if e[1] not in html.unescape(re.sub(r"<script.*?</script>", " ", raw, flags=re.S)):
+            visible = re.sub(r"<script.*?</script>", " ", raw, flags=re.S)
+            if e[1] not in visible and e[1] not in html.unescape(visible):
                 n = [f"already done: no quote naming {e[1]} left"]
             else:
                 raw, n = cut_quote(raw, e[1], e[2])
@@ -273,7 +364,7 @@ def check_result(page, before, after):
     """Problems with the intended new text, or []."""
     problems = []
     left = claims_in(after)
-    if left and page["batch"] == 1:
+    if left and page.get("check_trust", page["batch"] == 1):
         problems.append(f"the trust scan still matches: {left[:2]}")
     for m in LD_BLOCK.finditer(after):
         body = m.group(2)
@@ -524,7 +615,8 @@ def rollback(wpc, backup_path, force=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--batch", type=int, choices=(1, 2), help="1 = the 8 pages earning Bing clicks, 2 = the 7 pages with quotes and embedded image data")
+    ap.add_argument("--batch", type=int, choices=(1, 2, 3, 4, 5), help="1 = the 8 pages earning Bing clicks, 2 = 7 pages with quotes and embedded image data, "
+                                                                      "3-5 = the other pages the trust scan flags (second wave)")
     ap.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
     ap.add_argument("--only", type=int, nargs="+", help="post ids to include (default: the whole batch)")
     ap.add_argument("--canary-only", action="store_true", help="with --apply: stop after the first page")

@@ -38,6 +38,7 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             "revival_headline": (res.get("revival") or {}).get("headline"),
             "revival_findings": (res.get("revival") or {}).get("findings", []),
             "trust_risk": sum(1 for r in rows if "TRUST_RISK" in (r["flags"] or "")),
+            "heavy_pages": sum(1 for r in rows if "HEAVY_PAGE" in (r["flags"] or "")),
             "flags": dict(Counter(f for r in rows if r["bucket"] not in BLOCKERS and "IGNORED" not in (r["flags"] or "")
                                   for f in (r["flags"] or "").split(",") if f)),
             "potential": (intel.get("potential") or {}).get(site, {}),

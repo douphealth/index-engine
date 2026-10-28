@@ -56,7 +56,8 @@ your PC (Windows task, every 10 min)                    Cloudflare: index-engine
   - a sitemap drops 10% or more of its URLs;
   - a site stops answering;
   - a page enters or leaves Google's index.
-- **Trust-risk scanner.** It flags phrasings that read as invented first-hand experience, ratings or statistics (guardrail 4), with the exact sentences.
+- **Trust-risk scanner.** It flags phrasings that read as invented first-hand experience, ratings or statistics (guardrail 4), with the exact sentences. Since 28 Oct 2026 it also catches quotes credited to a named expert with a job title or institution (not only a year), unverifiable bylines, placeholder names ("John Doe"), invented experiments ("I split 68 volunteers") and invented testing panels. On one real site this roughly tripled the number of flagged posts. A match is a prompt to verify: a real citation with a named source is fine, an invented quote is not. The scanner never edits anything.
+- **Page-weight check.** The audit records the HTML bytes the server sends and how much of it is base64 image data pasted into the page or its schema. A page over 1 MB, or carrying more than 20,000 characters of pasted image data, gets the `HEAVY_PAGE` flag, a site-level warning and a plain-English fix. (A `data:` URI is also not a valid image URL in structured data.)
 - **Observed outcomes, not causal impact.** It tracks Google index transitions over 30 days and summarizes the last known status of older requests, links and submissions. The action summaries cover historical records, include missing or stale verdicts, and do not prove an action caused indexing. The request summary is also used as a heuristic in the model.
 - **Follow-up inspections.** Pages you requested or that received links are re-inspected 2–3 days later. These observations can help monitor changes but cannot establish whether an action caused them.
 

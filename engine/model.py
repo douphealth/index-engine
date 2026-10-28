@@ -247,7 +247,7 @@ def explain(m, x):
 ACTIONS = {
     "add_links": "Add 3 contextual links from related pages Google already indexes",
     "differentiate": "Make it clearly different from its near-duplicate, or merge the two (check Bing first)",
-    "expand": "Add real substance (first-hand, sourced detail): the main content is short",
+    "expand": "Add real substance (named sources, facts you can verify; never invented first-hand claims): the main content is short",
     "fix_trust": "Source or remove the flagged first-hand or statistical claims",
     "request": "Request indexing in Search Console",
 }
