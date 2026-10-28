@@ -145,6 +145,41 @@ class EditTests(unittest.TestCase):
         new, _, _ = rec.transform(raw, [("quote", "In my practice, I&#8217;ve observed", 1)])
         self.assertEqual(new, "<p>keep</p>")
 
+    def test_faq_drop_removes_only_the_one_question_and_keeps_the_rest_valid(self):
+        faq = ('{"@type":"FAQPage","@context":"https://schema.org","mainEntity":['
+               '{"name":"Keep me?","@type":"Question","acceptedAnswer":{"text":"Fine.","@type":"Answer"}},'
+               '{"name":"Which brands pass?","@type":"Question","acceptedAnswer":{"text":"We tested 27 brands. Three won.","@type":"Answer"}},'
+               '{"name":"And me?","@type":"Question","acceptedAnswer":{"text":"Also fine.","@type":"Answer"}}]}')
+        raw = f'<p>visible</p><script type="application/ld+json">{faq}</script>'
+        new, notes, _ = rec.transform(raw, [("faq_drop", "We tested 27 brands")])
+        data = json.loads(rec.LD_BLOCK.search(new).group(2))
+        self.assertEqual([q["name"] for q in data["mainEntity"]], ["Keep me?", "And me?"])
+        self.assertNotIn("We tested 27", new)
+        self.assertTrue("Which brands pass?" in notes[0])
+        self.assertNotIn("\n", rec.LD_BLOCK.search(new).group(2))                                   # a compact block stays compact
+        again, notes2, _ = rec.transform(new, [("faq_drop", "We tested 27 brands")])               # repeatable
+        self.assertEqual(again, new)
+        self.assertTrue(notes2[0].startswith("already done"))
+
+    def test_faq_drop_refuses_what_it_cannot_do_exactly(self):
+        one = '{"@type":"FAQPage","mainEntity":[{"name":"Q","acceptedAnswer":{"text":"We tested 27 brands."}}]}'
+        two = ('{"@type":"FAQPage","mainEntity":[{"name":"A","acceptedAnswer":{"text":"We tested 27 brands."}},'
+               '{"name":"B","acceptedAnswer":{"text":"We tested 27 brands."}},{"name":"C","acceptedAnswer":{"text":"ok"}}]}')
+        wrap = lambda j, extra="": f'{extra}<script type="application/ld+json">{j}</script>'              # noqa: E731
+        with self.assertRaises(rec.Drift):
+            rec.transform(wrap(one), [("faq_drop", "We tested 27 brands")])                       # would empty the FAQ
+        with self.assertRaises(rec.Drift):
+            rec.transform(wrap(two), [("faq_drop", "We tested 27 brands")])                       # two entries match: ambiguous
+        with self.assertRaises(rec.Drift):
+            rec.transform(wrap(two.replace("We tested 27 brands.", "ok").replace('"text":"ok"}},{"name":"B"', '"text":"We tested 27 brands."}},{"name":"B"', 1),
+                              "<p>We tested 27 brands.</p>"), [("faq_drop", "We tested 27 brands")])   # also on the visible page
+
+    def test_a_claim_left_only_in_structured_data_is_not_called_clean(self):
+        page = dict(PAGE, edits=[("faq_drop", "We tested 27 brands")], gone=["We tested 27"], schema=False)
+        raw = '<p>visible</p><script type="application/ld+json">{"@type":"FAQPage","mainEntity":[{"name":"Q","acceptedAnswer":{"text":"We tested 27 brands."}},{"name":"R","acceptedAnswer":{"text":"x"}}]}</script>'
+        self.assertFalse(rec.already_clean(page, raw))
+        self.assertTrue(rec.already_clean(page, "<p>visible</p>"))
+
     def test_a_page_that_would_still_carry_a_claim_is_a_problem(self):
         bad = dict(PAGE, edits=[("cut", "<li>By John Doe, NASM-certified trainer.</li>")])
         new, _, _ = rec.transform(RAW, bad["edits"])
@@ -251,9 +286,10 @@ class ApplyTests(unittest.TestCase):
         self.assertIn("1 of 2 already show the cleaned page", out)
 
     def test_real_page_list_respects_the_batch_limits(self):
-        for batch in (1, 2):
+        for batch in {p["batch"] for p in rec.PAGES}:
             self.assertLessEqual(sum(1 for p in rec.PAGES if p["batch"] == batch), rec.MAX_PER_BATCH)
-        self.assertEqual(len({p["id"] for p in rec.PAGES}), len(rec.PAGES))
+        # a post may appear in a later batch (a follow-up), never twice in the same one
+        self.assertEqual(len({(p["batch"], p["id"]) for p in rec.PAGES}), len(rec.PAGES))
 
 
 if __name__ == "__main__":

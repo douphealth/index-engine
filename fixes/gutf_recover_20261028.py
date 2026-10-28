@@ -202,7 +202,13 @@ PAGES = [
     dict(batch=5, id=21774, path="/nutrition/best-almond-butter/",
          why="two quotes attributed to 'Dr. Lena Torres' under two different titles, and 'We tested 12 / 27 brands' (the invented tasting panel elsewhere on this page needs a rewrite and is NOT touched)",
          edits=[("cut", "We tested 12 butter brands in 2025. Only 5 met strict organic standards. "), ("cut", "<p>Only three organic almond butter brands passed our 2025 testing standards. They met strict criteria: USDA-certified organic, no added oils, low sodium, and 75% fewer additives than industry average. Taste, texture, and nutrition matter. We tested 27 brands. Three won. All backed by clinical data showing improved satiety and lipid profiles [1].</p>\n"), ("quote", "Dr. Lena Torres", 2)],
-         gone=["Lena Torres", "We tested 12", "We tested 27"]),
+         gone=["Lena Torres", "We tested 12"]),
+    # ---- follow-up (28 Oct): the same invented testing claim was also left in the page's FAQ structured data. Its whole answer was the
+    # paragraph batch 5 cut from the visible page, so the question is dropped from the schema rather than left with a claim the page no longer makes.
+    dict(batch=6, id=21774, path="/nutrition/best-almond-butter/",
+         why="FAQ schema answer 'Only three organic almond butter brands passed our 2025 testing standards... We tested 27 brands. Three won...' "
+             "(the same text batch 5 cut from the visible page)",
+         edits=[("faq_drop", "We tested 27 brands")], gone=["We tested 27"], check_trust=False),
 ]
 
 
@@ -305,6 +311,44 @@ def strip_schema_images(raw):
     return new_raw, [f"{removed} embedded base64 image entr{'y' if removed == 1 else 'ies'} removed from the JSON-LD"]
 
 
+def drop_faq_entry(raw, needle):
+    """Remove the one FAQPage question whose answer contains `needle`, so structured data does not keep a claim the page no longer makes.
+    The block keeps its format (compact or pretty); every other question stays. Exactly one entry must match."""
+    out, last, removed = [], 0, []
+    for m in LD_BLOCK.finditer(raw):
+        body = m.group(2)
+        if needle not in body:
+            continue
+        try:
+            obj = json.loads(body)
+        except ValueError as e:
+            raise Drift(f"a JSON-LD block does not parse: {e}")
+        items = obj.get("mainEntity") if isinstance(obj, dict) and obj.get("@type") == "FAQPage" else None
+        if not isinstance(items, list):
+            raise Drift("the text is in a JSON-LD block that is not an FAQPage question list")
+        keep = []
+        for q in items:
+            ans = ((q or {}).get("acceptedAnswer") or {}).get("text", "") if isinstance(q, dict) else ""
+            if isinstance(ans, str) and needle in ans:
+                removed.append((q.get("name", ""), ans))
+            else:
+                keep.append(q)
+        if not keep:
+            raise Drift("removing the entry would leave the FAQ empty")
+        obj["mainEntity"] = keep
+        lead, trail = body[:len(body) - len(body.lstrip())], body[len(body.rstrip()):]
+        pretty = "\n" in body.strip()
+        text = json.dumps(obj, ensure_ascii=False, indent=2) if pretty else json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+        out += [raw[last:m.start(2)], lead + text + trail]
+        last = m.end(2)
+    if len(removed) != 1:
+        raise Drift(f"expected exactly 1 FAQ entry whose answer contains {needle!r}, found {len(removed)}")
+    new_raw = "".join(out) + raw[last:]
+    if needle in new_raw:
+        raise Drift(f"{needle!r} is still on the page outside that FAQ entry")
+    return new_raw, [f"FAQ schema entry removed: question {removed[0][0]!r}; its answer: {removed[0][1]}"]
+
+
 BROKEN_FIGURE = re.compile(r'<figure\b[^>]*>\s*<img\b[^>]*\bsrc="image/(?:jpeg|png|webp|gif);base64,([A-Za-z0-9+/=]+)"[^>]*>'
                            r'(?:\s*<figcaption>.*?</figcaption>)?\s*</figure>\n?', re.S)
 
@@ -338,6 +382,11 @@ def transform(raw, edits):
                 n = [f"already done: no quote naming {e[1]} left"]
             else:
                 raw, n = cut_quote(raw, e[1], e[2])
+        elif e[0] == "faq_drop":
+            if e[1] not in raw:
+                n = [f"already done: no FAQ schema entry mentions {short(e[1], 40)!r}"]
+            else:
+                raw, n = drop_faq_entry(raw, e[1])
         elif e[0] == "schema":
             if "data:image" not in raw:
                 n = ["already done: no embedded image data left in the schema"]
@@ -448,6 +497,8 @@ def already_clean(p, raw):
     if p.get("schema") and "data:image" in raw:
         return False
     if any(e[0] == "figures" for e in p["edits"]) and "base64," in raw:
+        return False
+    if any(e[0] == "faq_drop" and e[1] in raw for e in p["edits"]):            # the claim may only be left in structured data
         return False
     return True
 
@@ -625,8 +676,9 @@ def rollback(wpc, backup_path, force=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--batch", type=int, choices=(1, 2, 3, 4, 5), help="1 = the 8 pages earning Bing clicks, 2 = 7 pages with quotes and embedded image data, "
-                                                                      "3-5 = the other pages the trust scan flags (second wave)")
+    ap.add_argument("--batch", type=int, choices=(1, 2, 3, 4, 5, 6), help="1 = the 8 pages earning Bing clicks, 2 = 7 pages with quotes and embedded image data, "
+                                                                         "3-5 = the other pages the trust scan flags (second wave), "
+                                                                         "6 = the same invented claim left in one page's FAQ schema")
     ap.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
     ap.add_argument("--only", type=int, nargs="+", help="post ids to include (default: the whole batch)")
     ap.add_argument("--canary-only", action="store_true", help="with --apply: stop after the first page")
