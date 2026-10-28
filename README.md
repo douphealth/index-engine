@@ -26,6 +26,15 @@ your PC (Windows task, every 10 min)                    Cloudflare: index-engine
 
 ## What makes it smart and autonomous
 
+- **Revival: traffic is the goal, indexation is a means.** The engine keeps the daily history both engines publish and says, with the evidence, where each site's clicks are moving and why that is hard to read.
+  - **Sources.** Bing: `GetRankAndTrafficStats` (daily clicks and impressions, about 16 months), `GetCrawlStats` (daily: pages in Bing's index, pages crawled, errors, robots blocks, 4xx/5xx) and the per-page daily rows of `GetPageStats`. Google: Search Analytics by date and by page.
+  - **Windows.** The latest 28 days of data against the 28 before, ending on the last day each engine reported, not on today.
+  - **A change is called real only when** it is at least 25% and more than 3 standard errors for count data (the square root of the two totals added), with at least 50 clicks in one window. Anything smaller is "too little data", however large the percentage. Daily traffic is noisier than a pure count, so "medium" confidence is indicative, not proof.
+  - **Where the lost clicks went.** Per page, lost clicks are split into pages that are blocked (noindex, redirect, canonical, robots, errors), removed (404/410), redirected, live but unlisted, and live and indexable. The page rows say how much of the site's clicks they explain, because the engines report some low-volume traffic only at site level.
+  - **Spelling variants.** Engines often report a page under the other spelling (with or without the trailing slash). Those clicks are credited to the listed URL, which also fixes page values the rest of the engine uses. A variant that answers 200 instead of redirecting is reported as a duplicate-URL finding.
+  - **Bing's index.** "Pages in index" is Bing's own figure. A site with far more pages in Bing's index than URLs the engine can find (5 times or more, over 1,000 pages) is flagged: that often means duplicate, parameter or archive URLs. Robots blocks, server errors and missing pages are flagged by rate, not by raw count.
+  - **Every statement is an association measured on the engines' data.** The engine does not claim why a page lost clicks.
+
 - **An indexation-odds model trained on your own sites.** Every page Google has judged teaches the model what gets pages indexed on these sites.
   - It is an L2 logistic regression with 5-fold cross-validation.
   - Cross-validation computes each site's rate from the training fold rather than its held-out labels. Other features, including links from indexed pages, still use current portfolio-wide verdicts, so the reported AUC can be optimistic and is not proof of future accuracy.
@@ -75,6 +84,7 @@ python D:\Claude\SEO-Setup\index-engine\indexengine.py tick
 | Page | What you can do |
 |---|---|
 | Overview | **Your priorities**: one ranked to-do list (urgent problems, then quick wins by expected pages indexed per minute, then technical fixes, then content work), each with its expected gain, effort and a one-click link. Also: where pages get stuck (found → indexable → known to Google → crawled → indexed), the indexed-share trend, top pages, last-30-days impact, alerts, and every site with its next step |
+| Revival | Per-site traffic verdicts with confidence (Bing and Google), a daily-clicks chart, where the lost clicks went by kind of page, Bing's crawl report and its findings, and the pages to recover first with a specific next step for each |
 | Plan | What decides indexing on your sites (the model's drivers and accuracy) and every action ranked by expected gain, with one-click handling |
 | Links | The internal-link approval queue: each proposal shows the anchor highlighted in its sentence. Approve, reject, cancel or undo |
 | Alerts | Regressions and Google gains and drops, with acknowledge |
@@ -129,18 +139,19 @@ The first run fetches every page (about 4,000 URLs across the 10 sites on 23 Oct
    - the canonical target and the main-content word count
    - a content fingerprint, used to find near-duplicates
    - every internal link, used to find orphans and pages linked only from menus
-3. **Google** (needs the service account):
+3. **Traffic history** (Bing and Google): the daily series, Bing's crawl report and the per-page before/after windows, then a handful of live requests to URLs that earned clicks but are unlisted or are spelling variants of listed pages.
+4. **Google** (needs the service account):
    - Any page with a Search impression in the last 14 days counts as indexed, so it costs no quota.
    - Everything else goes through the **URL Inspection API**: 2,000 per property per day, never-checked and highest-value URLs first.
    - Each URL is re-checked only when its state is stale (7–45 days, depending on the state) or the page changed.
-4. **Bing** (needs the Bing key). It pulls page traffic, so pages that earn Bing clicks are protected, and checks crawl status for submitted URLs.
-5. **Submit.**
+5. **Bing** (needs the Bing key). It pulls page traffic, so pages that earn Bing clicks are protected, and checks crawl status for submitted URLs.
+6. **Submit.**
    - **IndexNow** where the site hosts a key file. One call reaches Bing, Yandex, Seznam, Naver and Yep.
    - Otherwise the **Bing URL Submission API**, within the daily quota Bing reports.
    - **Search Console sitemaps:** a sitemap is submitted only when it isn't registered or has gained URLs.
    - Only URLs that are indexable right now are sent: 200 status, no redirect, no `noindex`, self-canonical, allowed by robots.txt.
    - Each URL goes out once per channel, and again only when its `lastmod` changes.
-6. **Triage and report.** Every URL gets one bucket and one concrete action. See `out/`.
+7. **Triage, revival and report.** Every URL gets one bucket and one concrete action, every site gets its traffic verdict and revival picture, and clear changes raise alerts (traffic: weekly at most; Bing findings: monthly at most). See `out/`.
 
 ## What it deliberately does not do
 

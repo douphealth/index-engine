@@ -29,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine import (alerts, audit, bing, brain, config, discover, fresh, google, links, publish, report,  # noqa: E402
-                    store, submit, wp)
+                    revival, store, submit, traffic, wp)
 from engine.dashboard import Dashboard, apply_state, cached_settings, safe  # noqa: E402
 from engine.util import load_credentials, log, log_text, now_iso, open_log, parse_ts, utf8_stdout  # noqa: E402
 
@@ -166,6 +166,8 @@ def pipeline(db, args, sites):
         audit.run(db, sites, force=args.force_audit, max_per_site=args.audit_max)
 
     gclient, bclient, props, bsites = engines(args, db, sites)
+    if props or bsites:
+        traffic.pull(db, gclient, props, bclient, bsites)          # daily history first: page windows end on its last day
     if props:
         google.pull_performance(db, gclient, props)
     if bsites:
@@ -182,7 +184,11 @@ def pipeline(db, args, sites):
     if bsites and args.bing_check:
         bing.check_url_info(db, bclient, bsites, max_per_site=args.bing_check)
 
+    if not args.no_creds and not args.no_wp:
+        revival.probe_missing(db, sites)                             # live GETs for URLs that earned clicks but are unlisted
     results, intel = brain.analyze(db, config.SITES)
+    if props or bsites:
+        revival.raise_alerts(db, results, set(sites))
     m = intel["model"]
     log(f"[model] trained on {m.get('n')} Google verdicts ({m.get('indexed')} indexed), held-out AUC {m.get('auc')}, "
         f"quality {m.get('quality')}; {len(intel['actions'])} best next actions")

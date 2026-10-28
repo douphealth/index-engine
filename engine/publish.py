@@ -33,6 +33,10 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             "excluded": snap.get("excluded", 0), "bing_earners": snap["bing_earners"], "indexnow": meta.get("indexnow"),
             "gsc_property": meta.get("gsc_property"), "bing_site": meta.get("bing_site"), "submitted_total": n_sub,
             "disabled": site in disabled, "wp": bool(meta.get("wp")),
+            "traffic": {k: v for k, v in (res.get("traffic") or {}).items() if k != "series"},
+            "bing_health": res.get("health"), "data_health": res.get("data_health"),
+            "revival_headline": (res.get("revival") or {}).get("headline"),
+            "revival_findings": (res.get("revival") or {}).get("findings", []),
             "trust_risk": sum(1 for r in rows if "TRUST_RISK" in (r["flags"] or "")),
             "flags": dict(Counter(f for r in rows if r["bucket"] not in BLOCKERS and "IGNORED" not in (r["flags"] or "")
                                   for f in (r["flags"] or "").split(",") if f)),
@@ -43,6 +47,8 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
         tables[site] = {"site": site, "generated_at": generated_at, "cols": COLS,
                         "rows": [[r[c] if r[c] is not None else "" for c in COLS] for r in rows],
                         "plan": res["plan"][:200],
+                        "traffic_series": (res.get("traffic") or {}).get("series") or [],
+                        "revival": res.get("revival"),
                         "dups": [{"url": u, "similar_to": o, "estimated_overlap": j} for u, (o, j) in list(res["dups"].items())[:300]]}
         titles = {r["url"]: r["title"] for r in rows}
         odds = {r["url"]: r["odds"] for r in rows}
@@ -68,7 +74,15 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
         totals["bing_earners"] += s["bing_earners"]
     imp = intel.get("impact") or {}
     totals["gained_30d"], totals["lost_30d"] = imp.get("gained", 0), imp.get("lost", 0)
-    summary = {"generated_at": generated_at, "sites": sites, "requests": requests_,
+    series = {}
+    for site, res in results.items():
+        if site in disabled:
+            continue
+        for d, bc, bi, gc, gi in (res.get("traffic") or {}).get("series") or []:
+            t = series.setdefault(d, [0, 0, 0, 0])
+            t[0] += bc; t[1] += bi; t[2] += gc; t[3] += gi
+    portfolio_series = [[d, *v] for d, v in sorted(series.items())]
+    summary = {"generated_at": generated_at, "sites": sites, "requests": requests_, "portfolio_series": portfolio_series,
                "model": intel.get("model"), "actions": intel.get("actions") or [], "impact": imp}
     return summary, tables, {"totals": totals, "sites": per_site}
 

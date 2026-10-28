@@ -62,6 +62,15 @@ class GSCClient:
                 return rows
             start_row += len(got)
 
+    def search_dates(self, prop, start, end):
+        """Daily clicks and impressions for the whole property, final data only."""
+        r = self._s().post(f"{API}/sites/{quote(prop, safe='')}/searchAnalytics/query",
+                           json={"startDate": str(start), "endDate": str(end), "dimensions": ["date"], "dataState": "final",
+                                 "rowLimit": 25000}, timeout=180)
+        if r.status_code != 200:
+            raise RuntimeError(f"searchAnalytics(date) HTTP {r.status_code}: {r.text[:160]}")
+        return r.json().get("rows", [])
+
     def inspect(self, prop, url):
         r = self._s().post(INSPECT_API, json={"inspectionUrl": url, "siteUrl": prop, "languageCode": "en-US"}, timeout=90)
         if r.status_code == 429 or (r.status_code == 403 and "quota" in r.text.lower()):
@@ -120,6 +129,35 @@ def resolve_properties(db, client, sites):
     return out
 
 
+def store_page_trend(db, client, site, prop, end):
+    """Per-page clicks/impressions in the latest 28 days of Google data vs the 28 before (best effort)."""
+    from . import traffic
+    (n0, n1), (p0, p1) = traffic.windows(end.isoformat())
+    try:
+        now_rows = client.search_pages(prop, dt.date.fromisoformat(n0), dt.date.fromisoformat(n1))
+        prev_rows = client.search_pages(prop, dt.date.fromisoformat(p0), dt.date.fromisoformat(p1))
+    except Exception as e:
+        log(f"[google] {site}: page trend pull failed: {str(e)[:120]}")
+        return
+    alias, seen = traffic.aliaser(db, site)
+    v = defaultdict(lambda: [0, 0, 0, 0])
+    for r in now_rows:
+        k = alias(norm(r["keys"][0]))
+        v[k][0] += int(r.get("clicks", 0)); v[k][2] += int(r.get("impressions", 0))
+    for r in prev_rows:
+        k = alias(norm(r["keys"][0]))
+        v[k][1] += int(r.get("clicks", 0)); v[k][3] += int(r.get("impressions", 0))
+    traffic.save_variants(db, site, seen)
+    db.execute("UPDATE page_trend SET g_now=0, g_prev=0, gi_now=0, gi_prev=0 WHERE site=?", (site,))
+    now = now_iso()
+    for url, (cn, cp, inow, ip) in v.items():
+        if url and (cn or cp or inow or ip):
+            db.execute("""INSERT INTO page_trend(url, site, g_now, g_prev, gi_now, gi_prev, g_end, at) VALUES(?,?,?,?,?,?,?,?)
+                          ON CONFLICT(url) DO UPDATE SET g_now=excluded.g_now, g_prev=excluded.g_prev, gi_now=excluded.gi_now,
+                          gi_prev=excluded.gi_prev, g_end=excluded.g_end, at=excluded.at""",
+                       (url, site, cn, cp, inow, ip, end.isoformat(), now))
+
+
 def pull_performance(db, client, props):
     end = dt.date.today() - dt.timedelta(days=2)
     for site, prop in props.items():
@@ -129,13 +167,17 @@ def pull_performance(db, client, props):
         except Exception as e:
             log(f"[google] {site}: performance pull failed: {e}")
             continue
+        from . import traffic
+        te = traffic.series_end(db, site, "google")
+        store_page_trend(db, client, site, prop, dt.date.fromisoformat(te) if te else end)
         agg = defaultdict(lambda: [0, 0, 0])
+        alias, _seen = traffic.aliaser(db, site)
         for r in rows90:
-            k = norm(r["keys"][0])
+            k = alias(norm(r["keys"][0]))
             agg[k][0] += int(r.get("clicks", 0))
             agg[k][1] += int(r.get("impressions", 0))
         for r in recent:
-            agg[norm(r["keys"][0])][2] += int(r.get("impressions", 0))
+            agg[alias(norm(r["keys"][0]))][2] += int(r.get("impressions", 0))
         now = now_iso()
         db.execute("UPDATE perf SET gsc_clicks=0, gsc_impr=0, gsc_recent_impr=0 WHERE site=?", (site,))
         for url, (c, i, ri) in agg.items():

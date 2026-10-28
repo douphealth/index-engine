@@ -34,6 +34,7 @@
         known, share: known >= 10 ? count("INDEXED") / known : null,
         gsc: Boolean(s.gsc_property), bing: Boolean(s.bing_site),
         conflicts: number(s.conflicts), flags: s.flags || {},
+        traffic: s.traffic || null,
       };
     });
     const enabled = sites.filter((s) => s.enabled);
@@ -74,6 +75,19 @@
     const toImprove = sum("crawled") + sum("discovered") + sum("unknown");
     const proposed = links.filter((l) => l.status === "proposed").length;
     const impact = summary.impact || {};
+    // A clear drop is one the engine judged both large and statistically clear; small numbers are never called.
+    const drops = [];
+    for (const s of enabled) {
+      for (const src of ["bing", "google"]) {
+        const t = s.traffic && s.traffic[src];
+        if (t && t.clicks && t.clicks.verdict === "declining") {
+          drops.push({ site: s.site, src, pct: t.clicks.pct, prev: number(t.clicks_prev), now: number(t.clicks_now), confidence: t.clicks.confidence });
+        }
+      }
+    }
+    drops.sort((a, b) => (b.prev - b.now) - (a.prev - a.now));
+    const hasTraffic = enabled.some((s) => s.traffic && (s.traffic.bing || s.traffic.google));
+    const worst = drops[0];
     const steps = [
       {
         number: 1, title: "Check connections & freshness",
@@ -94,7 +108,17 @@
         cta: problems ? "Inspect affected URLs" : "Review fixes",
       },
       {
-        number: 3, title: "Strengthen valuable pages",
+        number: 3, title: "Recover lost search traffic",
+        metric: !hasTraffic ? "No traffic history yet" : drops.length ? drops.length + " clear traffic drop" + (drops.length > 1 ? "s" : "") : "No clear traffic drop",
+        status: drops.length ? "attention" : hasTraffic ? "clear" : "ready",
+        detail: worst ? worst.site + ": " + (worst.src === "bing" ? "Bing" : "Google") + " clicks fell " + Math.abs(Math.round(worst.pct)) + "% ("
+            + worst.prev.toLocaleString() + " to " + worst.now.toLocaleString() + ") in the latest 28 days. Open Revival to see which pages lost clicks and what holds each back."
+          : hasTraffic ? "Compared with the previous 28 days, no site shows a drop that is both large and statistically clear. Small numbers are never called."
+          : "The next engine run records daily clicks from Bing and Google.",
+        href: worst ? "#/revival?site=" + encodeURIComponent(worst.site) : "#/revival", cta: worst ? "See what lost traffic" : "Open Revival",
+      },
+      {
+        number: 4, title: "Strengthen valuable pages",
         metric: toImprove.toLocaleString() + " not indexed yet",
         status: toImprove || requests.length || proposed || actions.length ? "ready" : "clear",
         detail: proposed ? proposed + " contextual link proposal(s) ready for review. Prioritize pages with search demand."
@@ -102,7 +126,7 @@
         href: proposed ? "#/links" : "#/plan", cta: proposed ? "Review links" : "Open prioritized plan",
       },
       {
-        number: 4, title: "Verify observed outcomes",
+        number: 5, title: "Verify observed outcomes",
         metric: lastSuccess ? "Last successful run recorded" : "No completed run recorded",
         status: lastSuccess && fresh ? "ready" : "attention",
         detail: "Check Google's latest recorded verdicts and measured gains/losses. Submission is not proof of indexing.",
@@ -114,7 +138,7 @@
       lastSeen, heartbeatAgeMinutes, dataAgeMinutes, lastRun, lastSuccess, queued, missingGsc,
       problems, toImprove, requests: requests.length, proposed, actions: actions.length,
       highAlerts: highAlerts.length, alerts: alerts.length, indexed: sum("indexed"),
-      known: sum("known"), urls: sum("urls"), impact, steps, issueSite,
+      known: sum("known"), urls: sum("urls"), impact, steps, issueSite, drops, hasTraffic,
     };
   }
 
