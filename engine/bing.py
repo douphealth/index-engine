@@ -46,6 +46,14 @@ class BingClient:
     def url_info(self, site_url, url):
         return self._get("GetUrlInfo", siteUrl=site_url, url=url) or {}
 
+    def rank_traffic(self, site_url):
+        """Daily clicks and impressions for the whole site (about 16 months)."""
+        return self._get("GetRankAndTrafficStats", siteUrl=site_url) or []
+
+    def crawl_stats(self, site_url):
+        """Bing's daily crawl report: pages in its index, pages crawled, errors, robots blocks, 4xx/5xx."""
+        return self._get("GetCrawlStats", siteUrl=site_url) or []
+
 
 def working_client(keys):
     """First key Bing accepts (GetUserSites), as a client; None if none works.
@@ -102,12 +110,21 @@ def pull_performance(db, client, bsites):
         except Exception as e:
             log(f"[bing] {site}: GetPageStats failed: {e}")
             continue
-        agg = {}
+        agg, daily = {}, {}
+        from . import traffic
+        alias, seen = traffic.aliaser(db, site)
         for r in rows:
-            k = norm(r.get("Query") or "")
+            k = alias(norm(r.get("Query") or ""))
             if k:
                 c, i = agg.get(k, (0, 0))
                 agg[k] = (c + int(r.get("Clicks") or 0), i + int(r.get("Impressions") or 0))
+                day = bing_date(r.get("Date"))
+                if day:
+                    d = daily.setdefault(k, {})
+                    cc, ii = d.get(day, (0, 0))
+                    d[day] = (cc + int(r.get("Clicks") or 0), ii + int(r.get("Impressions") or 0))
+        traffic.save_variants(db, site, seen)
+        store_page_trend(db, site, daily)
         now = now_iso()
         db.execute("UPDATE perf SET bing_clicks=0, bing_impr=0 WHERE site=?", (site,))
         for url, (c, i) in agg.items():
@@ -116,6 +133,30 @@ def pull_performance(db, client, bsites):
                           bing_at=excluded.bing_at""", (url, site, c, i, now))
         db.commit()
         log(f"[bing] {site}: {len(agg)} pages with Bing impressions, {sum(1 for c, _ in agg.values() if c)} with clicks")
+
+
+def store_page_trend(db, site, daily):
+    """Per-page clicks/impressions in the latest 28 days of Bing's data vs the 28 before. The window ends on the last day
+    Bing reported for the SITE (traffic_daily), so every page is measured over the same days."""
+    from . import traffic
+    end = traffic.series_end(db, site, "bing") or max((d for v in daily.values() for d in v), default=None)
+    if not end:
+        return
+    (n0, n1), (p0, p1) = traffic.windows(end)
+    db.execute("UPDATE page_trend SET b_now=0, b_prev=0, bi_now=0, bi_prev=0 WHERE site=?", (site,))
+    now = now_iso()
+    for url, days in daily.items():
+        v = [0, 0, 0, 0]
+        for day, (c, i) in days.items():
+            if n0 <= day <= n1:
+                v[0] += c; v[2] += i
+            elif p0 <= day <= p1:
+                v[1] += c; v[3] += i
+        if any(v):
+            db.execute("""INSERT INTO page_trend(url, site, b_now, b_prev, bi_now, bi_prev, b_end, at) VALUES(?,?,?,?,?,?,?,?)
+                          ON CONFLICT(url) DO UPDATE SET b_now=excluded.b_now, b_prev=excluded.b_prev, bi_now=excluded.bi_now,
+                          bi_prev=excluded.bi_prev, b_end=excluded.b_end, at=excluded.at""",
+                       (url, site, v[0], v[1], v[2], v[3], end, now))
 
 
 PAUSE_S = 0.4               # between GetUrlInfo calls: Bing throttles the whole account when they come too fast

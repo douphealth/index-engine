@@ -18,8 +18,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
-from . import (audit, bing, brain, config, dashboard, discover, fresh, google, links, model, report, store, submit, triage,
-               util, wp)
+from . import (audit, bing, brain, config, dashboard, discover, fresh, google, links, model, report, store, submit, traffic,
+               triage, util, wp)
 
 KEY = "abcdef1234567890abcdef1234567890"
 VOCAB = [f"w{i}x" for i in range(600)]
@@ -189,7 +189,12 @@ class FakeGSC:
         return [{"siteUrl": f"sc-domain:{urlsplit(self.base).netloc}", "permissionLevel": "siteOwner"}]
 
     def search_pages(self, prop, start, end):
-        return [{"keys": [self.base + "/good-indexed/"], "clicks": 3, "impressions": 120}]
+        # the earlier 28-day window had 9 clicks on this page, the latest 3: a loss to find
+        earlier = (end - start).days == 27 and (dt.date.today() - end).days > 20
+        return [{"keys": [self.base + "/good-indexed/"], "clicks": 9 if earlier else 3, "impressions": 120}]
+
+    def search_dates(self, prop, start, end):
+        return [{"keys": [(end - dt.timedelta(days=k)).isoformat()], "clicks": 2, "impressions": 40} for k in range(70)]
 
     def inspect(self, prop, url):
         self.inspected.append(urlsplit(url).path)
@@ -219,8 +224,22 @@ class FakeBing:
         self.sent += urls
         return 200, "{}"
 
+    @staticmethod
+    def _day(ago):
+        d = dt.date.today() - dt.timedelta(days=ago)
+        return f"/Date({int(dt.datetime(d.year, d.month, d.day, tzinfo=dt.timezone.utc).timestamp() * 1000)})/"
+
     def page_stats(self, site_url):
-        return [{"Query": self.base + "/dup-b/", "Clicks": 7, "Impressions": 100, "Date": "/Date(1760000000000)/"}]
+        # 7 clicks in total: 5 in the earlier 28-day window, 2 in the latest
+        return [{"Query": self.base + "/dup-b/", "Clicks": 5, "Impressions": 60, "Date": self._day(40)},
+                {"Query": self.base + "/dup-b/", "Clicks": 2, "Impressions": 40, "Date": self._day(10)}]
+
+    def rank_traffic(self, site_url):
+        return [{"Date": self._day(ago), "Clicks": 20 if ago > 31 else 10, "Impressions": 2000 if ago > 31 else 1000} for ago in range(70, 2, -1)]
+
+    def crawl_stats(self, site_url):
+        return [{"Date": self._day(ago), "CrawledPages": 50, "InIndex": 5000, "CrawlErrors": 0, "Code4xx": 0, "Code5xx": 0,
+                 "BlockedByRobotsTxt": 0, "ConnectionTimeout": 0, "DnsFailures": 0, "InLinks": 3} for ago in range(40, 2, -1)]
 
     def url_info(self, site_url, url):
         return {"LastCrawledDate": "/Date(1760000000000)/" if url.endswith("/about/") else "/Date(-62135596800000)/",
@@ -294,8 +313,9 @@ def main():
     gsc, bng, inow = FakeGSC(base), FakeBing(base), FakeIndexNow()
     props = google.resolve_properties(db, gsc, sites)
     check(bool(props), "Search Console property resolved")
-    google.pull_performance(db, gsc, props)
     bsites = bing.resolve_sites(db, bng, sites)
+    traffic.pull(db, gsc, props, bng, bsites)
+    google.pull_performance(db, gsc, props)
     bing.pull_performance(db, bng, bsites)
     google.inspect_due(db, gsc, props)
     check("/good-indexed/" not in gsc.inspected, "URL with recent impressions is not inspected (quota saved)")
@@ -430,7 +450,19 @@ def main():
           and any(a["action"] == "add_links" and a["url"].endswith("/good-discovered/") for a in intel["actions"]),
           "scored pages get odds; best actions include links for a stuck page")
     check({"gained", "lost", "requests", "links", "bing"} <= set(intel["impact"]), "impact report built")
-    s3 = publish.build(db, res3, util.now_iso(), {}, (), intel)[0]["sites"][0]
+    summ3, tabs3, _ = publish.build(db, res3, util.now_iso(), {}, (), intel)
+    s3 = summ3["sites"][0]
+    tr3, rev3 = s3["traffic"], tabs3[base]["revival"]
+    check(tr3["bing"]["clicks"]["verdict"] == "declining" and tr3["bing"]["clicks_prev"] == 550 and tr3["bing"]["clicks_now"] == 280
+          and tr3["google"]["clicks_now"] == 56 and len(tabs3[base]["traffic_series"]) == 120 and bool(summ3["portfolio_series"]),
+          "daily traffic from both engines reaches the dashboard with a statistically clear drop called")
+    check([f["kind"] for f in s3["bing_health"]["findings"]] == ["index_bloat"] and s3["bing_health"]["in_index"] == 5000
+          and s3["data_health"]["indexable"] > 0,
+          "Bing's index size and crawl report reach the dashboard, and a 300x index is flagged as bloat")
+    lost = {urlsplit(x["url"]).path: x for x in rev3["losers"]}
+    check(lost["/good-indexed/"]["delta"] == -6 and lost["/dup-b/"]["delta"] == -3 and rev3["lost_by_kind"]["live"]["clicks_lost"] == 9
+          and lost["/good-indexed/"]["google_prev"] == 9,
+          "per-page before/after windows find the pages that lost clicks and say which engine they lost them on")
     pot = s3["potential"].get("add_links") or {}
     check(pot.get("n", 0) >= 1 and 0 < pot.get("pages", 0) <= pot["n"] and isinstance(pot["pages"], float)
           and s3["flags"].get("ORPHAN", 0) >= 1 and "IGNORED" not in s3["flags"],

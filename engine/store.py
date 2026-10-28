@@ -69,6 +69,27 @@ CREATE TABLE IF NOT EXISTS link_ops(id TEXT PRIMARY KEY, site TEXT, source TEXT,
   post_type TEXT, status TEXT, applied_at TEXT, backup TEXT, result TEXT);
 CREATE INDEX IF NOT EXISTS link_ops_target_status_at ON link_ops(target, status, applied_at);
 
+-- Search traffic per day and engine (Bing: GetRankAndTrafficStats; Google: Search Analytics by date). Re-pulled
+-- windows overwrite, so late revisions by the engines are picked up.
+CREATE TABLE IF NOT EXISTS traffic_daily(site TEXT, day TEXT, src TEXT, clicks INT, impr INT, PRIMARY KEY(site, day, src));
+
+-- Bing's own daily crawl report for a site: pages it holds in its index, what it crawled and what went wrong.
+CREATE TABLE IF NOT EXISTS bing_crawl(site TEXT, day TEXT, crawled INT, in_index INT, errors INT, c4xx INT, c5xx INT,
+  robots INT, timeouts INT, dns INT, in_links INT, PRIMARY KEY(site, day));
+
+-- Per page: clicks and impressions in the latest 28 days of data vs the 28 before (per engine), for revival analysis.
+CREATE TABLE IF NOT EXISTS page_trend(url TEXT PRIMARY KEY, site TEXT, b_now INT DEFAULT 0, b_prev INT DEFAULT 0,
+  bi_now INT DEFAULT 0, bi_prev INT DEFAULT 0, g_now INT DEFAULT 0, g_prev INT DEFAULT 0, gi_now INT DEFAULT 0,
+  gi_prev INT DEFAULT 0, b_end TEXT, g_end TEXT, at TEXT);
+CREATE INDEX IF NOT EXISTS page_trend_site ON page_trend(site);
+
+-- URLs the engines report under a second spelling of a listed page (no trailing slash, say). Their clicks are credited to
+-- the listed URL; whether the variant answers 200 (served twice) or redirects is a finding in its own right.
+CREATE TABLE IF NOT EXISTS url_variants(variant TEXT PRIMARY KEY, site TEXT, listed TEXT);
+
+-- What a live request to a URL that earned clicks but is unknown to the engine returned (gone, moved, or just unlisted).
+CREATE TABLE IF NOT EXISTS trend_probe(url TEXT PRIMARY KEY, status INT, location TEXT, at TEXT);
+
 -- The indexation-odds model's last training (coefficients, quality).
 CREATE TABLE IF NOT EXISTS model(trained_at TEXT, data TEXT);
 """
