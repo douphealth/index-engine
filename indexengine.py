@@ -188,7 +188,7 @@ def pipeline(db, args, sites):
         revival.probe_missing(db, sites)                             # live GETs for URLs that earned clicks but are unlisted
     results, intel = brain.analyze(db, config.SITES)
     if props or bsites:
-        revival.raise_alerts(db, results)
+        revival.raise_alerts(db, results, set(sites))
     m = intel["model"]
     log(f"[model] trained on {m.get('n')} Google verdicts ({m.get('indexed')} indexed), held-out AUC {m.get('auc')}, "
         f"quality {m.get('quality')}; {len(intel['actions'])} best next actions")

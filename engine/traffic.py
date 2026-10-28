@@ -13,7 +13,7 @@ import datetime as dt
 import math
 
 from .bing import bing_date
-from .util import log, now_iso
+from .util import days_since, log, now_iso
 
 SPAN = 28                  # days per comparison window
 KEEP_DAYS = 540
@@ -148,8 +148,12 @@ def site_traffic(db, site, series_days=120):
         cp, ip, dp = db.execute(q, (site, src, p0, p1)).fetchone()
         first = db.execute("SELECT MIN(day) FROM traffic_daily WHERE site=? AND src=?", (site, src)).fetchone()[0]
         hist = (dt.date.fromisoformat(end) - dt.date.fromisoformat(first)).days + 1
+        clicks, impressions = compare(cn, cp), compare(inow, ip)
+        if hist < 2 * SPAN:        # the earlier window would be partial: never call a trend from it
+            for v in (clicks, impressions):
+                v.update(verdict="too_little_data", z=None, confidence=None, reason=f"only {hist} days of history; 56 are needed")
         out[src] = {"end": end, "now": [n0, n1], "prev": [p0, p1], "clicks_now": cn, "clicks_prev": cp, "impr_now": inow,
-                    "impr_prev": ip, "clicks": compare(cn, cp), "impressions": compare(inow, ip), "history_days": hist,
+                    "impr_prev": ip, "clicks": clicks, "impressions": impressions, "history_days": hist,
                     "days_reported_now": dn, "days_reported_prev": dp, "enough_history": hist >= 2 * SPAN}
     ends = [out[s]["end"] for s in ("bing", "google") if out.get(s)]
     series = []
@@ -216,7 +220,6 @@ def data_health(db, site):
                            (site, *sorted(BLOCKERS))).fetchone()[0]
     ages = [r[0] for r in db.execute("""SELECT g.inspected_at FROM gsc g JOIN triage t ON t.url=g.url
                                         WHERE t.site=? AND g.inspected_at IS NOT NULL""", (site,))]
-    from .util import days_since
     days = sorted(d for d in (days_since(a) for a in ages) if d is not None)
     unverified = db.execute("SELECT COUNT(*) FROM triage WHERE site=? AND bucket IN ('NOT_INSPECTED')", (site,)).fetchone()[0]
     return {"indexable": indexable, "unverified": unverified,

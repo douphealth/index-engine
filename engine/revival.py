@@ -15,11 +15,11 @@ import datetime as dt
 
 import requests
 
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from . import config, traffic
 from .triage import BLOCKERS
-from .util import days_since, log, now_iso
+from .util import bare_host, log, norm, now_iso
 
 MIN_LOSS = 3               # clicks a page must have lost to be listed
 TOP = 40
@@ -87,10 +87,9 @@ def analyze(db, site, tr=None):
     probes = _probes(db, site)
     trend = {r["url"]: (r["p"], r["n"]) for r in db.execute(
         "SELECT url, b_prev + g_prev AS p, b_now + g_now AS n FROM page_trend WHERE site=?", (site,))}
-    for pr in probes.values():
+    for url, pr in probes.items():
         if pr.get("location"):
-            from .util import norm
-            t = trend.get(norm(pr["location"]))
+            t = trend.get(norm(urljoin(url, pr["location"])))
             pr["target"] = {"prev": t[0], "now": t[1]} if t else None
     by_kind, gained_by_kind = {}, {}
     page_now = page_prev = 0
@@ -166,6 +165,8 @@ def probe_missing(db, sites, session=None, limit=PROBE_PER_SITE):  # noqa: C901
                              WHERE p.site=? AND u.url IS NULL AND lost >= 1 AND (q.at IS NULL OR julianday('now') - julianday(q.at) > 7)
                              ORDER BY lost DESC LIMIT ?""", (site, limit)).fetchall()
         for c in cand:
+            if bare_host(urlsplit(c["url"]).netloc) != bare_host(site.split("://")[-1].split("/")[0]):
+                continue                       # only ever ask the site's own host
             try:
                 r = s.get(c["url"], allow_redirects=False, timeout=(8, 20), headers={"User-Agent": config.UA})
                 status, loc = r.status_code, (r.headers.get("Location") or "")[:300]
@@ -194,12 +195,14 @@ def _recent(db, site, kind, days):
     return db.execute("SELECT 1 FROM alerts WHERE site=? AND kind=? AND julianday('now') - julianday(at) < ?", (site, kind, days)).fetchone() is not None
 
 
-def raise_alerts(db, results):
+def raise_alerts(db, results, only=None):
     """Alerts for clear traffic changes (weekly at most) and Bing health findings (monthly at most: they are chronic
     conditions, and repeating them weekly would bury the news)."""
     from . import alerts
     n = 0
     for site, res in results.items():
+        if only is not None and site not in only:
+            continue                           # paused sites get no alerts
         tr, health = res.get("traffic") or {}, res.get("health")
         for src, name in (("bing", "Bing"), ("google", "Google")):
             t = tr.get(src)

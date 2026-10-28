@@ -112,6 +112,14 @@ class PullAndReadTests(unittest.TestCase):
         self.assertEqual((dt.date.fromisoformat("2026-10-26") - second[1]).days, 60)
         self.assertEqual(second[2], TODAY - dt.timedelta(days=2))
 
+    def test_a_short_history_never_produces_a_trend(self):
+        rows = [{"Date": bing_day(d), "Clicks": 5 if d < dt.date(2026, 10, 1) else 80, "Impressions": 500} for d in days(40)]
+        traffic.pull(self.db, None, {}, FakeBing(rows), {"a.example": "https://a.example/"}, today=TODAY)
+        t = traffic.site_traffic(self.db, "a.example")["bing"]
+        self.assertFalse(t["enough_history"])
+        self.assertEqual(t["clicks"]["verdict"], "too_little_data")      # 28 days would look like a 16x rise; it is only a young history
+        self.assertIn("40 days", t["clicks"]["reason"])
+
     def test_failed_source_does_not_stop_the_others(self):
         class Boom(FakeBing):
             def rank_traffic(self, url):
@@ -264,6 +272,13 @@ class RevivalTests(unittest.TestCase):
         self.assertEqual(f[0]["count"], 4)
         self.assertIn("checked 4 of 5 so far", f[0]["message"])
 
+    def test_a_relative_redirect_target_is_matched_to_its_page(self):
+        old = self.page("/old/", None, 0, 5, listed=False)
+        self.page("/new/", "INDEXED", 9, 1)
+        self.db.execute("INSERT INTO trend_probe VALUES(?,301,'/new/',datetime('now'))", (old,))
+        top = {x["url"].rsplit("/", 2)[1]: x for x in revival.analyze(self.db, self.SITE)["losers"]}
+        self.assertIn("(that page earned 1 clicks before and 9 now)", top["old"]["todo"])
+
     def test_headline_states_only_what_is_clear(self):
         tr = traffic.site_traffic(self.db, self.SITE)
         self.assertIn("Too little traffic", revival.headline(self.SITE, tr, {}, None))
@@ -304,8 +319,10 @@ class AliasAndProbeTests(unittest.TestCase):
                 asked.append((url, kw.get("allow_redirects")))
                 return Resp(404) if url.endswith("gone") else Resp(301, "https://a.example/post/")
 
+        self.db.execute("INSERT INTO page_trend(url, site, b_now, b_prev) VALUES('https://elsewhere.example/x','a.example',0,9)")
         revival.probe_missing(self.db, ["a.example"], session=Session())
         revival.probe_missing(self.db, ["a.example"], session=Session())
+        self.assertNotIn("https://elsewhere.example/x", [u for u, _ in asked])                                   # never another host
         self.assertEqual(sorted(u for u, _ in asked), ["https://a.example/gone", "https://a.example/post"])   # the second pass asked nothing
         self.assertTrue(all(redirects is False for _, redirects in asked))                                       # never follows redirects
         self.assertEqual({r["url"][-4:]: r["status"] for r in self.db.execute("SELECT url, status FROM trend_probe")}, {"gone": 404, "post": 301})
@@ -339,6 +356,10 @@ class AlertTests(unittest.TestCase):
     def test_a_severe_drop_on_a_real_site_is_high(self):
         revival.raise_alerts(self.db, self.results(now=400, prev=1000))
         self.assertEqual(self.db.execute("SELECT severity FROM alerts").fetchone()[0], "high")
+
+    def test_paused_sites_get_no_alerts(self):
+        revival.raise_alerts(self.db, self.results(), only={"other.example"})
+        self.assertEqual(self.kinds(), [])
 
     def test_stable_or_tiny_traffic_raises_nothing(self):
         revival.raise_alerts(self.db, self.results(now=980, prev=1000))
