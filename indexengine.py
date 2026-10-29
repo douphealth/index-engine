@@ -375,7 +375,7 @@ def tick(args):
     state = safe(dash.state, what="pull state") if dash else None
     # When the dashboard cannot be reached, keep honouring the last settings (paused / disabled sites) it gave us.
     settings = (state.get("settings") or {}) if state is not None else cached_settings(db)
-    cmd = next((c for c in (state or {}).get("commands", []) if c.get("kind") == "run"), None)
+    cmd = next((c for c in (state or {}).get("commands", []) if c.get("kind") in ("run", "doctor")), None)
     if cmd:
         o = cmd.get("options") or {}
         argv = ["run"] + (["--site", o["site"]] if o.get("site") else []) + (["--no-submit"] if o.get("no_submit") else []) \
@@ -386,7 +386,13 @@ def tick(args):
             log("[queue] command not claimed; skipping execution to prevent duplicate writes")
             return
         try:
-            run(build_parser().parse_args(argv), dash, state, trigger="dashboard")
+            if cmd.get("kind") == "doctor":
+                from engine import doctor
+                result = doctor.run(online=True, publish=True)
+                if not isinstance(result, dict) or not result.get("uploaded"):
+                    raise RuntimeError("connection diagnostic report was not confirmed uploaded")
+            else:
+                run(build_parser().parse_args(argv), dash, state, trigger="dashboard")
             safe(dash.command, cmd["id"], "done", "ok", what="close command")
         except Skipped as e:
             safe(dash.command, cmd["id"], "done", f"skipped: {e}", what="close command")

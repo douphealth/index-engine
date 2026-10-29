@@ -1229,7 +1229,15 @@ function viewSettings() {
 
 function viewConnections() {
   const r = S.health;
+  const queueCheck = async () => {
+    try {
+      const result = await api.post("/api/command", { kind: "doctor" });
+      toast(result.note || "Connection check queued on the local engine");
+      await loadAll(); render();
+    } catch (e) { toast("Cannot queue connection check: " + e.message, 6500); }
+  };
   if (!r) return h("div", { class: "stack" }, h("h1", { text: "Connections" }),
+    h("button", { class: "btn primary", onclick: queueCheck }, "Check connections now"),
     h("div", { class: "card stack" }, h("h2", { text: "No verified connection report yet" }),
       h("p", { class: "muted", text: "Run python indexengine.py doctor on the computer running the engine. The report uses read-only API checks and uploads no credential values." }),
       h("a", { class: "btn", href: "#/runs", text: "See engine runs" })));
@@ -1239,6 +1247,7 @@ function viewConnections() {
   const rows = (r.sites || []).map(site => h("tr", {},
     h("td", { text: site.site }), ...["google", "bing", "indexnow", "wordpress"].map(k => h("td", {}, status(site[k] || "unverified")))));
   return h("div", { class: "stack" }, h("h1", { text: "Connections" }),
+    h("button", { class: "btn primary", onclick: queueCheck }, "Check connections now"),
     h("p", { class: "muted", text: "Read-only connection checks; configured is not verified. No credentials are stored in this report." }),
     h("div", { class: "row" }, h("span", { class: "pill", text: "Checked: " + (r.checked_at ? new Date(r.checked_at).toLocaleString() : "unknown") }),
       h("span", { class: "pill", text: "Mode: " + (r.mode || "unknown") })),
