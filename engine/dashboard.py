@@ -26,7 +26,7 @@ class Dashboard:
         SECRETS.append(token)
         self.s = requests.Session()
         self.s.headers.update({"Authorization": f"Bearer {token}", "X-Engine-Host": socket.gethostname()[:60],
-                               "User-Agent": config.UA})
+                               "User-Agent": config.UA, "X-Engine-Capabilities": "run,doctor"})
 
     @classmethod
     def from_config(cls):
