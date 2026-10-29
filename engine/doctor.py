@@ -114,9 +114,16 @@ def collect(online=True, dash=None, check_indexnow=True):
             row["indexnow"] = "unverified"
         else:
             try:
-                db = store.connect()
+                # Read-only diagnostics must not create or alter the local SQLite state.
+                # Key discovery needs only public key files and site metadata, so use
+                # an existing database in read-only mode when available.
+                import sqlite3
+                if not config.DB_PATH.is_file():
+                    raise FileNotFoundError("local engine database unavailable")
+                db = sqlite3.connect(f"file:{config.DB_PATH.as_posix()}?mode=ro", uri=True)
+                db.row_factory = sqlite3.Row
                 try:
-                    result = indexnow.detect_key(db, site)
+                    result = indexnow.detect_key(db, site, persist=False)
                 finally:
                     db.close()
                 row["indexnow"] = "ok" if result else "missing"
