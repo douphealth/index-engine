@@ -148,4 +148,5 @@ def run(online=True, publish=True):
             pass
     print_report(report)
     print("Dashboard health snapshot: " + ("uploaded" if uploaded else "not uploaded (local-only result)"))
+    report["uploaded"] = uploaded
     return report
