@@ -18,11 +18,17 @@ export const onRequestPost = handle(async ({ request, env }) => {
       .bind(now(), Number(body.cancel)).run();
     return json({ ok: Boolean(r.meta.changes) });
   }
-  if (body.kind !== "run") throw new HttpError(400, "unknown command");
+  if (!["run", "doctor"].includes(body.kind)) throw new HttpError(400, "unknown command");
+  if (body.kind === "doctor") {
+    const latest = await env.DB.prepare("SELECT value FROM settings WHERE key = 'engine_last_seen'").first();
+    let capabilities = [];
+    try { capabilities = JSON.parse(latest?.value || "{}").capabilities || []; } catch { /* unavailable */ }
+    if (!capabilities.includes("doctor")) throw new HttpError(409, "Local engine has not confirmed doctor support; update and start the engine first");
+  }
   await sweepStuckCommands(env).run();
   const pending = await env.DB.prepare("SELECT * FROM commands WHERE status IN ('pending', 'running') ORDER BY id LIMIT 1").first();
   if (pending) return json({ ok: true, command: pending, note: "a run is already queued or running" });
-  const options = JSON.stringify(cleanOptions(body.options));
-  const r = await env.DB.prepare("INSERT INTO commands (created_at, kind, options) VALUES (?, 'run', ?)").bind(now(), options).run();
+  const options = JSON.stringify(body.kind === "doctor" ? {} : cleanOptions(body.options));
+  const r = await env.DB.prepare("INSERT INTO commands (created_at, kind, options) VALUES (?, ?, ?)").bind(now(), body.kind, options).run();
   return json({ ok: true, id: r.meta.last_row_id });
 });
