@@ -389,8 +389,8 @@ def tick(args):
             if cmd.get("kind") == "doctor":
                 from engine import doctor
                 result = doctor.run(online=True, publish=True)
-                if not isinstance(result, dict):
-                    raise RuntimeError("connection diagnostic did not produce a report")
+                if not isinstance(result, dict) or not result.get("uploaded"):
+                    raise RuntimeError("connection diagnostic report was not confirmed uploaded")
             else:
                 run(build_parser().parse_args(argv), dash, state, trigger="dashboard")
             safe(dash.command, cmd["id"], "done", "ok", what="close command")
