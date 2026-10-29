@@ -56,7 +56,7 @@ def _verify(location, expected=None):
     return key
 
 
-def detect_key(db, site):
+def detect_key(db, site, persist=True):
     meta = store.get_meta(db, site)
     base = meta.get("base") or config.site_base(site)
     host = urlsplit(base).netloc
@@ -78,7 +78,9 @@ def detect_key(db, site):
         key = _verify(loc, expected)
         if key:
             SECRETS.append(key)
-            store.set_meta(db, site, indexnow="ok")
+            if persist:
+                store.set_meta(db, site, indexnow="ok")
             return host, key, loc
-    store.set_meta(db, site, indexnow="no key file found")
+    if persist:
+        store.set_meta(db, site, indexnow="no key file found")
     return None
