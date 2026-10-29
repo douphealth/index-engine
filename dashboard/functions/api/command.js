@@ -23,7 +23,11 @@ export const onRequestPost = handle(async ({ request, env }) => {
     const latest = await env.DB.prepare("SELECT value FROM settings WHERE key = 'engine_last_seen'").first();
     let capabilities = [];
     try { capabilities = JSON.parse(latest?.value || "{}").capabilities || []; } catch { /* unavailable */ }
-    if (!capabilities.includes("doctor")) throw new HttpError(409, "Local engine has not confirmed doctor support; update and start the engine first");
+    let heartbeatAt = null;
+    try { heartbeatAt = JSON.parse(latest?.value || "{}").at || null; } catch { /* unavailable */ }
+    const age = heartbeatAt ? Date.now() - Date.parse(heartbeatAt) : Infinity;
+    if (!capabilities.includes("doctor") || !Number.isFinite(age) || age < 0 || age > 25 * 60 * 1000)
+      throw new HttpError(409, "Compatible local engine has not checked in recently; update and start the engine first");
   }
   await sweepStuckCommands(env).run();
   const pending = await env.DB.prepare("SELECT * FROM commands WHERE status IN ('pending', 'running') ORDER BY id LIMIT 1").first();
