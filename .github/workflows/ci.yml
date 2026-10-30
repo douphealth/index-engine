@@ -45,7 +45,8 @@ jobs:
         run: npm run build
 
   browser:
-    runs-on: ubuntu-latest
+    # Match the explicitly pinned Playwright release; ubuntu-latest can change major versions.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
