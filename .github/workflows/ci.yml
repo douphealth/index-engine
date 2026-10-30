@@ -5,24 +5,27 @@ on:
     branches: [main]
     paths: ["engine/**", "tests/**", "indexengine.py", "requirements.txt", "dashboard/**", ".github/workflows/ci.yml"]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   selftest:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      # Offline: a fake site on localhost plus fake Google, Bing and IndexNow clients.
       - run: python -m unittest discover -s tests -v
       - run: python indexengine.py selftest
 
   dashboard:
-    # The page scripts are served as they are and the Worker is built by the same command that deploys: check both here,
-    # so a typo cannot reach production.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: dashboard
@@ -36,7 +39,28 @@ jobs:
       - run: npm ci
       - name: Syntax-check the page scripts
         run: for f in public/*.js; do node --check "$f"; done
-      - name: Test indexation workflow guidance
+      - name: Test workflow guidance, evidence and queue behavior
         run: node --test tests/*.test.cjs
       - name: Build the Worker
         run: npm run build
+
+  browser:
+    # Match the explicitly pinned Playwright release; ubuntu-latest can change major versions.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install playwright==1.55.0
+      - run: python -m playwright install --with-deps chromium
+      - name: Validate desktop and mobile workflows with synthetic data
+        run: python tests/qa_workspace_browser.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: workspace-browser-fixtures
+          path: qa-output/
+          retention-days: 7
+          if-no-files-found: ignore

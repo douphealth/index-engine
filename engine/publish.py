@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Shape one run's results for the dashboard: a portfolio summary (with the model's view, best next actions and
-measured impact) plus one compact URL table per site."""
+"""Publish source-backed portfolio results and per-URL evidence without credentials."""
 from collections import Counter
 
 from . import config, report
 from .triage import BLOCKERS
 
+# The original columns retain their positions for older dashboard clients.
 COLS = ["url", "bucket", "flags", "reason", "action", "value", "google", "bing", "kind", "in_sitemap", "words", "title",
-        "odds", "why", "trust"]
+        "odds", "why", "trust", "checked_at", "http_status", "canonical_state", "canonical", "robots_google", "noindex",
+        "inspected_at", "google_verdict", "google_coverage", "google_error", "google_canonical", "last_crawl",
+        "gsc_clicks", "gsc_impr", "gsc_at", "bing_clicks", "bing_impr", "bing_at", "linked_at"]
 KNOWN = ("INDEXED", "CRAWLED_NOT_INDEXED", "DISCOVERED_NOT_INDEXED", "UNKNOWN_TO_GOOGLE", "GOOGLE_STALE", "GOOGLE_PICKED_OTHER")
 
 
 def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
-    """Return (summary, {site: site_table}, run_totals)."""
+    """Return (summary, {site: site_table}, run_totals). Missing evidence stays missing."""
     submitted = submitted or {}
     disabled = set(disabled or ())
     intel = intel or {}
@@ -25,8 +27,18 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
         n_sub = db.execute("SELECT COUNT(DISTINCT url) FROM submissions s JOIN urls u USING(url) "
                            "WHERE u.site=? AND s.http_status BETWEEN 200 AND 299", (site,)).fetchone()[0]
         rows = db.execute("""SELECT t.url, t.bucket, t.flags, t.reason, t.action, t.value, t.google, t.bing, u.kind, u.in_sitemap,
-                                    a.words, a.title, t.odds, t.why, a.trust
+                                    a.words, a.title, t.odds, t.why, a.trust, a.checked_at, a.status AS http_status,
+                                    a.canonical_state, a.canonical, a.robots_google, a.noindex,
+                                    g.inspected_at, g.verdict AS google_verdict, g.coverage AS google_coverage,
+                                    g.error AS google_error, g.google_canonical, g.last_crawl,
+                                    CASE WHEN p.gsc_at IS NOT NULL THEN p.gsc_clicks END AS gsc_clicks,
+                                    CASE WHEN p.gsc_at IS NOT NULL THEN p.gsc_impr END AS gsc_impr, p.gsc_at,
+                                    CASE WHEN p.bing_at IS NOT NULL THEN p.bing_clicks END AS bing_clicks,
+                                    CASE WHEN p.bing_at IS NOT NULL THEN p.bing_impr END AS bing_impr, p.bing_at,
+                                    (SELECT MAX(l.applied_at) FROM link_ops l
+                                     WHERE l.target=t.url AND l.status='applied') AS linked_at
                              FROM triage t JOIN urls u ON u.url=t.url LEFT JOIN audits a ON a.url=t.url
+                             LEFT JOIN gsc g ON g.url=t.url LEFT JOIN perf p ON p.url=t.url
                              WHERE t.site=? ORDER BY t.value DESC""", (site,)).fetchall()
         sites.append({
             "site": site, "urls": snap["total"], "counts": dict(res["counts"]), "conflicts": snap.get("conflicts", 0),
@@ -45,7 +57,7 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             "diagnosis": [[k, m] for k, m in res["diagnosis"]],
             "sitemaps": [{k: sm.get(k) for k in ("path", "lastDownloaded", "errors", "warnings")} for sm in meta.get("gsc_sitemaps") or []],
         })
-        tables[site] = {"site": site, "generated_at": generated_at, "cols": COLS,
+        tables[site] = {"site": site, "generated_at": generated_at, "schema_version": 2, "cols": COLS,
                         "rows": [[r[c] if r[c] is not None else "" for c in COLS] for r in rows],
                         "plan": res["plan"][:200],
                         "traffic_series": (res.get("traffic") or {}).get("series") or [],
@@ -83,7 +95,7 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             t = series.setdefault(d, [0, 0, 0, 0])
             t[0] += bc; t[1] += bi; t[2] += gc; t[3] += gi
     portfolio_series = [[d, *v] for d, v in sorted(series.items())]
-    summary = {"generated_at": generated_at, "sites": sites, "requests": requests_, "portfolio_series": portfolio_series,
+    summary = {"generated_at": generated_at, "evidence_schema": 2, "sites": sites, "requests": requests_, "portfolio_series": portfolio_series,
                "model": intel.get("model"), "actions": intel.get("actions") or [], "impact": imp}
     return summary, tables, {"totals": totals, "sites": per_site}
 

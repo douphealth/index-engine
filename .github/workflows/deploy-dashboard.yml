@@ -1,18 +1,24 @@
 name: Deploy dashboard
 
-# Production is a Worker with static assets (dashboard/wrangler.worker.jsonc): the Cloudflare account is at its
-# 100 Pages-project cap. The same functions/ folder is compiled by `wrangler pages functions build`.
 on:
   push:
     branches: [main]
-    paths: ["dashboard/**", ".github/workflows/deploy-dashboard.yml"]
+    paths: ["dashboard/**", ".github/workflows/deploy-dashboard.yml", ".github/workflows/ci.yml"]
   workflow_dispatch:
 
 concurrency: deploy-dashboard
 
+permissions:
+  contents: read
+
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
   deploy:
+    needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: dashboard
@@ -41,3 +47,7 @@ jobs:
           test "$code" = "401" -o "$code" = "429" || { echo "expected 401 (or 429) for a wrong password, got $code"; exit 1; }
           curl -s https://index-engine-dashboard.papalexios.workers.dev/login | grep -q "Index Engine" || { echo "the login page did not load"; exit 1; }
           curl -s https://index-engine-dashboard.papalexios.workers.dev/login | grep -q "login.js" || { echo "the login page is missing its script"; exit 1; }
+          for path in workspace workspace.js workspace-model.js; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "https://index-engine-dashboard.papalexios.workers.dev/$path")
+            test "$code" = "302" || { echo "expected authentication redirect for $path, got $code"; exit 1; }
+          done

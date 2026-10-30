@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow"><title>Indexation Workspace | Index Engine</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/workspace.css">
+<script src="/workspace-model.js" defer></script><script src="/workspace.js" defer></script>
+</head>
+<body>
+<a href="#main" class="skip">Skip to issues</a>
+<header class="header"><a class="brand" href="/">Index Engine <span>WORKSPACE</span></a>
+<nav aria-label="Main"><a href="/workspace" aria-current="page">Issues</a><a href="/#/revival">Traffic recovery</a><a href="/#/links">Link approvals</a><a href="/#/connections">Connections</a><a href="/#/runs">Runs</a><a href="/#/settings">Settings</a></nav>
+<button id="theme" class="button" type="button">Change theme</button></header>
+<main id="main" tabindex="-1">
+<section class="hero"><div><p class="eyebrow">YOUR INDEXATION OPERATIONS</p><h1>One queue. Clear evidence.<br>One next action.</h1><p>Review the right URL, address its blocker, then check what Google actually reports. No submission counts disguised as results.</p></div><div class="hero-actions"><button class="button primary" id="refresh" type="button">Refresh evidence</button><button class="button" id="doctor" type="button">Check connections</button><span id="heartbeat">Checking engine status...</span></div></section>
+<div id="notice" role="status" aria-live="polite"></div><div id="coverage" class="coverage"></div><section id="metrics" class="metrics" aria-label="Loaded evidence summary"></section>
+<section class="workflow" aria-label="Work in this order"><span><b>1</b> Restore access</span><span><b>2</b> Review exclusions</span><span><b>3</b> Strengthen pages</span><span><b>4</b> Verify later evidence</span></section>
+<section class="filters" aria-label="Issue filters">
+<label>Website<select id="site"><option value="">All websites</option></select></label>
+<label>Issue type<select id="group"><option value="">All types</option><option value="technical">Availability</option><option value="recovery">Broken pages</option><option value="exclusions">Review exclusions</option><option value="discovery">Discovery / canonical</option><option value="content">Content review</option><option value="evidence">Missing evidence</option><option value="monitor">Monitor indexed pages</option></select></label>
+<label>Workflow<select id="mode"><option value="review">Needs review</option><option value="followup">Tracked follow-up</option><option value="all">All loaded URLs</option></select></label>
+<label class="search">Find a URL or title<input id="search" type="search" placeholder="Search your websites" autocomplete="off"></label>
+<div class="options"><label><input id="paused" type="checkbox">Include paused sites</label><label><input id="ignored" type="checkbox">Include ignored URLs</label><button class="button" id="export" type="button">Export filtered CSV</button></div>
+</section>
+<section class="work-grid"><div class="panel queue"><div class="panel-title"><h2>Prioritized issues</h2><span id="count">Loading...</span></div><p class="helper">Availability first, then broken pages and exclusions. Within a priority, recorded search clicks come first. Intentional exclusions need review, not automatic removal.</p><div class="table-scroll"><table><thead><tr><th scope="col">Page &amp; website</th><th scope="col">Recorded state</th><th scope="col">Evidence</th></tr></thead><tbody id="rows"></tbody></table></div><div class="pager"><button class="button" id="previous" type="button">Previous</button><span id="page"></span><button class="button" id="next" type="button">Next</button></div></div><aside id="detail" class="panel detail" aria-label="Selected URL"></aside></section>
+<footer>Source: the latest uploaded engine snapshots and saved dashboard decisions. A fresh upload does not guarantee a fresh crawl or inspection. Google determines indexing.</footer>
+</main>
+</body></html>
