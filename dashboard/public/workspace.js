@@ -2,7 +2,7 @@
 "use strict";
 const W = globalThis.IndexWorkspace;
 const $ = id => document.getElementById(id);
-const state = { summary: null, owner: {}, health: null, tables: new Map(), items: [], coverage: [], errors: [], page: 0, selected: null, loading: false, saving: false, dirty: false, epoch: 0 };
+const state = { summary: null, owner: {}, health: null, tables: new Map(), items: [], coverage: [], errors: [], page: 0, selected: null, loading: false, saving: false, dirty: false, epoch: 0, signingOut: false };
 const PAGE = 40;
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -22,11 +22,15 @@ const val = v => v === "" || v === null || v === undefined ? "Not supplied" : St
 function link(href, text) { return el("a", { href, text, class: "button", ...(href.startsWith("http") ? { target: "_blank", rel: "noopener noreferrer" } : {}) }); }
 function button(text, click, primary = false, disabled = false) { return el("button", { type: "button", class: "button" + (primary ? " primary" : ""), onclick: click, disabled, text }); }
 async function request(path, data) {
+  if (state.signingOut) throw new Error("Sign in again to continue.");
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 25000);
   try {
     const r = await fetch(path, { credentials: "same-origin", signal: ctl.signal,
       ...(data ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) } : {}) });
-    if (r.status === 401) { location.assign("/login"); throw new Error("Sign in again to continue."); }
+    if (r.status === 401) {
+      if (!state.signingOut) { state.signingOut = true; location.assign("/login"); }
+      throw new Error("Sign in again to continue.");
+    }
     if (r.status === 404 && path.startsWith("/api/data/")) return null;
     const isJSON = (r.headers.get("Content-Type") || "").includes("json");
     const payload = isJSON ? await r.json() : null;
@@ -85,7 +89,8 @@ function render() {
   if (!state.dirty) showDetail(rows.find(r => r.url === state.selected));
 }
 async function mutate(path, data, message) {
-  if (state.saving) return;
+  if (state.saving || state.signingOut) return;
+  if (state.dirty && data.action !== "note") { notice("Save your note before running another action, or refresh to discard it.", true); return; }
   state.saving = true;
   const controls = Array.from(document.querySelectorAll("#detail button,#doctor"), b => [b, b.disabled]);
   controls.forEach(([b]) => b.disabled = true);
