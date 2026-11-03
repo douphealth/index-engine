@@ -28,8 +28,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from engine import (alerts, audit, bing, brain, config, discover, fresh, google, links, publish, report,  # noqa: E402
-                    revival, store, submit, traffic, wp)
+from engine import (aiaccess, alerts, audit, bing, brain, config, discover, fresh, google, links, publish,  # noqa: E402
+                    queries, report, revival, store, submit, traffic, wp)
 from engine.dashboard import Dashboard, apply_state, cached_settings, safe  # noqa: E402
 from engine.util import load_credentials, log, log_text, now_iso, open_log, parse_ts, utf8_stdout  # noqa: E402
 
@@ -170,8 +170,12 @@ def pipeline(db, args, sites):
         traffic.pull(db, gclient, props, bclient, bsites)          # daily history first: page windows end on its last day
     if props:
         google.pull_performance(db, gclient, props)
+        queries.pull_google(db, gclient, props)                    # every (query, page) pair: one call per property
     if bsites:
         bing.pull_performance(db, bclient, bsites)
+        queries.pull_bing(db, bclient, bsites, max_total=QUERY_DAILY_MAX)   # more pages are read on idle ticks
+    if not args.no_creds:
+        aiaccess.run(db, sites)                                      # can search and AI crawlers read each site?
     if props and args.inspect_max != 0:
         google.inspect_due(db, gclient, props, max_per_site=args.inspect_max, include_taxonomy=args.include_taxonomy)
 
@@ -269,22 +273,26 @@ def run(args, dash=None, state=None, trigger="manual"):
 
 
 TRICKLE_MAX = 15            # Bing crawl-status lookups per tick
+QUERY_TRICKLE = 6           # Bing page-query reads per idle tick (about 2 s each): ~800 a day in time the PC is idle anyway
+QUERY_DAILY_MAX = 40        # ... and in the daily run, so a fresh install has data the same day
 
 
 def bing_trickle(args, db, sites, settings):
-    """Between daily runs: a few Bing crawl-status lookups on every tick that has nothing else to do. Bing throttles
-    GetUrlInfo for the whole account (it stops after about ten calls in a burst), so asking a little, often, and
-    stopping at the first throttle finds the highest rate Bing really allows without ever hammering it.
-    Read-only: it stays on while everything else is paused."""
+    """Between daily runs: a few Bing crawl-status lookups and page-query reads on every tick that has nothing else to
+    do. Bing throttles GetUrlInfo for the whole account (it stops after about ten calls in a burst), so asking a little,
+    often, and stopping at the first throttle finds the highest rate Bing really allows without ever hammering it.
+    Read-only: it stays on while everything else is paused. Returns (crawl checks, pages whose queries were read)."""
     if args.no_creds or args.no_bing or settings.get("bing_trickle") is False:
-        return 0
+        return 0, 0
     _, keys = load_credentials()
     client = bing.working_client(keys) if keys else None
     bsites = {s: store.get_meta(db, s).get("bing_site") for s in sites}
     bsites = {s: burl for s, burl in bsites.items() if burl}           # resolved by the daily run
     if not client or not bsites:
-        return 0
-    return bing.check_url_info(db, client, bsites, max_per_site=50, max_total=TRICKLE_MAX)
+        return 0, 0
+    n = bing.check_url_info(db, client, bsites, max_per_site=50, max_total=TRICKLE_MAX)
+    q = queries.pull_bing(db, client, bsites, max_total=QUERY_TRICKLE, max_per_site=QUERY_TRICKLE)
+    return n, q
 
 
 def quick(args, dash, state, settings):
@@ -299,8 +307,9 @@ def quick(args, dash, state, settings):
         changes = fresh.changed(db, sites) if settings.get("fresh_check", True) else {}
         if not changes and not touched:
             db.commit()
-            n = bing_trickle(args, db, sites, settings)
-            print(f"Quick tick: nothing new{f'; {n} Bing crawl checks' if n else ''}.")
+            n, q = bing_trickle(args, db, sites, settings)
+            extra = [f"{n} Bing crawl checks"] * bool(n) + [f"Bing queries read for {q} pages"] * bool(q)
+            print(f"Quick tick: nothing new{'; ' + ', '.join(extra) if extra else ''}.")
             return
         open_log("fresh")
         log(f"Quick tick: {sum(len(v) for v in changes.values())} new/updated URLs on {len(changes)} sites; "

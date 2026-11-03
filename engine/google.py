@@ -62,6 +62,22 @@ class GSCClient:
                 return rows
             start_row += len(got)
 
+    def search_queries(self, prop, start, end):
+        """Clicks, impressions and average position per (query, page), final data only."""
+        url = f"{API}/sites/{quote(prop, safe='')}/searchAnalytics/query"
+        rows, start_row = [], 0
+        while True:
+            body = {"startDate": str(start), "endDate": str(end), "dimensions": ["query", "page"], "dataState": "final",
+                    "rowLimit": 25000, "startRow": start_row}
+            r = self._s().post(url, json=body, timeout=180)
+            if r.status_code != 200:
+                raise RuntimeError(f"searchAnalytics(query) HTTP {r.status_code}: {r.text[:160]}")
+            got = r.json().get("rows", [])
+            rows.extend(got)
+            if len(got) < 25000:
+                return rows
+            start_row += len(got)
+
     def search_dates(self, prop, start, end):
         """Daily clicks and impressions for the whole property, final data only."""
         r = self._s().post(f"{API}/sites/{quote(prop, safe='')}/searchAnalytics/query",

@@ -38,6 +38,7 @@ class PageParser(HTMLParser):
         self.title, self.h1 = [], []
         self.title_done = self.h1_done = False
         self.meta_robots, self.canonical = [], None
+        self.description = None              # <meta name="description">, for the click-through advice
         self.links = []                      # (href, in_content)
         self.words_content, self.words_body = [], []
         self.text_content, self.text_body = [], []   # raw text, for the trust scan
@@ -51,6 +52,8 @@ class PageParser(HTMLParser):
             name = a.get("name", "").lower()
             if name in ("robots", "googlebot", "bingbot"):
                 self.meta_robots.append((name, a.get("content", "").lower()))
+            elif name == "description" and self.description is None:
+                self.description = re.sub(r"\s+", " ", a.get("content", "")).strip()
             return
         if tag == "link":
             if "canonical" in a.get("rel", "").lower().split() and self.canonical is None:
@@ -134,6 +137,25 @@ TRUST_RE = [(label, re.compile(rx, 0 if ("Dr\\." in rx or "[A-Z]" in rx) else re
 INLINE_B64 = re.compile(r"(?:data:)?image/[a-z0-9.+-]+;base64,([A-Za-z0-9+/=]{2000,})")
 
 
+LD_JSON = re.compile(r"<script\b[^>]*type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>", re.S | re.I)
+
+
+def jsonld_health(html):
+    """(structured-data blocks, blocks that do not parse). Search engines and AI answer engines ignore a block they
+    cannot parse, so a broken one is as good as none. HTML comments WordPress wraps around a block are tolerated."""
+    blocks = LD_JSON.findall(html)
+    bad = 0
+    for b in blocks:
+        b = re.sub(r"^\s*(?:<!--|<!\[CDATA\[)|(?:-->|\]\]>)\s*$", "", b.strip())
+        if not b:
+            continue
+        try:
+            json.loads(b)
+        except ValueError:
+            bad += 1
+    return len(blocks), bad
+
+
 def trust_scan(text, limit=8):
     hits, spans = [], []
     for label, rx in TRUST_RE:
@@ -179,7 +201,7 @@ def fetch_page(url, rp):
     rec = {"url": url, "checked_at": now_iso(), "status": None, "final_url": None, "hops": 0, "ctype": "",
            "ms": None, "noindex": 0, "noindex_src": None, "canonical": None, "canonical_state": None,
            "title": "", "h1": "", "words": 0, "sketch": "[]", "out_links": 0, "error": None, "trust": None, "links": [],
-           "bytes": None, "inline_b64": None}
+           "bytes": None, "inline_b64": None, "description": None, "jsonld": None, "jsonld_errors": None}
     rec["robots_google"] = int(rp.can_fetch("Googlebot", url))
     rec["robots_bing"] = int(rp.can_fetch("bingbot", url))
     t0 = time.time()
@@ -211,6 +233,7 @@ def fetch_page(url, rp):
     except LookupError:
         html = body.decode("utf-8", errors="replace")
     rec["inline_b64"] = sum(len(m) for m in INLINE_B64.findall(html))
+    rec["jsonld"], rec["jsonld_errors"] = jsonld_health(html)
     p = PageParser()
     try:
         p.feed(html)
@@ -231,6 +254,7 @@ def fetch_page(url, rp):
         rec["canonical_state"] = "missing"
     rec["title"] = re.sub(r"\s+", " ", "".join(p.title)).strip()[:300]
     rec["h1"] = re.sub(r"\s+", " ", "".join(p.h1)).strip()[:300]
+    rec["description"] = p.description[:400] if p.description is not None else None
     use_content = p.saw_content and len(p.words_content) >= 50
     main = p.words_content if use_content else p.words_body + p.words_content
     rec["words"] = len(main)

@@ -46,6 +46,10 @@ class BingClient:
     def url_info(self, site_url, url):
         return self._get("GetUrlInfo", siteUrl=site_url, url=url) or {}
 
+    def page_query_stats(self, site_url, page):
+        """The searches one page was shown for: daily rows of Query, Clicks, Impressions and average position."""
+        return self._get("GetPageQueryStats", siteUrl=site_url, page=page) or []
+
     def rank_traffic(self, site_url):
         """Daily clicks and impressions for the whole site (about 16 months)."""
         return self._get("GetRankAndTrafficStats", siteUrl=site_url) or []

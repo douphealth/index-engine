@@ -2,7 +2,7 @@
 """Publish source-backed portfolio results and per-URL evidence without credentials."""
 from collections import Counter
 
-from . import config, report
+from . import config, opportunities, report
 from .triage import BLOCKERS
 
 # The original columns retain their positions for older dashboard clients.
@@ -51,6 +51,9 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             "revival_findings": (res.get("revival") or {}).get("findings", []),
             "trust_risk": sum(1 for r in rows if "TRUST_RISK" in (r["flags"] or "")),
             "heavy_pages": sum(1 for r in rows if "HEAVY_PAGE" in (r["flags"] or "")),
+            "schema_errors": sum(1 for r in rows if "SCHEMA_ERROR" in (r["flags"] or "")),
+            "opportunities": opportunities.site_summary(res.get("opportunities")),
+            "ai_access": res.get("ai_access"),
             "flags": dict(Counter(f for r in rows if r["bucket"] not in BLOCKERS and "IGNORED" not in (r["flags"] or "")
                                   for f in (r["flags"] or "").split(",") if f)),
             "potential": (intel.get("potential") or {}).get(site, {}),
@@ -62,6 +65,7 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
                         "plan": res["plan"][:200],
                         "traffic_series": (res.get("traffic") or {}).get("series") or [],
                         "revival": res.get("revival"),
+                        "opportunities": res.get("opportunities"),
                         "dups": [{"url": u, "similar_to": o, "estimated_overlap": j} for u, (o, j) in list(res["dups"].items())[:300]]}
         titles = {r["url"]: r["title"] for r in rows}
         odds = {r["url"]: r["odds"] for r in rows}

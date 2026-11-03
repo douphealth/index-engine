@@ -92,6 +92,17 @@ CREATE TABLE IF NOT EXISTS trend_probe(url TEXT PRIMARY KEY, status INT, locatio
 
 -- The indexation-odds model's last training (coefficients, quality).
 CREATE TABLE IF NOT EXISTS model(trained_at TEXT, data TEXT);
+
+-- What each page is shown for: per search engine, page and query, totals over one 28-day window (win_end = its last day).
+-- pos is the impression-weighted average position. Bing pages are refreshed a few per tick (query_fetch says when).
+CREATE TABLE IF NOT EXISTS page_queries(src TEXT, url TEXT, site TEXT, query TEXT, clicks INT, impr INT, pos REAL,
+  win_end TEXT, PRIMARY KEY(src, url, query));
+CREATE INDEX IF NOT EXISTS page_queries_site ON page_queries(site, src);
+CREATE TABLE IF NOT EXISTS query_fetch(src TEXT, url TEXT, site TEXT, fetched_at TEXT, rows INT, PRIMARY KEY(src, url));
+
+-- Whether each search and AI crawler may read the site (robots.txt) and what a request in its name gets (the edge).
+CREATE TABLE IF NOT EXISTS ai_access(site TEXT, bot TEXT, role TEXT, robots_ok INT, http INT, state TEXT, checked_at TEXT,
+  PRIMARY KEY(site, bot));
 """
 
 # Columns added after the first release; ALTER fails harmlessly when the column exists.
@@ -100,6 +111,9 @@ MIGRATIONS = [
     "ALTER TABLE audits ADD COLUMN trust TEXT",
     "ALTER TABLE audits ADD COLUMN bytes INT",
     "ALTER TABLE audits ADD COLUMN inline_b64 INT",
+    "ALTER TABLE audits ADD COLUMN description TEXT",
+    "ALTER TABLE audits ADD COLUMN jsonld INT",
+    "ALTER TABLE audits ADD COLUMN jsonld_errors INT",
     "ALTER TABLE triage ADD COLUMN odds REAL",
     "ALTER TABLE triage ADD COLUMN why TEXT",
     "ALTER TABLE gsc ADD COLUMN last_attempt_at TEXT",
