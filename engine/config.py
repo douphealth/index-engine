@@ -17,6 +17,11 @@ DASHBOARD_FILE = Path(os.environ.get("INDEX_ENGINE_DASHBOARD_FILE", PORTFOLIO / 
 DAILY_RUN_TIME = "10:30"        # local time; the dashboard setting overrides it
 # The app's own Cloudflare token (deploys; clears the edge cache of a page after a link change when it has Cache Purge).
 CF_TOKEN_FILE = Path(os.environ.get("INDEX_ENGINE_CF_TOKEN_FILE", PORTFOLIO / "Index-Engine-Cloudflare-Token.txt"))
+# AXIOM change control: one production writer per site across all agents (GitHub-backed lock + ledger).
+# Token (contents:write + issues:write on the ledger repo only) from AXIOM_CC_TOKEN or this file, never the repo.
+CC_TOKEN_FILE = Path(os.environ.get("INDEX_ENGINE_CC_TOKEN_FILE", PORTFOLIO / "AXIOM-Change-Control-Token.txt"))
+CC_REPO = os.environ.get("AXIOM_CC_REPO", "douphealth/hermes-config-001")
+CC_LEDGER_ISSUE = os.environ.get("AXIOM_CC_LEDGER_ISSUE", "6")
 LOCK_FILE = OUT / "run.lock"
 LOCK_STALE_HOURS = 4
 # Optional: {"example.com": {"key": "...", "keyLocation": "https://example.com/<key>.txt"}}

@@ -32,6 +32,7 @@ import requests
 
 from . import config, store
 from .triage import BLOCKERS, STOP as _STOP, clean_title
+from . import changelock
 from .util import SECRETS, bare_host, days_since, get, log, norm, now_iso
 
 STRICT_SITES = {"gearuptofit.com"}
@@ -533,7 +534,24 @@ def _site_guard_check():
 
 
 def apply(db, links, settings, clients, report):
-    """Apply approved links and undo requested ones. report(id, status, result, applied_at) mirrors to the dashboard."""
+    """Apply approved links and undo requested ones. report(id, status, result, applied_at) mirrors to the dashboard.
+    Every site's writes happen inside its AXIOM change-control lock (see changelock.py)."""
+    import contextlib
+    with contextlib.ExitStack() as stack:
+        gates = {}
+
+        def gate(site):
+            if site not in gates:
+                n = sum(1 for x in links if x["site"] == site)
+                gates[site] = stack.enter_context(changelock.site_write(
+                    site, f"index-engine-links-{now_iso()[:10]}", f"internal links: up to {n} approved/undo items", settings))
+            if not gates[site]:
+                log(f"[links] {site}: skipped, no change-control lock (left as is, retried next tick)")
+            return gates[site]
+        return _apply(db, links, settings, clients, report, gate)
+
+
+def _apply(db, links, settings, clients, report, gate):
     cap = max(0, min(MAX_PER_DAY, int(settings.get("links_per_site_per_day", 5) or 0)))
     autopilot = bool(settings.get("link_autopilot"))
     done = defaultdict(int)
@@ -544,7 +562,10 @@ def apply(db, links, settings, clients, report):
         site, status = lk["site"], lk["status"]
         wpc = clients.get(site)
         if status == "undo":
-            _undo(db, lk, wpc, report)
+            if wpc and gate(site):
+                _undo(db, lk, wpc, report)
+            elif not wpc:
+                _undo(db, lk, wpc, report)
             continue
         auto = status == "proposed"
         if auto and (not autopilot or site in STRICT_SITES):
@@ -553,6 +574,8 @@ def apply(db, links, settings, clients, report):
             continue
         if not wpc:
             report(lk["id"], "failed", "no WordPress login for this site", None)
+            continue
+        if not gate(site):
             continue
         ok, msg = _apply_one(db, lk, wpc)
         report(lk["id"], "applied" if ok else "failed", msg, now_iso() if ok else None)
