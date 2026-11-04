@@ -8,8 +8,9 @@ Modes (the stricter of the AXIOM_CC_MODE env var and the dashboard setting `chan
   enforce  - writes only while this engine holds the site lock. Another holder -> the write is skipped
              (left approved, retried next tick). Ledger unreachable / no token -> skipped (fail closed),
              unless AXIOM_CC_FAIL_OPEN=1 (or setting change_lock_fail_open) is set.
-WPClient.update also refuses, in enforce mode, any write for a site whose lock this process does not hold,
-so one-off fixes/ scripts are covered too once they run with AXIOM_CC_MODE=enforce.
+WPClient.update also refuses, in enforce mode, any write for a site whose lock this process does not hold.
+Anything that does not call WPClient.update is not covered: IndexNow, Bing and Search Console submissions,
+Cloudflare cache purges, and the Yoast and code-snippets fixes scripts.
 Stale locks are only reported, never broken.
 """
 import contextlib
@@ -105,7 +106,13 @@ def site_write(site, task, scope="", settings=None, _client=None):
         if got:
             try:
                 code, out = c.release(key, owner(), task, "index-engine batch finished")
-                log(f"[change-lock] {key}: lock #{got} released ({out.get('result')})")
+                if code == cc.OK:
+                    log(f"[change-lock] {key}: lock #{got} released ({out.get('result')})")
+                else:
+                    log(
+                        f"[change-lock] {key}: lock #{got} still held ({out.get('result')}: "
+                        f"{out.get('why') or out.get('held_by')}); release it by hand"
+                    )
             except cc.LedgerUnavailable as e:
                 log(f"[change-lock] {key}: COULD NOT RELEASE lock #{got} ({e}); it will show as stale - release it by hand")
 

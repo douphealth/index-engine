@@ -49,6 +49,7 @@ class ChangeLockTests(unittest.TestCase):
             self.assertEqual(self.refs(), ["lock/test.example/1"])
         self.assertFalse(changelock.holds("test.example"))
         self.assertEqual(self.refs(), ["lock/test.example/1", "release/test.example/1"])
+        self.assertTrue(any("lock #1 released" in m for m in self.logs))
 
     def test_enforce_denies_when_another_agent_holds_the_lock(self):
         os.environ["AXIOM_CC_MODE"] = "enforce"
@@ -132,6 +133,34 @@ class ChangeLockTests(unittest.TestCase):
     def test_links_apply_no_lock_churn_when_nothing_to_write(self):
         seen, _ = self._run_apply({"change_lock_mode": "enforce", "links_per_site_per_day": 0})
         self.assertEqual((seen, self.st.refs), ([], {}))
+
+    def test_a_full_matching_refs_body_is_not_fetched_forever(self):
+        # GitHub's matching-refs endpoint ignores page= and repeats the whole list. 100 refs used to hang.
+        sha = "a" * 40
+        for i in range(1, 101):
+            self.st.refs[f"refs/heads/axiom-cc/lock/test.example/{i}"] = sha
+            if i < 100:
+                self.st.refs[f"refs/heads/axiom-cc/release/test.example/{i}"] = sha
+        st = self.c.state("test.example")
+        self.assertEqual((st["held"], st["seq"]), (True, 100))
+        code, _ = self.c.lock("test.example", "other", "nope")
+        self.assertEqual(code, cc.DENIED)
+
+    def test_a_brace_in_the_scope_does_not_stick_the_lock(self):
+        code, _ = self.c.lock("test.example", "me", "task", "pages } included")
+        self.assertEqual(code, cc.OK)
+        self.assertEqual(self.c.state("test.example")["holder"]["scope"], "pages } included")
+        code, _ = self.c.release("test.example", "me", "task", "done }")
+        self.assertEqual(code, cc.OK)
+        self.assertFalse(self.c.state("test.example")["held"])
+
+    def test_rejected_ledger_comment_does_not_leave_an_anonymous_lock(self):
+        self.st.comment_code = 422
+        os.environ["AXIOM_CC_MODE"] = "enforce"
+        with changelock.site_write("test.example", "t") as ok:
+            self.assertFalse(ok)
+        self.assertEqual(self.refs(), ["lock/test.example/1", "release/test.example/1"])
+        self.assertFalse(self.c.state("test.example")["held"])
 
 
 if __name__ == "__main__":

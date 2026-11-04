@@ -107,16 +107,37 @@ class Client:
             raise LedgerUnavailable(f"GitHub unreachable ({type(e).__name__})") from None
 
     def _paged(self, path: str) -> list[dict[str, Any]]:
+        """Follow page= for endpoints that honour it (issue comments).
+
+        List-matching-refs does not. It ignores per_page and page and returns the whole match
+        every time, with no Link header. Treating "100 or more rows" as "there is a next page"
+        then loops forever once a site has 100 lock refs, and a hung lock call blocks the write
+        even in observe mode. A repeated page means the endpoint handed the same list back.
+        """
         out: list[dict[str, Any]] = []
         page = 1
-        while True:
+        previous: tuple[Any, ...] | None = None
+        while page <= 200:
             sep = "&" if "?" in path else "?"
             _, data, _ = self._req("GET", f"{path}{sep}per_page=100&page={page}")
-            data = data or []
+            if not data:
+                return out
+            if not isinstance(data, list):
+                raise LedgerUnavailable("GitHub listing was not a list")
+            first, last = data[0] or {}, data[-1] or {}
+            signature = (
+                len(data),
+                first.get("ref") or first.get("id"),
+                last.get("ref") or last.get("id"),
+            )
+            if signature == previous:
+                return out
+            previous = signature
             out.extend(data)
             if len(data) < 100:
                 return out
             page += 1
+        raise LedgerUnavailable("GitHub listing did not end")
 
     # ---------------------------------------------------------------- state
     def _seqs(self, kind: str, site: str) -> set[int]:
@@ -131,15 +152,12 @@ class Client:
     def ledger(self) -> list[dict[str, Any]]:
         entries = []
         for c in self._paged(f"/repos/{self.repo}/issues/{self.issue}/comments"):
-            m = re.search(r"```json\s*(\{.*?\})\s*```", c.get("body") or "", re.S)
-            if m and VERSION in (c.get("body") or ""):
-                try:
-                    e = json.loads(m.group(1))
-                except ValueError:
-                    continue
-                e["_by"] = (c.get("user") or {}).get("login")
-                e["_at"] = c.get("created_at")
-                entries.append(e)
+            e = _ledger_entry(c.get("body") or "")
+            if e is None:
+                continue
+            e["_by"] = (c.get("user") or {}).get("login")
+            e["_at"] = c.get("created_at")
+            entries.append(e)
         return entries
 
     def state(self, site: str) -> dict[str, Any]:
@@ -169,7 +187,13 @@ class Client:
             f"{VERSION} | {entry['event']} | {entry['site']} | {entry['owner']} | {entry['task']}"
         )
         body = f"{head}\n```json\n{json.dumps(entry, ensure_ascii=False)}\n```"
-        self._req("POST", f"/repos/{self.repo}/issues/{self.issue}/comments", {"body": body})
+        code, _, _ = self._req(
+            "POST", f"/repos/{self.repo}/issues/{self.issue}/comments", {"body": body}
+        )
+        # 422 is a soft return for "ref already exists". A comment must not treat that as recorded:
+        # the lock ref would exist with no holder, and release refuses an unknown owner.
+        if code not in (200, 201):
+            raise LedgerUnavailable(f"GitHub POST issue comment -> HTTP {code}")
 
     def _create_ref(self, name: str, sha: str) -> bool:
         code, _, _ = self._req(
@@ -206,9 +230,17 @@ class Client:
         }
         try:
             self._comment(entry)
-        except LedgerUnavailable:
+        except LedgerUnavailable as e:
             # could not record the holder: give it straight back, never leave an anonymous lock
-            self._create_ref(f"axiom-cc/release/{site}/{seq}", self._base_sha())
+            released = False
+            try:
+                released = self._create_ref(f"axiom-cc/release/{site}/{seq}", self._base_sha())
+            except LedgerUnavailable:
+                released = False
+            if not released:
+                raise LedgerUnavailable(
+                    f"lock #{seq} on {site} has no ledger entry and the release ref was not created ({e})"
+                ) from None
             raise
         return OK, {"result": "LOCKED", "site": site, "seq": seq, "owner": owner, "task": task}
 
@@ -308,6 +340,24 @@ class Client:
             "shipped_7d": shipped,
             "note": "stale locks are only reported; the owner (or Alex, by hand) releases them",
         }
+
+
+def _ledger_entry(body: str) -> dict[str, Any] | None:
+    """Parse one ledger comment. A non-greedy ``\\{.*?\\}`` stops at the first ``}``, so a scope or
+    detail that contains one makes the holder unreadable and the owner can never release."""
+    if VERSION not in body:
+        return None
+    marker = body.find("```json")
+    if marker < 0:
+        return None
+    start = body.find("{", marker + len("```json"))
+    if start < 0:
+        return None
+    try:
+        entry, _ = json.JSONDecoder().raw_decode(body, start)
+    except ValueError:
+        return None
+    return entry if isinstance(entry, dict) else None
 
 
 def _who(h: dict[str, Any] | None) -> Any:

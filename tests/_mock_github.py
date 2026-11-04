@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 class State:
     def __init__(self):
         self.refs, self.comments, self.lock, self.down = {}, [], threading.Lock(), False
+        self.comment_code = 201
 
 
 def make_handler(st):
@@ -28,13 +29,17 @@ def make_handler(st):
             if not self.headers.get("Authorization", "").startswith("Bearer "):
                 return self._send(401, {"message": "auth"})
             path, _, q = self.path.partition("?")
+            boundary = path.endswith("/")
             page = int(dict(p.split("=") for p in q.split("&") if "=" in p).get("page", 1))
             parts = path.strip("/").split("/")
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}") if method == "POST" else {}
             if parts[3:5] == ["git", "matching-refs"]:
+                # GitHub ignores page and per_page and returns the whole match. A trailing slash is a boundary.
                 pre = "refs/" + "/".join(parts[5:])
+                if boundary:
+                    pre += "/"
                 items = [{"ref": r, "object": {"sha": s}} for r, s in sorted(st.refs.items()) if r.startswith(pre)]
-                return self._send(200, items[(page - 1) * 100: page * 100])
+                return self._send(200, items)
             if parts[3:5] == ["git", "ref"]:
                 return self._send(200, {"object": {"sha": "a" * 40}})
             if parts[3:5] == ["git", "refs"] and method == "POST":
@@ -45,6 +50,8 @@ def make_handler(st):
                 return self._send(201, {"ref": body["ref"]})
             if len(parts) == 6 and parts[3] == "issues" and parts[5] == "comments":
                 if method == "POST":
+                    if st.comment_code != 201:
+                        return self._send(st.comment_code, {"message": "rejected"})
                     st.comments.append({"body": body["body"], "user": {"login": "bot"}, "created_at": "2026-11-04T00:00:00Z"})
                     return self._send(201, {"id": len(st.comments)})
                 return self._send(200, st.comments[(page - 1) * 100: page * 100])
