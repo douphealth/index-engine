@@ -105,7 +105,7 @@ def load_site(db, site):
         SELECT u.url, u.kind, u.lastmod, u.in_sitemap, u.in_wp,
                a.checked_at, a.status, a.final_url, a.hops, a.ctype, a.ms, a.noindex, a.noindex_src, a.robots_google,
                a.robots_bing, a.canonical, a.canonical_state, a.title, a.h1, a.words, a.sketch, a.error AS aerr, a.trust,
-               a.bytes, a.inline_b64,
+               a.bytes, a.inline_b64, a.description, a.jsonld, a.jsonld_errors,
                u.published,
                g.inspected_at, g.verdict, g.coverage, g.last_crawl, g.google_canonical, g.error AS gerr,
                COALESCE(p.gsc_clicks,0) AS gsc_clicks, COALESCE(p.gsc_impr,0) AS gsc_impr,
@@ -260,6 +260,10 @@ def detail(bucket, flags, r, dup, dup_title, inl):
         img = f", of which {(r['inline_b64'] or 0) / 1000:,.0f} KB is image data pasted into the HTML" if r["inline_b64"] else ""
         out.append(f"The server sends {mb:.1f} MB of HTML{img}. Move pictures to the media library and remove pasted base64 images "
                    "(a data: URI is also not a valid image URL in structured data); a normal article here is about 0.2 MB.")
+    if "SCHEMA_ERROR" in flags:
+        out.append(f"{plural(r['jsonld_errors'], 'structured-data block')} on this page {'does' if r['jsonld_errors'] == 1 else 'do'} not "
+                   "parse as JSON, so search engines and AI answer engines ignore it: fix the markup (often a stray comma, an "
+                   "unescaped quote or two blocks pasted into one).")
     if "SOFT_404" in flags:
         out.append("Looks like an error page (title says not found).")
     return " ".join(out)
@@ -421,6 +425,8 @@ def run(db, sites, with_manual=True):
                 flags.append("TRUST_RISK")
             if bucket not in BLOCKERS and ((r["bytes"] or 0) >= config.HEAVY_PAGE_BYTES or (r["inline_b64"] or 0) >= config.HEAVY_B64_CHARS):
                 flags.append("HEAVY_PAGE")
+            if bucket not in BLOCKERS and (r["jsonld_errors"] or 0) > 0:
+                flags.append("SCHEMA_ERROR")
             extra = detail(bucket, flags, r, dups.get(r["url"]), dup_title.get(r["url"]), inl)
             if r["inspected_at"] and r["coverage"] and bucket not in BLOCKERS and not r["recent"]:
                 reason += f" [Google checked {r['inspected_at'][:10]}]"

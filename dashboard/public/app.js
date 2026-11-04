@@ -382,6 +382,32 @@ function priorities() {
         why: "Google finds pages much faster through the sitemap. Check the SEO plugin's sitemap settings for these.",
         cta: "See pages", href: `#/site/${s.site}?flag=NOT_IN_SITEMAP` });
     }
+    if (s.schema_errors) {
+      add({ tier: 2, site: s.site, title: `Fix broken structured data on ${plural(s.schema_errors, "page")} of ${s.site}`, minutes: s.schema_errors * 5,
+        why: "Their JSON-LD does not parse, so Google, Bing and AI answer engines ignore it (no rich results, no structured facts to cite).",
+        cta: "See pages", href: `#/site/${s.site}?flag=SCHEMA_ERROR` });
+    }
+  }
+
+  // ---- AI and search crawlers that cannot read a site: urgent, whatever else is going on
+  for (const s of live) {
+    const blocked = ((s.ai_access || {}).search_blocked) || [];
+    if (blocked.length) {
+      add({ tier: 0, site: s.site, title: `Search crawlers cannot read ${s.site}`, minutes: 10, cta: "See access", href: `#/growth?site=${encodeURIComponent(s.site)}`,
+        why: `Blocked: ${blocked.join(", ")}. A blocked crawler cannot find or cite the site in its engine's results and AI answers. Check robots.txt, then Cloudflare's bot settings.` });
+    }
+  }
+
+  // ---- search opportunities: pages that already show for a search, ranked by estimated clicks
+  for (const s of live) {
+    const o = s.opportunities;
+    if (!o || !(o.gain >= 5)) continue;
+    const n = (o.close_to_top || 0) + (o.low_ctr || 0);
+    const top = (o.top || []).find((x) => x.kind !== "split");
+    add({ tier: 1, site: s.site, clicks: o.gain, minutes: (o.close_to_top || 0) * 30 + (o.low_ctr || 0) * 10,
+      title: `${plural(n, "page")} on ${s.site} close to the top or rarely clicked`, cta: "See opportunities", href: `#/growth?site=${encodeURIComponent(s.site)}`,
+      why: top ? `Biggest: “${top.query}” on ${ENGINE[top.src] || top.src}, position ${top.pos}, ${fmt(top.impr)} impressions in 4 weeks (≈ +${fmt(Math.round(top.gain))} clicks).` :
+        "Pages already shown for these searches, where one specific change is most likely to pay." });
   }
 
   const FINDING_TITLE = { index_bloat: (s, f) => `Bing holds ${s.bing_health.ratio}× more pages than ${s.site} has URLs`,
@@ -415,7 +441,10 @@ function priorities() {
     }
   }
   const perMin = (x) => (x.gain === null ? 0 : x.gain / Math.max(1, x.minutes));
-  return out.sort((a, b) => a.tier - b.tier || (a.tier === 1 ? perMin(b) - perMin(a) : a.tier === 3 ? b.gain - a.gain : 0));
+  // Within quick wins, measurable search traffic comes first (traffic is the goal; indexation is a means): items worth 10+ estimated
+  // clicks per 4 weeks by clicks, then the rest by expected indexed pages per minute of work.
+  const big = (x) => ((x.clicks || 0) >= 10 ? x.clicks : 0);
+  return out.sort((a, b) => a.tier - b.tier || (a.tier === 1 ? (big(b) - big(a)) || (perMin(b) - perMin(a)) || ((b.clicks || 0) - (a.clicks || 0)) : a.tier === 3 ? b.gain - a.gain : 0));
 }
 
 function priorityList(items, limit) {
@@ -429,6 +458,7 @@ function priorityList(items, limit) {
       h("div", {},
         h("span", { class: `chip tier t${p.tier}`, text: TIER[p.tier] }),
         p.gain !== null ? h("span", { class: "chip gain", title: "Expected extra pages in Google's index (model estimate)", text: gainText(p.gain) }) : null,
+        p.clicks ? h("span", { class: "chip gain", title: "Estimated extra clicks per 4 weeks, from the site's own click-through by position", text: `≈ +${fmt(Math.round(p.clicks))} clicks / 4 wks` }) : null,
         h("span", { class: "chip", text: `⏱ ${effortText(p.minutes)}` }))),
     h("a", { class: `btn small ${p.tier <= 1 ? "primary" : ""}`, href: p.href,
       ...(p.href.startsWith("http") ? { target: "_blank", rel: "noopener" } : {}) }, p.cta))));
@@ -734,6 +764,121 @@ async function viewRevival(params) {
         h("a", { href: g.url, target: "_blank", rel: "noopener", text: g.title || g.url }), h("span", { class: "muted tiny", text: `  ${fmt(g.prev)} → ${fmt(g.now)}` }))))));
   }
   return h("div", { class: "stack" }, intro, together, h("h3", { text: "Sites, most in need first" }), table, method, detail);
+}
+
+/* ------------------------------------------------------------------ Growth: search opportunities and AI crawler access */
+const OPP_KIND = {
+  close_to_top: ["Close to the top", "Shown at about positions 4 to 15 for a search with real demand. The top 3 is where most clicks start."],
+  low_ctr: ["Ranks well, rarely clicked", "Already near the top but clicked far less than usual at that position on your site, by more than chance explains. The title or meta description is the usual cause."],
+  split: ["Your pages compete with each other", "Two or more of your pages share one search's impressions and none reaches the top 3."],
+};
+const SEARCH_BOTS = [["Googlebot", "Google"], ["bingbot", "Bing (also feeds Copilot and ChatGPT search)"], ["OAI-SearchBot", "ChatGPT search"],
+  ["ChatGPT-User", "ChatGPT browsing"], ["Claude-SearchBot", "Claude search"], ["PerplexityBot", "Perplexity"]];
+const httpUrl = (u) => typeof u === "string" && /^https?:\/\//i.test(u);
+const shortPath = (u) => { try { return new URL(u).pathname; } catch { return u || ""; } };
+
+function aiAccessCard(sites) {
+  const checked = sites.filter((s) => s.ai_access);
+  const head = h("div", { class: "stack" }, h("h2", { text: "Can AI and search engines read your sites?" }),
+    h("p", { class: "muted small", text: "Search crawlers decide whether a site can be found and cited in Google, Bing, ChatGPT, Claude and Perplexity answers. " +
+      "Training crawlers only collect text for model training: blocking them is a legitimate choice and does not remove a site from answers. " +
+      "Checked daily from robots.txt and from what each site's edge answers when asked in the crawler's name." }));
+  if (!checked.length) return h("div", { class: "card stack" }, head, h("div", { class: "empty", text: "Not checked yet: the next daily run does it." }));
+  const cell = (s, bot) => {
+    const b = (s.ai_access.bots || []).find((x) => x.bot === bot);
+    if (!b) return h("td", { class: "n muted", text: "–" });
+    if (b.state === "allowed") return h("td", { class: "n good", title: b.http ? `HTTP ${b.http} when asked as ${bot}` : "allowed by robots.txt", text: "✓" });
+    return h("td", { class: "n bad", title: b.state === "blocked_robots" ? "blocked by robots.txt" : `the site's edge answered HTTP ${b.http || "?"} or a challenge`,
+      text: b.state === "blocked_robots" ? "✗ robots" : "✗ edge" });
+  };
+  const anyBlocked = checked.filter((s) => (s.ai_access.search_blocked || []).length);
+  return h("div", { class: "card stack" }, head,
+    anyBlocked.length
+      ? h("div", { class: "note small bad", text: `Search crawlers are blocked on ${anyBlocked.map((s) => s.site).join(", ")}. Check robots.txt, then Cloudflare → Security → Bots / AI Crawl Control.` })
+      : h("div", { class: "note small good", text: "Every search and AI search crawler can read every site." }),
+    h("div", { class: "tablewrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", { text: "Site" }), ...SEARCH_BOTS.map(([bot, what]) => h("th", { class: "n", title: what, text: bot })),
+        h("th", { class: "hide-sm", text: "Training crawlers blocked" }))),
+      h("tbody", {}, ...checked.map((s) => h("tr", {}, h("td", { text: s.site }), ...SEARCH_BOTS.map(([bot]) => cell(s, bot)),
+        h("td", { class: "small muted hide-sm", text: (s.ai_access.training_blocked || []).join(", ") || "none" })))))),
+    h("div", { class: "muted tiny", text: "A ✓ from a live request is conclusive. A block at the edge is evidence, not proof: the request comes from your PC, not from the crawler's own network." }));
+}
+
+async function viewGrowth(params) {
+  if (!S.summary) return noData();
+  const sites = S.summary.sites.filter((s) => !isPaused(s.site));
+  const intro = h("div", { class: "stack" }, h("h1", { text: "Growth" }),
+    h("p", { class: "muted", text: "Rankings and clicks, not only indexation: the searches your pages already appear for on Bing and Google, and where one specific change " +
+      "is most likely to pay. Gains are estimated per 4 weeks from each site's own click-through by position. They are estimates, not promises: the engines decide." }));
+  const v = (S.view.__growth ||= { site: "", kind: "" });
+  preset(v, params, ["site", "kind"]);
+  const opp = (s) => s.opportunities || null;
+  const withOpp = sites.filter((s) => opp(s) && opp(s).pairs);
+  const ai = aiAccessCard(sites);
+  if (!withOpp.length) {
+    return h("div", { class: "stack" }, intro, h("div", { class: "card empty", text: "No search-query data yet. The next daily run reads Google's query report; Bing's per-page queries are read a few pages at a time every 10 minutes." }), ai);
+  }
+  const order = [...withOpp].sort((a, b) => (opp(b).gain || 0) - (opp(a).gain || 0));
+  const chosen = withOpp.some((s) => s.site === v.site) ? v.site : order[0].site;
+  const open = (site) => { location.hash = `#/growth?site=${encodeURIComponent(site)}`; };
+  const rows = order.map((s) => {
+    const o = opp(s), cov = o.coverage || {};
+    return h("tr", { class: `click ${s.site === chosen ? "sel" : ""}`, tabindex: "0", role: "button", "aria-label": `Show ${s.site}`, onclick: () => open(s.site),
+      onkeydown: (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); open(s.site); } } },
+      h("td", {}, h("b", { text: s.site })),
+      h("td", { class: "n", text: o.gain ? `+${fmt(Math.round(o.gain))}` : "–" }),
+      h("td", { class: "n", text: fmt(o.close_to_top) }), h("td", { class: "n", text: fmt(o.low_ctr) }), h("td", { class: "n hide-sm", text: fmt(o.split) }),
+      h("td", { class: "n hide-sm", title: `${fmt(cov.bing_pages_read)} pages' Bing queries read so far`, text: cov.bing_impr_covered == null ? "–" : pct(cov.bing_impr_covered) }));
+  });
+  const table = h("div", { class: "tablewrap" }, h("table", {},
+    h("thead", {}, h("tr", {}, ...["Site", "Est. extra clicks / 4 wks", "Pages close to the top", "Pages rarely clicked", "Searches with competing pages", "Bing data read"].map((x, i) =>
+      h("th", { class: i ? `n${i >= 4 ? " hide-sm" : ""}` : null, text: x })))),
+    h("tbody", {}, ...rows)));
+
+  const data = await loadSite(chosen);
+  const all = ((data && data.opportunities) || {}).items || [];
+  const counts = Object.fromEntries(Object.keys(OPP_KIND).map((k) => [k, all.filter((x) => x.kind === k).length]));
+  const kind = counts[v.kind] ? v.kind : "";
+  const items = kind ? all.filter((x) => x.kind === kind) : all;
+  const filter = h("div", { class: "row" }, h("button", { class: `btn small ${kind ? "" : "primary"}`, onclick: () => { v.kind = ""; render(); } }, `All (${all.length})`),
+    ...Object.entries(OPP_KIND).filter(([k]) => counts[k]).map(([k, [title]]) =>
+      h("button", { class: `btn small ${kind === k ? "primary" : ""}`, onclick: () => { v.kind = k; render(); } }, `${title} (${counts[k]})`)));
+  const pageLink = (u, title) => h("a", { href: `#/site/${encodeURIComponent(chosen)}?q=${encodeURIComponent(shortPath(u))}`, text: title || shortPath(u) || "/" });
+  const body = items.map((x) => {
+    const tip = h("details", { class: "small" }, h("summary", { class: "muted", text: OPP_KIND[x.kind][0] }), h("div", { text: x.advice }));
+    if (x.kind === "split") {
+      return h("tr", {}, h("td", {}, h("b", { text: `“${x.query}”` }), h("span", { class: "chip", text: ENGINE[x.src] || x.src })),
+        h("td", { class: "n", text: "–" }), h("td", { class: "n", text: fmt(x.impr) }), h("td", { class: "n", text: "–" }),
+        h("td", { class: "small" }, ...x.pages.map((p) => h("div", {},
+          httpUrl(p.url) ? h("a", { href: p.url, target: "_blank", rel: "noopener", text: p.title || shortPath(p.url) }) : h("span", { text: p.title || p.url }),
+          h("span", { class: "muted tiny", text: `  position ${p.pos}, ${plural(p.impr, "impression")}` }))), tip));
+    }
+    const qs = x.queries || [];
+    return h("tr", {}, h("td", { class: "page" }, pageLink(x.url, x.title), h("div", {}, h("span", { class: "chip", text: ENGINE[x.src] || x.src }),
+        h("span", { class: "chip", text: OPP_KIND[x.kind][0] }))),
+      h("td", { class: "n", title: "position for its biggest search", text: String(x.pos) }), h("td", { class: "n", text: fmt(x.impr_total || x.impr) }),
+      h("td", { class: "n", title: x.expected_ctr != null ? `biggest search: usual click-through at this position on this site is ${(x.expected_ctr * 100).toFixed(1)}%` : "",
+        text: fmt(qs.reduce((n, q) => n + (q.clicks || 0), 0) || x.clicks) }),
+      h("td", { class: "small" }, h("b", { class: "good", text: `≈ +${fmt(Math.round(x.gain))} clicks / 4 wks` }),
+        h("div", {}, ...qs.map((q) => h("div", {}, h("span", { text: `“${q.query}”` }),
+          h("span", { class: "muted tiny", text: `  position ${q.pos}, ${plural(q.impr, "impression")}, ${plural(q.clicks, "click")}` })))), tip));
+  });
+  const site = sites.find((s) => s.site === chosen);
+  const cov = (opp(site) || {}).coverage || {};
+  const detail = h("div", { class: "stack" }, h("h2", { text: chosen }),
+    h("div", { class: "muted small", text: `${fmt(opp(site).pairs)} page-and-search pairs from the latest 4 weeks, ${fmt(opp(site).searches || 0)} of them listed below. Bing: queries read for ${fmt(cov.bing_pages_read)} pages so far` +
+      (cov.bing_impr_covered != null ? `, covering ${pct(cov.bing_impr_covered)} of the site's Bing impressions` : "") + "; more pages are read every 10 minutes." }),
+    filter,
+    items.length ? h("div", { class: "tablewrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ...["Page", "Position", "Impressions", "Clicks", "Searches and what to do"].map((x, i) => h("th", { class: i && i < 4 ? "n" : null, text: x })))),
+      h("tbody", {}, ...body)))
+      : h("div", { class: "card empty", text: "No opportunity of this kind clears the evidence bar yet. That is a result, not a gap: the engine only lists what the data supports." }));
+  const method = h("details", { class: "card small" }, h("summary", { class: "muted", text: "How opportunities are found" }),
+    h("p", { text: "Each site's click-through by position is learned from its own query data for each engine, pulled toward the portfolio's where data is thin, " +
+      "and never allowed to rise as the position gets worse. \"Close to the top\" estimates the clicks the page would get at position 3 minus what it gets now. " +
+      "\"Rarely clicked\" is listed only when the page gets under half the usual rate and the shortfall has less than a 2% chance of being luck. " +
+      "Searches for the site's own name and searches with no letters (\"17-8\") are left out. Nothing here is changed automatically." }));
+  return h("div", { class: "stack" }, intro, table, detail, method, ai);
 }
 
 /* A compact traffic card for the Analytics page. */
@@ -1265,7 +1410,7 @@ async function render() {
   const app = document.getElementById("app");
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
   const [asked, arg] = path.split("/");
-  const route = ["site", "overview", "revival", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
+  const route = ["site", "overview", "revival", "growth", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
   const params = new URLSearchParams(query || "");
   setTab(route === "site" ? "" : route || "");
   document.title = `${route === "site" && arg ? safeDecode(arg) : (route ? route[0].toUpperCase() + route.slice(1) : "Overview")} · Index Engine`;
@@ -1274,6 +1419,7 @@ async function render() {
     if (route === "site" && arg) node = await viewSite(safeDecode(arg), params);
     else if (route === "overview") node = viewOverview();
     else if (route === "revival") node = await viewRevival(params);
+    else if (route === "growth") node = await viewGrowth(params);
     else if (route === "plan") node = viewPlan(params);
     else if (route === "links") node = viewLinks(params);
     else if (route === "alerts") node = viewAlerts();

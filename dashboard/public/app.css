@@ -229,3 +229,5 @@ details.card > summary { cursor: pointer; }
 @media(max-width:900px){.guide-stats{grid-template-columns:repeat(3,minmax(0,1fr))}.top-in{gap:8px}nav.tabs{order:5;width:100%;overflow-x:auto;flex-wrap:nowrap;scrollbar-width:thin;padding:2px 0}nav.tabs a{white-space:nowrap;flex:none}header.top{position:relative}}
 @media(max-width:640px){.guide-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.guide-steps{grid-template-columns:1fr}.guide-stat{padding:14px}.guide-hero{padding:20px}.guide-site>.row:last-child{gap:6px}.guide-site>.row:last-child .btn{flex:1;text-align:center}.guide-section>.row{align-items:stretch}.guide-section input[type=search]{width:100%}.guide-filter{width:100%}.guide-filter select{min-width:100%}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
+.note.good { border-left-color: var(--good); }
+.note.bad { border-left-color: var(--bad); }

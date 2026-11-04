@@ -33,6 +33,7 @@ FLAG_WORDS = {"ORPHAN": "no page on the site links to it", "NO_BODY_LINKS": "lin
               "THIN": "thin content", "NEAR_DUPLICATE": "shares most of its text with another page",
               "DUPLICATE_TITLE": "its title duplicates another page's", "TRUST_RISK": "contains unverified first-hand claims",
               "HEAVY_PAGE": "served as a very heavy page (pasted image data)",
+              "SCHEMA_ERROR": "has structured data that does not parse",
               "SLOW": "slow to load", "SOFT_404": "reads like an error page"}
 
 

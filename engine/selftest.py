@@ -18,8 +18,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
-from . import (audit, bing, brain, config, dashboard, discover, fresh, google, links, model, report, store, submit, traffic,
-               triage, util, wp)
+from . import (audit, bing, brain, config, dashboard, discover, fresh, google, links, model, queries, report, store, submit,
+               traffic, triage, util, wp)
 
 KEY = "abcdef1234567890abcdef1234567890"
 VOCAB = [f"w{i}x" for i in range(600)]
@@ -198,6 +198,16 @@ class FakeGSC:
     def search_dates(self, prop, start, end):
         return [{"keys": [(end - dt.timedelta(days=k)).isoformat()], "clicks": 2, "impressions": 40} for k in range(70)]
 
+    def search_queries(self, prop, start, end):
+        # one page near the top of page one, two pages sharing a search, and a branded search that must be ignored
+        b = self.base
+        return [{"keys": ["ceramic planter drainage", b + "/good-indexed/"], "clicks": 2, "impressions": 400, "position": 7.2},
+                {"keys": ["calathea drainage", b + "/good-indexed/"], "clicks": 1, "impressions": 70, "position": 9.0},
+                {"keys": ["calathea drainage", b + "/good-crawled/"], "clicks": 0, "impressions": 60, "position": 11.0},
+                {"keys": ["test plants planter", b + "/good-indexed/"], "clicks": 0, "impressions": 500, "position": 6.0},
+                {"keys": ["drainage holes", b + "/noindex/"], "clicks": 0, "impressions": 300, "position": 6.0},
+                {"keys": ["ceramic planter", b + "/good-indexed/"], "clicks": 40, "impressions": 200, "position": 1.4}]
+
     def inspect(self, prop, url):
         self.inspected.append(urlsplit(url).path)
         cov = self.COVERAGE.get(urlsplit(url).path, "URL is unknown to Google")
@@ -242,6 +252,12 @@ class FakeBing:
     def crawl_stats(self, site_url):
         return [{"Date": self._day(ago), "CrawledPages": 50, "InIndex": 5000, "CrawlErrors": 0, "Code4xx": 0, "Code5xx": 0,
                  "BlockedByRobotsTxt": 0, "ConnectionTimeout": 0, "DnsFailures": 0, "InLinks": 3} for ago in range(40, 2, -1)]
+
+    def page_query_stats(self, site_url, page):
+        # daily rows: inside the 28-day window (4-13 days ago) and one older row that must not count
+        rows = [{"Query": "how often to water snake plants", "Clicks": int(ago == 5), "Impressions": 30,
+                 "AvgImpressionPosition": 8.0, "Date": self._day(ago)} for ago in range(4, 14)]
+        return rows + [{"Query": "snake plant", "Clicks": 9, "Impressions": 900, "AvgImpressionPosition": 6.0, "Date": self._day(60)}]
 
     def url_info(self, site_url, url):
         return {"LastCrawledDate": "/Date(1760000000000)/" if url.endswith("/about/") else "/Date(-62135596800000)/",
@@ -319,6 +335,14 @@ def main():
     traffic.pull(db, gsc, props, bng, bsites)
     google.pull_performance(db, gsc, props)
     bing.pull_performance(db, bng, bsites)
+    queries.pull_google(db, gsc, props)
+    n_bq = queries.pull_bing(db, bng, bsites)
+    pq = {(r[0], urlsplit(r[1]).path, r[2]): (r[3], r[4], r[5]) for r in db.execute("SELECT src, url, query, clicks, impr, pos FROM page_queries")}
+    check(pq.get(("google", "/good-indexed/", "ceramic planter drainage")) == (2, 400, 7.2) and n_bq >= 1
+          and pq.get(("bing", "/dup-b/", "how often to water snake plants")) == (1, 300, 8.0)
+          and ("bing", "/dup-b/", "snake plant") not in pq,
+          "query reports are stored per page: Google in one call, Bing per page and only inside the 28-day window")
+    check(queries.pull_bing(db, bng, bsites) == 0, "a page's Bing queries are not re-read within the week")
     google.inspect_due(db, gsc, props)
     check("/good-indexed/" not in gsc.inspected, "URL with recent impressions is not inspected (quota saved)")
     check(not {"/gone/", "/redirect-me/", "/noindex/", "/canon-other/", "/private/secret/", "/category/plants/"} & set(gsc.inspected),
@@ -451,6 +475,16 @@ def main():
     check(model.auc([1, 1, 0, 0], [0.9, 0.8, 0.2, 0.1]) == 1.0 and model.auc([1, 0], [0.5, 0.5]) == 0.5,
           "AUC is computed correctly (ties count half)")
     res3, intel = brain.analyze(db, sites)
+    op = res3[base]["opportunities"]
+    kinds = Counter(x["kind"] for x in op["items"])
+    found = {(x["kind"], x["query"]) for x in op["items"]}
+    check(("close_to_top", "ceramic planter drainage") in found and ("split", "calathea drainage") in found,
+          "search opportunities: a page close to the top and two pages sharing one search are found")
+    check(not any(x["query"] == "test plants planter" for x in op["items"]) and not any("/noindex/" in (x.get("url") or "") for x in op["items"]),
+          "branded searches and blocked pages are left out of the opportunities")
+    curve = op["curves"]["google"]
+    check(all(curve[i] >= curve[i + 1] for i in range(len(curve) - 1)) and all("first-hand" not in x["advice"] for x in op["items"]),
+          "the click-through curve never rises with position, and the advice never asks for first-hand claims")
     check(intel["model"]["quality"] == "insufficient" and intel["actions"],
           "with too few Google verdicts the model says so and falls back to fixed estimates")
     check(db.execute("SELECT COUNT(*) FROM triage WHERE odds IS NOT NULL").fetchone()[0] > 0
@@ -683,10 +717,10 @@ def main():
     ie.load_credentials = lambda: (None, ["fake-key"])
     bing.working_client = lambda keys: ThrottlingBing(base, ok=7)
     targs = ie.build_parser().parse_args(["tick"])
-    n_tr = ie.bing_trickle(targs, db, list(hosts), {})
+    n_tr, _ = ie.bing_trickle(targs, db, list(hosts), {})
     off = ie.bing_trickle(targs, db, list(hosts), {"bing_trickle": False})
     ie.load_credentials, bing.working_client = real_creds, real_client
-    check(n_tr == 7 and off == 0, "idle ticks trickle a few Bing crawl checks, stop at the first throttle, and can be switched off")
+    check(n_tr == 7 and off == (0, 0), "idle ticks trickle a few Bing crawl checks, stop at the first throttle, and can be switched off")
     config.LOCK_FILE = tmp / "run.lock"
     with ie.RunLock():
         try:
