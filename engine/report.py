@@ -20,11 +20,20 @@ LABEL = {
 TONE = {"fix": "warn", "site": "bad", "discovery": "warn", "ok": "good", "info": "muted"}
 
 
+def report_link(link):
+    """True for a report link Google issued (opaque id); False for one carrying a page URL as id, which answers 404."""
+    if not isinstance(link, str) or not link.startswith("https://search.google.com/"):
+        return False
+    from urllib.parse import parse_qs, urlsplit
+    ids = parse_qs(urlsplit(link).query).get("id") or [""]
+    return not ids[0].lower().startswith(("http:", "https:"))
+
+
 def inspect_link(prop, url, link=None):
     """The inspection report link the URL Inspection API returned for this URL; otherwise the property's Search
     Console home, where the URL goes into the inspect bar. A link with the page URL in ?id= answers 404: Search
     Console's `id` is an opaque report id, not a URL."""
-    if link and link.startswith("https://search.google.com/"):
+    if report_link(link):
         return link
     if not prop:
         return ""

@@ -80,8 +80,14 @@ function markIn(text, phrase) {
 }
 // Search Console's own link to a URL's inspection report (from the URL Inspection API), else the property's home.
 // A link with the page URL in ?id= answers 404: Search Console's id is an opaque report id, not a URL.
+// Only a report link Google issued: its id is opaque. A link carrying a page URL as id (built by older engine
+// versions and still in uploaded data until the PC updates) answers 404, so it is never used.
+function gscReportLink(link) {
+  if (typeof link !== "string" || !link.startsWith("https://search.google.com/")) return null;
+  try { return /^https?:/i.test(new URL(link).searchParams.get("id") || "") ? null : link; } catch { return null; }
+}
 function gscLink(prop, url, link) {
-  if (typeof link === "string" && link.startsWith("https://search.google.com/")) return link;
+  if (gscReportLink(link)) return link;
   return prop ? `https://search.google.com/search-console?resource_id=${encodeURIComponent(prop)}` : null;
 }
 // Opening Search Console also copies the page URL, so it can be pasted straight into the inspect bar.

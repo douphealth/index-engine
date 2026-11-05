@@ -18,6 +18,12 @@ class InspectLinkTest(unittest.TestCase):
         self.assertEqual(link, "https://search.google.com/search-console?resource_id=sc-domain%3Aexample.test")
         self.assertNotIn("example.test%2Fa-post", link)
 
+    def test_old_url_in_id_links_are_never_used(self):
+        old = "https://search.google.com/search-console/inspect?resource_id=sc-domain%3Aexample.test&id=https%3A%2F%2Fexample.test%2Fa-post%2F"
+        self.assertFalse(report.report_link(old))
+        self.assertEqual(report.inspect_link(PROP, URL, old), report.inspect_link(PROP, URL))
+        self.assertTrue(report.report_link(API_LINK))
+
     def test_rejects_foreign_links_and_missing_property(self):
         self.assertTrue(report.inspect_link(PROP, URL, "https://evil.test/x").startswith("https://search.google.com/"))
         self.assertEqual(report.inspect_link(None, URL), "")
