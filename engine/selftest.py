@@ -224,7 +224,8 @@ class FakeGSC:
         self.inspected.append(urlsplit(url).path)
         cov = self.COVERAGE.get(urlsplit(url).path, "URL is unknown to Google")
         return {"verdict": "PASS" if "and indexed" in cov else "NEUTRAL", "coverage": cov,
-                "last_crawl": "2026-10-01T00:00:00Z" if "Crawled" in cov else None}
+                "last_crawl": "2026-10-01T00:00:00Z" if "Crawled" in cov else None,
+                "link": f"https://search.google.com/search-console/inspect?resource_id={prop}&id=opaque{len(self.inspected)}"}
 
     def list_sitemaps(self, prop):
         return [{"path": f} for f in dict.fromkeys(self.submitted)]
@@ -367,6 +368,13 @@ def main():
           "query reports are stored per page: Google in one call, Bing per page and only inside the 28-day window")
     check(queries.pull_bing(db, bng, bsites) == 0, "a page's Bing queries are not re-read within the week")
     google.inspect_due(db, gsc, props)
+    glinks = report.result_links(db)
+    check(glinks.get(base + "/good-unknown/", "").startswith("https://search.google.com/search-console/inspect?")
+          and "id=opaque" in glinks[base + "/good-unknown/"],
+          "each inspection keeps Search Console's own report link for that URL")
+    check(report.inspect_link(props[base], base + "/never-inspected/").startswith("https://search.google.com/search-console?resource_id=")
+          and "&id=" not in report.inspect_link(props[base], base + "/never-inspected/"),
+          "a page not yet inspected links to its Search Console property, never to a URL-in-id link that answers 404")
     check("/good-indexed/" not in gsc.inspected, "URL with recent impressions is not inspected (quota saved)")
     check(not {"/gone/", "/redirect-me/", "/noindex/", "/canon-other/", "/private/secret/", "/category/plants/"} & set(gsc.inspected),
           "technically blocked URLs and taxonomy archives are not inspected")

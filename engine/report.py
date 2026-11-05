@@ -20,10 +20,19 @@ LABEL = {
 TONE = {"fix": "warn", "site": "bad", "discovery": "warn", "ok": "good", "info": "muted"}
 
 
-def inspect_link(prop, url):
+def inspect_link(prop, url, link=None):
+    """The inspection report link the URL Inspection API returned for this URL; otherwise the property's Search
+    Console home, where the URL goes into the inspect bar. A link with the page URL in ?id= answers 404: Search
+    Console's `id` is an opaque report id, not a URL."""
+    if link and link.startswith("https://search.google.com/"):
+        return link
     if not prop:
         return ""
-    return f"https://search.google.com/search-console/inspect?resource_id={quote(prop, safe='')}&id={quote(url, safe='')}"
+    return f"https://search.google.com/search-console?resource_id={quote(prop, safe='')}"
+
+
+def result_links(db):
+    return {r[0]: r[1] for r in db.execute("SELECT url, result_link FROM gsc WHERE result_link IS NOT NULL")}
 
 
 KNOWN = NOT_INDEXED + ("INDEXED",)
@@ -52,6 +61,7 @@ def _csv(path, rows, fields):
 
 
 def write(db, results):
+    glinks = result_links(db)
     out = config.OUT
     out.mkdir(parents=True, exist_ok=True)
     rows = [dict(r) for r in db.execute("""SELECT t.*, u.kind, u.in_sitemap, a.words, a.title FROM triage t JOIN urls u ON u.url=t.url
@@ -65,7 +75,7 @@ def write(db, results):
     for site, res in results.items():
         prop = res["meta"].get("gsc_property")
         plan += [dict(p, site=site) for p in res["plan"]]
-        manual += [dict(m, site=site, search_console_link=inspect_link(prop, m["url"])) for m in res["manual"]]
+        manual += [dict(m, site=site, search_console_link=inspect_link(prop, m["url"], glinks.get(m["url"]))) for m in res["manual"]]
         seen = set()
         for u, (other, j) in res["dups"].items():
             key = tuple(sorted((u, other)))
@@ -96,7 +106,7 @@ def write(db, results):
                         "indexed_share": f"{now_share:.0%}" if now_share is not None else "",
                         "share_change": f"{(now_share - base) * 100:+.0f} pts" if now_share is not None and base is not None else ""})
     _csv(out / "summary.csv", summary, list(summary[0]) if summary else ["site"])
-    (out / "report.html").write_text(render(results, summary, rows, plan), encoding="utf-8")
+    (out / "report.html").write_text(render(results, summary, rows, plan, glinks), encoding="utf-8")
     return out / "report.html"
 
 
@@ -104,7 +114,8 @@ def _num(n, tone=""):
     return f'<td class="n {tone}">{n:,}</td>' if isinstance(n, int) else f"<td>{html.escape(str(n))}</td>"
 
 
-def render(results, summary, rows, plan):
+def render(results, summary, rows, plan, glinks=None):
+    glinks = glinks or {}
     e = html.escape
     tot = {k: sum(s[k] for s in summary) for k in ("urls", "conflicts", "excluded", "indexed", "crawled_not_indexed",
                                                      "discovered_not_indexed", "unknown", "stale_or_other", "not_inspected", "bing_earners")}
@@ -129,7 +140,7 @@ def render(results, summary, rows, plan):
             f"<tr><td><a href='{e(r['url'])}'>{e(r['title'] or r['url'])}</a><div class=sub>{e(r['url'])}</div></td>"
             f"<td><span class='tag {'warn' if r['bucket'] in BLOCKERS else ''}'>{e(LABEL.get(r['bucket'], r['bucket']))}</span>"
             f"<div class=sub>{'Bing: ' + e(r['bing']) if r['bing'] else ''}</div></td><td>{e(r['action'])}</td></tr>" for r in todo)
-        manual = "".join(f"<li><a href='{e(inspect_link(prop, m['url']))}'>{e(m['url'])}</a> "
+        manual = "".join(f"<li><a href='{e(inspect_link(prop, m['url'], glinks.get(m['url'])))}'>{e(m['url'])}</a> "
                          f"<span class=sub>{e(LABEL.get(m['bucket'], m['bucket']))}</span></li>" for m in res["manual"])
         links = [p for p in res["plan"]][:10]
         links_html = "".join(f"<li>On <a href='{e(p['source'])}'>{e(p['source_title'] or p['source'])}</a> link to "

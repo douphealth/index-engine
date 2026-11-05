@@ -78,8 +78,20 @@ function markIn(text, phrase) {
   if (i < 0 || !phrase) return [text || ""];
   return [text.slice(0, i), h("mark", { text: text.slice(i, i + phrase.length) }), text.slice(i + phrase.length)];
 }
-function gscLink(prop, url) {
-  return prop ? `https://search.google.com/search-console/inspect?resource_id=${encodeURIComponent(prop)}&id=${encodeURIComponent(url)}` : null;
+// Search Console's own link to a URL's inspection report (from the URL Inspection API), else the property's home.
+// A link with the page URL in ?id= answers 404: Search Console's id is an opaque report id, not a URL.
+function gscLink(prop, url, link) {
+  if (typeof link === "string" && link.startsWith("https://search.google.com/")) return link;
+  return prop ? `https://search.google.com/search-console?resource_id=${encodeURIComponent(prop)}` : null;
+}
+// Opening Search Console also copies the page URL, so it can be pasted straight into the inspect bar.
+function gscButton(prop, url, link, label = "Open in Search Console") {
+  const href = gscLink(prop, url, link);
+  if (!href) return null;
+  const direct = href !== gscLink(prop, url);
+  return h("a", { class: "btn small", href, target: "_blank", rel: "noopener",
+    title: direct ? "Opens this page's inspection report" : "Opens Search Console and copies the page URL: paste it into the inspect bar at the top",
+    onclick: () => { try { navigator.clipboard.writeText(url).then(() => toast(direct ? "Page URL copied" : "Page URL copied: paste it into Search Console's inspect bar (Ctrl+V), then click Request indexing")); } catch { /* clipboard unavailable */ } } }, label);
 }
 
 const api = {
@@ -995,7 +1007,6 @@ function detailRow(site, meta, r, col, st, redraw) {
   };
   const note = h("textarea", { "aria-label": "Note", placeholder: "Note for yourself (kept in the dashboard)" });
   note.value = st.note || "";
-  const link = gscLink(meta.gsc_property, url);
   let why = [], trust = [];
   try { why = JSON.parse(r[col.why] || "[]"); } catch { /* older data */ }
   try { trust = JSON.parse(r[col.trust] || "[]"); } catch { /* older data */ }
@@ -1010,7 +1021,7 @@ function detailRow(site, meta, r, col, st, redraw) {
       r[col.google] ? h("span", { class: "chip", text: `Google: ${r[col.google]}` }) : null),
     h("div", { class: "row" },
       h("a", { class: "btn small", href: url, target: "_blank", rel: "noopener" }, "Open page"),
-      link ? h("a", { class: "btn small", href: link, target: "_blank", rel: "noopener" }, "Inspect in Search Console") : null,
+      gscButton(meta.gsc_property, url, col.gsc_link === undefined ? null : r[col.gsc_link], "Inspect in Search Console"),
       st.ignored ? h("button", { class: "btn small", onclick: () => act("unignore") }, "Stop ignoring")
         : h("button", { class: "btn small", title: "Hide from work lists and never submit", onclick: () => act("ignore") }, "Ignore"),
       st.requested_at ? h("span", { class: "chip", text: `requested ${rel(st.requested_at)}` }) : null),
@@ -1059,8 +1070,7 @@ function viewPlan(params) {
     if (a.action === "request") {
       const st = S.urlState.get(a.url) || {};
       if (daysSince(st.requested_at) < REQUEUE_DAYS) return h("span", { class: "chip", text: `requested ${rel(st.requested_at)}` });
-      const link = gscLink(props[a.site], a.url);
-      return h("div", { class: "row" }, link ? h("a", { class: "btn small", href: link, target: "_blank", rel: "noopener" }, "Open in Search Console") : null,
+      return h("div", { class: "row" }, gscButton(props[a.site], a.url, a.gsc_link),
         h("button", { class: "btn small primary", onclick: async () => { try { await markUrl(a.url, a.site, "requested"); render(); } catch (e) { toast(e.message); } } }, "Done"));
     }
     if (a.action === "add_links") {
@@ -1265,7 +1275,7 @@ function viewRequests(params) {
     h("div", { class: "page", style: { flex: "1", minWidth: "220px" } }, h("div", { text: r.title || r.url }),
       h("div", { class: "muted tiny" }, `${LABEL[r.bucket] || r.bucket} · odds `, oddsSpan(r.odds), ` · ${r.url}`)),
     isDone ? h("button", { class: "btn small", onclick: () => mark(r, "unrequested") }, "Undo")
-      : [gscLink(props[r.site], r.url) ? h("a", { class: "btn small", href: gscLink(props[r.site], r.url), target: "_blank", rel: "noopener" }, "Open in Search Console") : null,
+      : [gscButton(props[r.site], r.url, r.link),
         h("button", { class: "btn small primary", onclick: () => mark(r, "requested") }, "Done")]);
   return h("div", { class: "stack" },
     h("h1", { text: "Request indexing" }),

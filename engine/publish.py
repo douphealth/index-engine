@@ -9,7 +9,7 @@ from .triage import BLOCKERS
 COLS = ["url", "bucket", "flags", "reason", "action", "value", "google", "bing", "kind", "in_sitemap", "words", "title",
         "odds", "why", "trust", "checked_at", "http_status", "canonical_state", "canonical", "robots_google", "noindex",
         "inspected_at", "google_verdict", "google_coverage", "google_error", "google_canonical", "last_crawl",
-        "gsc_clicks", "gsc_impr", "gsc_at", "bing_clicks", "bing_impr", "bing_at", "linked_at"]
+        "gsc_clicks", "gsc_impr", "gsc_at", "bing_clicks", "bing_impr", "bing_at", "linked_at", "gsc_link"]
 KNOWN = ("INDEXED", "CRAWLED_NOT_INDEXED", "DISCOVERED_NOT_INDEXED", "UNKNOWN_TO_GOOGLE", "GOOGLE_STALE", "GOOGLE_PICKED_OTHER")
 
 
@@ -19,6 +19,7 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
     disabled = set(disabled or ())
     intel = intel or {}
     sites, tables, requests_ = [], {}, []
+    glinks = report.result_links(db)
     order = {s: i for i, s in enumerate(config.SITES)}
     for site in sorted(results, key=lambda s: order.get(s, len(order))):
         res = results[site]
@@ -36,7 +37,7 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
                                     CASE WHEN p.bing_at IS NOT NULL THEN p.bing_clicks END AS bing_clicks,
                                     CASE WHEN p.bing_at IS NOT NULL THEN p.bing_impr END AS bing_impr, p.bing_at,
                                     (SELECT MAX(l.applied_at) FROM link_ops l
-                                     WHERE l.target=t.url AND l.status='applied') AS linked_at
+                                     WHERE l.target=t.url AND l.status='applied') AS linked_at, g.result_link AS gsc_link
                              FROM triage t JOIN urls u ON u.url=t.url LEFT JOIN audits a ON a.url=t.url
                              LEFT JOIN gsc g ON g.url=t.url LEFT JOIN perf p ON p.url=t.url
                              WHERE t.site=? ORDER BY t.value DESC""", (site,)).fetchall()
@@ -74,7 +75,7 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
         odds = {r["url"]: r["odds"] for r in rows}
         for m in res["manual"]:
             requests_.append({"site": site, "url": m["url"], "bucket": m["bucket"], "value": m["value"], "odds": odds.get(m["url"]),
-                              "title": titles.get(m["url"]) or "", "link": report.inspect_link(meta.get("gsc_property"), m["url"])})
+                              "title": titles.get(m["url"]) or "", "link": report.inspect_link(meta.get("gsc_property"), m["url"], glinks.get(m["url"]))})
 
     totals = {"urls": 0, "indexed": 0, "known": 0, "crawled": 0, "discovered": 0, "unknown": 0, "conflicts": 0,
               "excluded": 0, "bing_earners": 0, "submitted": sum(sum(v.values()) for v in submitted.values())}
@@ -103,7 +104,8 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             t[0] += bc; t[1] += bi; t[2] += gc; t[3] += gi
     portfolio_series = [[d, *v] for d, v in sorted(series.items())]
     summary = {"generated_at": generated_at, "evidence_schema": 2, "sites": sites, "requests": requests_, "portfolio_series": portfolio_series,
-               "model": intel.get("model"), "actions": intel.get("actions") or [], "impact": imp}
+               "model": intel.get("model"), "impact": imp,
+               "actions": [dict(a, gsc_link=glinks.get(a.get("url"))) for a in intel.get("actions") or []]}
     return summary, tables, {"totals": totals, "sites": per_site}
 
 

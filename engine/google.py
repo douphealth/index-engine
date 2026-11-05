@@ -93,8 +93,11 @@ class GSCClient:
             raise QuotaExceeded(r.text[:160])
         if r.status_code != 200:
             return {"error": f"HTTP {r.status_code}: {r.text[:160]}", "http": r.status_code}
-        res = r.json().get("inspectionResult", {}).get("indexStatusResult", {})
-        return {"verdict": res.get("verdict"), "coverage": res.get("coverageState"),
+        result = r.json().get("inspectionResult", {})
+        res = result.get("indexStatusResult", {})
+        link = result.get("inspectionResultLink")
+        return {"link": link if isinstance(link, str) and link.startswith("https://search.google.com/") else None,
+                "verdict": res.get("verdict"), "coverage": res.get("coverageState"),
                 "indexing_state": res.get("indexingState"), "fetch_state": res.get("pageFetchState"),
                 "robots_state": res.get("robotsTxtState"), "last_crawl": res.get("lastCrawlTime"),
                 "google_canonical": res.get("googleCanonical"), "user_canonical": res.get("userCanonical")}
@@ -331,11 +334,12 @@ def inspect_due(db, client, props, max_per_site=None, include_taxonomy=False, on
                                (url, prop, res["error"], now))
                 else:
                     db.execute("""INSERT OR REPLACE INTO gsc(url, property, inspected_at, verdict, coverage, indexing_state,
-                                  fetch_state, robots_state, last_crawl, google_canonical, user_canonical, error, last_attempt_at)
-                                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                  fetch_state, robots_state, last_crawl, google_canonical, user_canonical, error, last_attempt_at,
+                                  result_link)
+                                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                (url, prop, now, res.get("verdict"), res.get("coverage"), res.get("indexing_state"),
                                 res.get("fetch_state"), res.get("robots_state"), res.get("last_crawl"),
-                                res.get("google_canonical"), res.get("user_canonical"), None, now))
+                                res.get("google_canonical"), res.get("user_canonical"), None, now, res.get("link")))
                 if not res.get("error"):             # a failed call is not a verdict; it would hide real transitions
                     db.execute("INSERT INTO gsc_history(url, inspected_at, coverage) VALUES(?,?,?)",
                                (url, now, res.get("coverage")))

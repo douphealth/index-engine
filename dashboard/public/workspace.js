@@ -112,7 +112,9 @@ async function mutate(path, data, message) {
 function showDetail(row) {
   if (!row) { $("detail").replaceChildren(el("div", { class: "empty", text: "Select a URL to see its evidence and next action." })); return; }
   const siteRoute = "/#/site/" + encodeURIComponent(row.site);
-  const gsc = row.meta.gsc_property ? "https://search.google.com/search-console/inspect?resource_id=" + encodeURIComponent(row.meta.gsc_property) + "&id=" + encodeURIComponent(row.url) : null;
+  // Search Console's own report link for this URL; otherwise the property home (a page URL in ?id= answers 404).
+  const gsc = typeof row.gsc_link === "string" && row.gsc_link.startsWith("https://search.google.com/") ? row.gsc_link
+    : row.meta.gsc_property ? "https://search.google.com/search-console?resource_id=" + encodeURIComponent(row.meta.gsc_property) : null;
   const audit = () => {
     if (state.dirty) { notice("Save or discard your note before queueing an audit.", true); return; }
     if (!confirm("Queue a measure-only audit for " + row.site + "? This re-fetches its pages without submitting URLs or editing WordPress. Google inspection follows the engine's quota and schedule.")) return;
