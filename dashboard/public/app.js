@@ -1336,6 +1336,8 @@ function viewSettings() {
   const freshChk = h("input", { type: "checkbox", checked: setting("fresh_check", true) });
   const autopilot = h("input", { type: "checkbox", checked: setting("link_autopilot", false) });
   const linkCap = h("input", { type: "number", min: 0, max: 10, value: setting("links_per_site_per_day", 5) });
+  const autoUpdate = h("input", { type: "checkbox", checked: setting("auto_update", true) });
+  const running = (setting("engine_last_seen", null) || {}).version;
   const save = async () => {
     const body = {
       sites_disabled: checks.map((c) => c.firstChild).filter((i) => !i.checked).map((i) => i.value),
@@ -1346,6 +1348,7 @@ function viewSettings() {
       fresh_check: freshChk.checked,
       link_autopilot: autopilot.checked,
       links_per_site_per_day: Math.max(0, Math.min(10, Number(linkCap.value || 0))),
+      auto_update: autoUpdate.checked,
     };
     try { await api.post("/api/settings", body); await loadAll(); toast("Saved. The engine applies it on its next run."); } catch (e) { toast(e.message); }
   };
@@ -1365,6 +1368,10 @@ function viewSettings() {
       field("Links applied per site per day (max 10)", linkCap, "Approved links beyond this wait for a free slot. Keep it low: your portfolio guardrails forbid bulk edits, and every saved post is re-dated. 0 pauses link changes."),
       h("label", { class: "chk" }, autopilot, "Autopilot: also apply the best-ranked proposals without waiting for approval (never on gearuptofit, whose rules require your click)"),
       h("div", { class: "muted tiny", text: "Every applied link is backed up, verified on the live page, logged, and can be undone from the Links page." }),
+      h("div", {}, h("button", { class: "btn primary", onclick: save }, "Save settings"))),
+    h("div", { class: "card stack" }, h("h2", { text: "Engine updates" }),
+      h("label", { class: "chk" }, autoUpdate, "Update the engine on my PC by itself: new code from the main branch is adopted only after the full test suite passes on the PC, and rolled back if it keeps failing"),
+      h("div", { class: "muted tiny", text: running ? `Running version ${running}. Updates are checked at most once an hour.` : "The PC has not reported its version yet." }),
       h("div", {}, h("button", { class: "btn primary", onclick: save }, "Save settings"))),
     h("div", { class: "card stack" }, h("h2", { text: "About" }),
       h("p", { class: "small muted", text: "The engine runs on your PC with your Google and Bing credentials; they are never uploaded here. " +

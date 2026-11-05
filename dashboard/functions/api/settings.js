@@ -10,6 +10,7 @@ const VALIDATE = {
   fresh_check: (v) => typeof v === "boolean",
   link_autopilot: (v) => typeof v === "boolean",
   links_per_site_per_day: (v) => Number.isInteger(v) && v >= 0 && v <= 10,
+  auto_update: (v) => typeof v === "boolean",
 };
 
 export const onRequestPost = handle(async ({ request, env }) => {

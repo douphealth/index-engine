@@ -27,6 +27,9 @@ class Dashboard:
         self.s = requests.Session()
         self.s.headers.update({"Authorization": f"Bearer {token}", "X-Engine-Host": socket.gethostname()[:60],
                                "User-Agent": config.UA, "X-Engine-Capabilities": "run,doctor"})
+        from .update import version
+        if version():
+            self.s.headers["X-Engine-Version"] = version()
 
     @classmethod
     def from_config(cls):

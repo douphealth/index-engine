@@ -57,6 +57,13 @@ your PC (Windows task, every 10 min)                    Cloudflare: index-engine
   - When the feed declares a WebSub hub (`<atom:link rel="hub">`), the hub is told the feed changed. Without a hub nothing is pinged, and the site diagnosis says a WebSub plugin would add one.
   - **lastmod trust.** Google uses lastmod only when it is consistently accurate. The engine flags four problems: the same lastmod on 80% or more of URLs (the time the file was generated), lastmod in the future, most URLs missing lastmod, and posts updated in WordPress more than a day after their sitemap entry says (a cached sitemap). Where lastmod cannot be trusted, only new URLs count as changes.
   - None of this forces indexing. It makes sure each engine knows about every URL and every change quickly, and does not waste a crawl on a stale list.
+- **Self-update with automatic rollback** (`engine/update.py`). At most once an hour the tick fetches `origin/main`. It adopts the new code only when:
+  - this folder is a clean git checkout on `main`;
+  - the new commit is a fast-forward;
+  - every requirement is installed;
+  - the candidate passes the unit tests and the selftest on this PC, in a separate git worktree, with no credentials visible to it.
+
+  A commit that fails is never tried again. If two runs fail on the new code before any succeeds, the previous commit is restored. Each step raises a dashboard alert, and the dashboard shows the running version. Turn it off in Settings > Engine updates. `python indexengine.py update` checks now; `tick --no-update` skips it.
 - **Regression alarms.** You get an alert when:
   - an indexable page turns noindex, 404s, redirects or loses its canonical;
   - content shrinks sharply;
@@ -93,6 +100,7 @@ python D:\Claude\SEO-Setup\index-engine\indexengine.py tick
 | `run --inspect-max 200` | Caps URL Inspection calls per property this run |
 | `publish` | Re-uploads the latest results to the dashboard without crawling |
 | `status` | One line per site from the last run |
+| `update` | Check `origin/main` now and adopt it if it passes the tests on this PC |
 | `selftest` | Offline end-to-end test: a fake site plus fake Google, Bing, IndexNow and a WebSub hub (129 checks); runs in GitHub Actions on every push |
 
 ## The dashboard (`dashboard/`)

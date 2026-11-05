@@ -29,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine import (aiaccess, alerts, audit, bing, brain, config, discover, fresh, google, links, publish,  # noqa: E402
-                    queries, report, revival, sitemaps, store, submit, traffic, wp)
+                    queries, report, revival, sitemaps, store, submit, traffic, update, wp)
 from engine.dashboard import Dashboard, apply_state, cached_settings, safe  # noqa: E402
 from engine.util import load_credentials, log, log_text, now_iso, open_log, parse_ts, utf8_stdout  # noqa: E402
 
@@ -388,6 +388,26 @@ def daily_due(db, hhmm, now=None):
     return not failures or (len(failures) < 3 and now_utc - max(failures) >= dt.timedelta(minutes=30))
 
 
+def self_update(args, db, dash, settings):
+    """Watch a recent update (roll back if it keeps failing), then adopt new tested code from origin/main at most hourly.
+    Off when the dashboard setting auto_update is false; the rollback watch always runs."""
+    updater = update.Updater()
+    result = None
+    try:
+        updater.watch(db)
+        if settings.get("auto_update", True) is not False and not args.no_update:
+            with RunLock():
+                result = updater.check(db)
+    except Locked:
+        return None
+    except Exception as e:
+        log(f"[update] {type(e).__name__}: {str(e)[:200]}")
+    db.commit()
+    if dash and result in ("updated", "rejected", "blocked"):
+        safe(alerts.push, dash, db, what="push alerts")
+    return result
+
+
 def claim_command(dash, command_id):
     """Fail closed: a queued command must be atomically claimed before any run."""
     response = safe(dash.command, command_id, "running", what="claim command") if dash else None
@@ -405,6 +425,9 @@ def tick(args):
     state = safe(dash.state, what="pull state") if dash else None
     # When the dashboard cannot be reached, keep honouring the last settings (paused / disabled sites) it gave us.
     settings = (state.get("settings") or {}) if state is not None else cached_settings(db)
+    if self_update(args, db, dash, settings) == "updated":
+        print("Engine updated; the next tick runs the new version.")
+        return
     cmd = next((c for c in (state or {}).get("commands", []) if c.get("kind") in ("run", "doctor")), None)
     if cmd:
         o = cmd.get("options") or {}
@@ -453,7 +476,7 @@ def print_status(db, sites):
 
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["run", "tick", "publish", "status", "seed", "selftest", "doctor"])
+    ap.add_argument("command", choices=["run", "tick", "publish", "status", "seed", "selftest", "doctor", "update"])
     ap.add_argument("--site", action="append", help="limit to a site (repeatable)")
     ap.add_argument("--dry-run", action="store_true", help="decide everything, submit and change nothing")
     ap.add_argument("--no-submit", action="store_true", help="skip the submission stage")
@@ -463,6 +486,7 @@ def build_parser():
     ap.add_argument("--no-wp", action="store_true", help="do not query the WordPress REST API")
     ap.add_argument("--no-links", action="store_true", help="no link proposals and no link changes")
     ap.add_argument("--no-dashboard", action="store_true", help="do not sync with the online dashboard")
+    ap.add_argument("--no-update", action="store_true", help="tick: do not update the engine code from origin/main")
     ap.add_argument("--both", action="store_true", help="use the Bing API even where IndexNow works")
     ap.add_argument("--include-taxonomy", action="store_true", help="also inspect/submit category, tag and author archives")
     ap.add_argument("--skip-discover", action="store_true")
@@ -493,6 +517,11 @@ def main():
         elif args.command == "doctor":
             from engine import doctor
             doctor.run(online=not args.no_creds, publish=not args.no_dashboard and not args.no_creds)
+        elif args.command == "update":
+            db = store.connect()
+            with RunLock():
+                print(f"Self-update: {update.Updater().check(db, force=True)}")
+            db.commit()
         elif args.command == "status":
             print_status(store.connect(), args.site or config.SITES)
         elif args.command == "seed":
