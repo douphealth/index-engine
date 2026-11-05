@@ -211,7 +211,7 @@ class Updater:
 
     def _blocked(self, db, state, why):
         if state.get("blocked") != why:
-            log(f"[update] self-update is off on this PC: {why}")
+            log(f"[update] not updating: {why}")
             if db is not None:
                 alerts.add(db, "", None, "engine_update_blocked", "info", f"The engine cannot update itself: {why}.")
         state["blocked"] = why

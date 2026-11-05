@@ -41,6 +41,10 @@ class SelfUpdateTest(unittest.TestCase):
         self.db = sqlite3.connect(":memory:")
         self.db.row_factory = sqlite3.Row
         self.db.executescript(store.SCHEMA)
+        env = patch.dict(os.environ)                 # these tests also run inside a candidate's verification,
+        env.start()                                  # where the no-nesting guard is set
+        os.environ.pop("INDEX_ENGINE_NO_UPDATE", None)
+        self.addCleanup(env.stop)
         log = patch.object(update, "log")
         log.start()
         self.addCleanup(log.stop)
