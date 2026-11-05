@@ -2,7 +2,7 @@
 """Publish source-backed portfolio results and per-URL evidence without credentials."""
 from collections import Counter
 
-from . import config, opportunities, report
+from . import config, opportunities, report, sitemaps
 from .triage import BLOCKERS
 
 # The original columns retain their positions for older dashboard clients.
@@ -59,6 +59,9 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             "potential": (intel.get("potential") or {}).get(site, {}),
             "diagnosis": [[k, m] for k, m in res["diagnosis"]],
             "sitemaps": [{k: sm.get(k) for k in ("path", "lastDownloaded", "errors", "warnings")} for sm in meta.get("gsc_sitemaps") or []],
+            "bing_sitemaps": [{k: sm.get(k) for k in ("path", "lastCrawled", "status", "urls")} for sm in meta.get("bing_sitemaps") or []],
+            "feed": {k: (meta.get("feed") or {}).get(k) for k in ("url", "ok", "items", "hubs", "why")} if meta.get("feed") else None,
+            "lastmod_trusted": sitemaps.lastmod_trusted(meta) if meta.get("lastmod_health") else None,
         })
         tables[site] = {"site": site, "generated_at": generated_at, "schema_version": 2, "cols": COLS,
                         "rows": [[r[c] if r[c] is not None else "" for c in COLS] for r in rows],

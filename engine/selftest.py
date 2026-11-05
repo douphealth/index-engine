@@ -18,8 +18,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
-from . import (audit, bing, brain, config, dashboard, discover, fresh, google, links, model, queries, report, store, submit,
-               traffic, triage, util, wp)
+from . import (audit, bing, brain, config, dashboard, discover, fresh, google, links, model, queries, report, sitemaps, store,
+               submit, traffic, triage, util, wp)
 
 KEY = "abcdef1234567890abcdef1234567890"
 VOCAB = [f"w{i}x" for i in range(600)]
@@ -48,6 +48,7 @@ WP_USER, WP_PW = "tester", "abcd efgh ijkl mnop qrst uvwx"
 POST_IDS = {p: 100 + i for i, p in enumerate(PAGES)}
 EDGE = {}           # path -> html an edge cache (Cloudflare) keeps serving on the plain URL
 FAIL_PAGE = []      # page numbers of the modified_after feed that answer HTTP 500 (partial-failure test)
+HUB_PINGS = []      # WebSub publish notices the fake hub received: the hub.url values
 
 
 def body_text(path, n, dup=False):
@@ -92,6 +93,11 @@ class Handler(BaseHTTPRequestHandler):
                             f"<image:image><image:loc>{base}/img{i}.jpg</image:loc></image:image></url>" for i, x in enumerate(paths))
             return self._send(200, '<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" '
                                    f'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">{items}</urlset>', "application/xml")
+        if p == "/feed/":
+            items = "".join(f"<item><title>{PAGES[x][0]}</title><link>{base}{x}</link></item>" for x in ("/good-indexed/", "/dup-a/"))
+            return self._send(200, '<?xml version="1.0"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel>'
+                                   f'<title>Test Plants</title><atom:link rel="hub" href="{base}/hub"/>{items}</channel></rss>',
+                              "application/rss+xml")
         if p.startswith("/wp-json/wp/v2/"):
             return self.wp_get(base, p, parse_qs(u.query))
         if p == "/redirect-me/":
@@ -148,6 +154,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = urlsplit(self.path).path
+        if p == "/hub":
+            form = parse_qs(self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode())
+            if form.get("hub.mode") == ["publish"]:
+                HUB_PINGS.extend(form.get("hub.url") or [])
+                return self._send(204, "")
+            return self._send(400, "")
         pid = int(p.rsplit("/", 1)[-1]) if p.rsplit("/", 1)[-1].isdigit() else None
         path = next((k for k, v in POST_IDS.items() if v == pid), None)
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
@@ -215,7 +227,7 @@ class FakeGSC:
                 "last_crawl": "2026-10-01T00:00:00Z" if "Crawled" in cov else None}
 
     def list_sitemaps(self, prop):
-        return []
+        return [{"path": f} for f in dict.fromkeys(self.submitted)]
 
     def submit_sitemap(self, prop, feed):
         self.submitted.append(feed)
@@ -224,7 +236,7 @@ class FakeGSC:
 
 class FakeBing:
     def __init__(self, base):
-        self.base, self.sent = base, []
+        self.base, self.sent, self.feeds_sent = base, [], []
 
     def user_sites(self):
         return [{"Url": self.base + "/", "IsVerified": True}]
@@ -235,6 +247,13 @@ class FakeBing:
     def submit(self, site_url, urls):
         self.sent += urls
         return 200, "{}"
+
+    def feeds(self, site_url):
+        return [{"Url": f, "LastCrawled": "/Date(-62135596800000)/", "Status": "Pending"} for f in dict.fromkeys(self.feeds_sent)]
+
+    def submit_feed(self, site_url, feed_url):
+        self.feeds_sent.append(feed_url)
+        return 200, '{"d":null}'
 
     @staticmethod
     def _day(ago):
@@ -317,6 +336,10 @@ def main():
     check(not any(p.endswith(".jpg") for p in urls), "image:loc entries are not counted as pages")
     check(urls["/not-in-sitemap/"]["in_wp"] == 1 and urls["/not-in-sitemap/"]["in_sitemap"] == 0, "published post missing from sitemaps is found via WP REST")
     check(urls["/category/plants/"]["kind"] == "taxonomy" and urls["/about/"]["kind"] == "page", "sitemap kinds detected")
+    feed = store.get_meta(db, base).get("feed") or {}
+    check(feed.get("ok") and feed.get("url") == f"{base}/feed/" and feed.get("hubs") == [f"{base}/hub"],
+          "the WordPress RSS feed and its WebSub hub are detected")
+    check((store.get_meta(db, base).get("lastmod_health") or {}).get("checked", 0) > 0, "sitemap lastmod quality is measured")
 
     audit.run(db, sites)
     a = {urlsplit(r["url"]).path: dict(r) for r in db.execute("SELECT * FROM audits")}
@@ -406,9 +429,33 @@ def main():
           "only URLs the site gate passes are submitted")
     del config.SITE_GATES[base]
     google.sync_sitemaps(db, gsc, props)
-    check(gsc.submitted == [f"{base}/sitemap_index.xml"], "unregistered sitemap submitted to Search Console once")
+    check(gsc.submitted == [f"{base}/sitemap_index.xml", f"{base}/feed/"],
+          "the unregistered sitemap and the RSS feed are submitted to Search Console once")
     google.sync_sitemaps(db, gsc, props)
-    check(len(gsc.submitted) == 1, "sitemap is not resubmitted without new URLs")
+    check(len(gsc.submitted) == 2, "sitemap is not resubmitted without new URLs")
+    bing.sync_feeds(db, bng, bsites)
+    check(bng.feeds_sent == [f"{base}/sitemap_index.xml", f"{base}/feed/"], "the sitemap and the RSS feed are registered with Bing")
+    bing.sync_feeds(db, bng, bsites)
+    check(len(bng.feeds_sent) == 2, "Bing gets no resubmission without new URLs")
+    kept = db.execute("SELECT url, first_seen, lastmod FROM urls").fetchall()
+    db.execute("UPDATE sitemap_submits SET submitted_at='2026-01-01T00:00:00+00:00'")
+    db.execute("UPDATE urls SET first_seen='2025-12-01T00:00:00+00:00', lastmod='2025-12-01T00:00:00+00:00'")
+    google.sync_sitemaps(db, gsc, props)
+    bing.sync_feeds(db, bng, bsites)
+    check(len(gsc.submitted) == 2 and len(bng.feeds_sent) == 2, "an old submission alone does not trigger a resubmission")
+    db.execute("UPDATE urls SET lastmod=? WHERE url LIKE '%/good-unknown/'", (util.now_iso(),))
+    google.sync_sitemaps(db, gsc, props)
+    bing.sync_feeds(db, bng, bsites)
+    check(len(gsc.submitted) == 4 and len(bng.feeds_sent) == 4,
+          "an updated post (same URL count) gets the sitemap and feed resubmitted to Google and Bing")
+    google.sync_sitemaps(db, gsc, props)
+    check(len(gsc.submitted) == 4, "resubmissions are rate limited")
+    sitemaps.ping_hubs(db, sites)
+    check(HUB_PINGS == [f"{base}/feed/"], "the feed's WebSub hub is told the feed changed")
+    sitemaps.ping_hubs(db, sites)
+    check(len(HUB_PINGS) == 1, "the hub is not pinged again without new or updated URLs")
+    db.executemany("UPDATE urls SET first_seen=?, lastmod=? WHERE url=?", [(r["first_seen"], r["lastmod"], r["url"]) for r in kept])
+    db.commit()
     bing.check_url_info(db, bng, bsites)
     check(db.execute("SELECT COUNT(*) FROM bing_info").fetchone()[0] == 0, "no Bing crawl checks on the day of submission")
     db.execute("UPDATE submissions SET submitted_at='2026-10-01T00:00:00+00:00'")

@@ -1354,7 +1354,7 @@ function viewSettings() {
     h("div", { class: "card stack" }, h("h2", { text: "Sites" }), h("div", { class: "grid sites-grid" }, ...checks),
       h("div", { class: "muted tiny", text: "Unticked sites are skipped by every run, link edit and fresh-content check, even when you pick one in Run now." })),
     h("div", { class: "card stack" }, h("h2", { text: "Engine" }),
-      h("label", { class: "chk" }, paused, "Pause everything that changes something: submissions (Bing, IndexNow, sitemaps) and link edits on your sites"),
+      h("label", { class: "chk" }, paused, "Pause everything that changes something: submissions (Bing, IndexNow, sitemaps and feeds to Google and Bing, WebSub) and link edits on your sites"),
       h("div", { class: "muted tiny", text: "While paused the engine only measures. Approved links wait; Undo waits too." }),
       field("Daily run time on your PC", time, "The engine checks every 10 minutes and runs once a day after this time. Google's inspection quota resets at midnight Pacific (10:00 in Greece)."),
       field("Request-indexing list size per site", queue, "Search Console allows roughly 10 manual requests a day per property."),

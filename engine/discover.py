@@ -10,7 +10,7 @@ import re
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
 
-from . import alerts, config, store
+from . import alerts, config, sitemaps, store
 from .util import get, log, norm, now_iso, same_site
 
 SM = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
@@ -216,11 +216,22 @@ def run(db, sites, use_wp=True):
         sitemap_count, wp_count, missing = counts
         db.commit()
         previous_meta = store.get_meta(db, site)
-        store.set_meta(db, site, base=base, robots=robots, sitemap_roots=roots, sitemaps_read=read,
+        is_wp = wp is not None or bool(previous_meta.get("wp"))
+        extra = {}
+        if found:
+            extra["lastmod_health"] = sitemaps.lastmod_health(found, wp)
+        if is_wp and use_wp:
+            extra["feed"] = sitemaps.feed_meta(sitemaps.detect_feed(base, host))
+        store.set_meta(db, site, **extra, base=base, robots=robots, sitemap_roots=roots, sitemaps_read=read,
                        sitemap_errors=errors[:20], sitemap_complete=sitemap_complete,
-                       wp=(wp is not None or bool(previous_meta.get("wp"))), wp_complete=wp_complete, wp_count=wp_count,
+                       wp=is_wp, wp_complete=wp_complete, wp_count=wp_count,
                        sitemap_count=sitemap_count, missing_from_sitemap=missing, discovered_at=now)
         wp_status = (f"WP observed={len(wp or {})}, inventory={wp_count}, in no sitemap={missing}"
                      + ("" if wp_complete else " (incomplete)") if use_wp else "WP disabled")
         log(f"  sitemaps read={len(read)} urls={len(found)} errors={len(errors)}"
             + (" (incomplete)" if not sitemap_complete else "") + f" | {wp_status}")
+        feed, health = extra.get("feed"), extra.get("lastmod_health")
+        if feed:
+            log(f"  feed {feed['url']}: " + (f"{feed['items']} posts, WebSub hubs: {len(feed['hubs'])}" if feed["ok"] else f"not usable ({feed['why']})"))
+        if health and not sitemaps.lastmod_trusted({"lastmod_health": health}):
+            log("  sitemap lastmod is not trustworthy (same value on most URLs, or in the future): updates are detected from new URLs only")

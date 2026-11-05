@@ -384,6 +384,8 @@ def site_diagnosis(counts, meta, missing=0, conflicts=0, excluded=None, blocked_
                                       "sitemap in the last 30 days. Resubmit the sitemap and link these pages from indexed ones."))
         if idx >= 0.8:
             msgs.append(("ok", f"Google indexes {idx:.0%} of checked pages. Keep new pages linked from day one."))
+    from . import sitemaps
+    msgs += sitemaps.lastmod_messages(meta) + sitemaps.bing_messages(meta) + sitemaps.feed_messages(meta)
     for sm in meta.get("gsc_sitemaps") or []:
         if sm.get("errors"):
             msgs.append(("fix", f"Search Console reports {sm['errors']} errors in sitemap {sm['path']}."))

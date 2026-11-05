@@ -349,9 +349,14 @@ def inspect_due(db, client, props, max_per_site=None, include_taxonomy=False, on
         log(f"[google] {site}: " + ", ".join(f"{v}x {k}" for k, v in sorted(c.items(), key=lambda kv: -kv[1])))
 
 
-def sync_sitemaps(db, client, props, dry_run=False):
+def sync_sitemaps(db, client, props, dry_run=False, only=None):
+    """Register every sitemap root and the RSS feed in Search Console; resubmit one when URLs were added or updated
+    since its last submission (engine/sitemaps.py decides). only={site: set(feeds)} on a fresh tick: just those
+    feeds, which already list the new post."""
+    from . import sitemaps
     for site, prop in props.items():
-        meta = store.get_meta(db, site)
+        if only is not None and site not in only:
+            continue
         try:
             registered = client.list_sitemaps(prop)
         except Exception as e:
@@ -362,23 +367,6 @@ def sync_sitemaps(db, client, props, dry_run=False):
             status.append({"path": sm.get("path"), "errors": int(sm.get("errors") or 0), "warnings": int(sm.get("warnings") or 0),
                            "lastDownloaded": sm.get("lastDownloaded"), "isPending": sm.get("isPending")})
         store.set_meta(db, site, gsc_sitemaps=status)
-        reg_paths = {s["path"] for s in status}
-        n_urls = db.execute("SELECT COUNT(*) FROM urls WHERE site=? AND in_sitemap=1", (site,)).fetchone()[0]
-        for feed in meta.get("sitemap_roots") or []:
-            last = db.execute("SELECT url_count, submitted_at FROM sitemap_submits WHERE site=? AND feed=? AND http_status BETWEEN 200 AND 299 "
-                              "ORDER BY submitted_at DESC, rowid DESC LIMIT 1", (site, feed)).fetchone()
-            if last and n_urls <= last["url_count"] and (feed in reg_paths or (days_since(last["submitted_at"]) or 0) < 7):
-                continue                               # nothing new (or just submitted and not listed yet)
-            if feed in reg_paths and not last:
-                # Registered before this app existed: record a baseline and resubmit only when URLs are added.
-                db.execute("INSERT INTO sitemap_submits VALUES(?,?,?,?,?)", (site, feed, now_iso(), n_urls, 200))
-                continue
-            why = "not registered in Search Console" if feed not in reg_paths else f"{n_urls - last['url_count']} new URLs"
-            if dry_run:
-                log(f"[google] {site}: would submit {feed} ({why})")
-                continue
-            code = client.submit_sitemap(prop, feed)
-            db.execute("INSERT INTO sitemap_submits VALUES(?,?,?,?,?)", (site, feed, now_iso(), n_urls, code))
-            log(f"[google] {site}: submitted {feed} ({why}) -> HTTP {code}"
-                + (" (the service account needs Owner or Full permission to submit sitemaps)" if code == 403 else ""))
-        db.commit()
+        sitemaps.submit_all(db, "google", site, {s["path"] for s in status},
+                            lambda feed, prop=prop: client.submit_sitemap(prop, feed),
+                            dry_run=dry_run, only=None if only is None else only[site])

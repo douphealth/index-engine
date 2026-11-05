@@ -49,7 +49,14 @@ your PC (Windows task, every 10 min)                    Cloudflare: index-engine
   - Every link is backed up, verified in WordPress and on the page visitors get, logged, and can be undone.
   - Sites behind Cloudflare keep serving the old copy of a page for up to about 4 hours. After each link change the engine clears the cache of just that page with its own token (`Index-Engine-Cloudflare-Token.txt`, needs **Zone · Cache Purge**; it never tries any other credential). Without that permission the card says when visitors and Google will see the link, and every tick re-checks until they do.
   - Optional auto-approve stays off by default and never applies to gearuptofit.
-- **Fresh-content autopilot.** Every 10-minute tick checks each WordPress site for posts published or updated since the last look. New ones are audited, inspected, gated and submitted within minutes.
+- **Fresh-content autopilot.** Every 10-minute tick checks each WordPress site for posts published or updated since the last look. New ones are audited, inspected, gated and submitted within minutes. Google and Bing are then told the sitemap and feed changed, but only after the engine has re-read them and seen the new post (or its new version) listed. A cached sitemap is never resubmitted with old content; the daily run picks it up instead.
+- **Sitemaps and feeds for both engines** (`engine/sitemaps.py`).
+  - Every sitemap root and the WordPress RSS feed (`/feed/`) are registered with Search Console and, since 5 Nov 2026, with Bing (`GetFeeds` / `SubmitFeed`). Google accepts an RSS or Atom feed as a sitemap. The XML sitemap is the full inventory; the feed carries recent changes.
+  - A registered sitemap is resubmitted when URLs were **added or updated** since its last submission, at most once an hour. Before this, only a rise in the URL count triggered it, so publishing 3 posts and removing 3, or updating posts, told Google nothing.
+  - After a 401/403 (no permission) a sitemap is retried after 7 days; after other errors, after a day (4xx) or an hour (5xx or network).
+  - When the feed declares a WebSub hub (`<atom:link rel="hub">`), the hub is told the feed changed. Without a hub nothing is pinged, and the site diagnosis says a WebSub plugin would add one.
+  - **lastmod trust.** Google uses lastmod only when it is consistently accurate. The engine flags four problems: the same lastmod on 80% or more of URLs (the time the file was generated), lastmod in the future, most URLs missing lastmod, and posts updated in WordPress more than a day after their sitemap entry says (a cached sitemap). Where lastmod cannot be trusted, only new URLs count as changes.
+  - None of this forces indexing. It makes sure each engine knows about every URL and every change quickly, and does not waste a crawl on a stale list.
 - **Regression alarms.** You get an alert when:
   - an indexable page turns noindex, 404s, redirects or loses its canonical;
   - content shrinks sharply;
@@ -86,7 +93,7 @@ python D:\Claude\SEO-Setup\index-engine\indexengine.py tick
 | `run --inspect-max 200` | Caps URL Inspection calls per property this run |
 | `publish` | Re-uploads the latest results to the dashboard without crawling |
 | `status` | One line per site from the last run |
-| `selftest` | Offline end-to-end test: a fake site plus fake Google, Bing and IndexNow (74 checks); runs in GitHub Actions on every push |
+| `selftest` | Offline end-to-end test: a fake site plus fake Google, Bing, IndexNow and a WebSub hub (129 checks); runs in GitHub Actions on every push |
 
 ## The dashboard (`dashboard/`)
 
@@ -157,7 +164,7 @@ The first run fetches every page (about 4,000 URLs across the 10 sites on 23 Oct
 6. **Submit.**
    - **IndexNow** where the site hosts a key file. One call reaches Bing, Yandex, Seznam, Naver and Yep.
    - Otherwise the **Bing URL Submission API**, within the daily quota Bing reports.
-   - **Search Console sitemaps:** a sitemap is submitted only when it isn't registered or has gained URLs.
+   - **Sitemaps and the RSS feed, to Search Console and Bing:** each is registered once, then resubmitted only when URLs were added or updated since its last submission (at most hourly). A WebSub hub, if the feed declares one, is notified too.
    - Only URLs that are indexable right now are sent: 200 status, no redirect, no `noindex`, self-canonical, allowed by robots.txt.
    - Each URL goes out once per channel, and again only when its `lastmod` changes.
 7. **Triage, revival and report.** Every URL gets one bucket and one concrete action, every site gets its traffic verdict and revival picture, and clear changes raise alerts (traffic: weekly at most; Bing findings: monthly at most). See `out/`.

@@ -66,6 +66,11 @@ BING_BATCH = 100
 RESUBMIT_UNCHANGED_DAYS = 30    # never re-send an unchanged URL on the same channel sooner than this
 SUBMIT_KINDS = {"post", "page", "product", "other"}   # taxonomy archives are skipped unless --include-taxonomy
 
+# Sitemaps and the RSS feed, registered with Google and Bing (engine/sitemaps.py).
+SITEMAP_RESUBMIT_MIN_HOURS = 1  # a registered sitemap is resubmitted after URLs were added or updated, at most this often
+SITEMAP_DENIED_RETRY_DAYS = 7   # after a 401/403 (no permission), wait this long before trying that sitemap again
+WEBSUB_MIN_MINUTES = 10         # at most one WebSub publish notice per site per tick
+
 # Sites whose own rules require their gate before any submission (gearuptofit AGENTS.md rule 4).
 # The script is called as `python <gate> gate --file <list>` and only its PASS lines are submitted.
 SITE_GATES = {"gearuptofit.com": PORTFOLIO / "01-gearuptofit" / "site_guard" / "site_guard.py"}

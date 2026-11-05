@@ -40,6 +40,16 @@ class BingClient:
                           headers={"User-Agent": config.UA}, timeout=120)
         return r.status_code, r.text[:200]
 
+    def feeds(self, site_url):
+        """Sitemaps and feeds registered for the site (GetFeeds)."""
+        return self._get("GetFeeds", siteUrl=site_url) or []
+
+    def submit_feed(self, site_url, feed_url):
+        """Register a sitemap or feed, or ask Bing to re-read one already registered (SubmitFeed)."""
+        r = requests.post(BASE + "SubmitFeed", params={"apikey": self.key}, json={"siteUrl": site_url, "feedUrl": feed_url},
+                          headers={"User-Agent": config.UA}, timeout=60)
+        return r.status_code, r.text[:200]
+
     def page_stats(self, site_url):
         return self._get("GetPageStats", siteUrl=site_url) or []
 
@@ -105,6 +115,36 @@ def resolve_sites(db, client, sites):
             store.set_meta(db, site, bing_site=None)
             log(f"[bing] {site}: not in the Bing Webmaster account")
     return out
+
+
+def sync_feeds(db, client, bsites, dry_run=False, only=None):
+    """Register every sitemap root and the RSS feed with Bing and resubmit one when URLs were added or updated since its
+    last submission (the same rules as Search Console, engine/sitemaps.py). only={site: set(feeds)} on a fresh tick."""
+    from . import sitemaps
+    from .util import bare_host, host_of
+    for site, burl in bsites.items():
+        if only is not None and site not in only:
+            continue
+        try:
+            feeds = client.feeds(burl)
+        except Exception as e:
+            log(f"[bing] {site}: GetFeeds failed: {str(e)[:120]}")
+            continue
+        status = [{"path": f.get("Url"), "lastCrawled": bing_date(f.get("LastCrawled")), "status": f.get("Status"),
+                   "urls": f.get("UrlCount")} for f in feeds if isinstance(f, dict) and f.get("Url")]
+        store.set_meta(db, site, bing_sitemaps=status)
+        registered = {s["path"] for s in status} | {s["path"].lower() for s in status}
+        site_host = bare_host(host_of(burl))
+
+        def submit_fn(feed, burl=burl):
+            code, text = client.submit_feed(burl, feed)
+            if code != 200:
+                log(f"[bing] {site}: SubmitFeed HTTP {code} {text[:120]}")
+            return code
+
+        sitemaps.submit_all(db, "bing", site, registered, submit_fn, dry_run=dry_run,
+                            only=None if only is None else only[site],
+                            accepts=lambda feed, h=site_host: bare_host(host_of(feed)) == h)
 
 
 def pull_performance(db, client, bsites):

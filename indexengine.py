@@ -29,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine import (aiaccess, alerts, audit, bing, brain, config, discover, fresh, google, links, publish,  # noqa: E402
-                    queries, report, revival, store, submit, traffic, wp)
+                    queries, report, revival, sitemaps, store, submit, traffic, wp)
 from engine.dashboard import Dashboard, apply_state, cached_settings, safe  # noqa: E402
 from engine.util import load_credentials, log, log_text, now_iso, open_log, parse_ts, utf8_stdout  # noqa: E402
 
@@ -185,6 +185,9 @@ def pipeline(db, args, sites):
                                include_taxonomy=args.include_taxonomy, max_per_site=args.submit_max)
         if props:
             google.sync_sitemaps(db, gclient, props, dry_run=args.dry_run)
+        if bsites:
+            bing.sync_feeds(db, bclient, bsites, dry_run=args.dry_run)
+        sitemaps.ping_hubs(db, sites, dry_run=args.dry_run)
     if bsites and args.bing_check:
         bing.check_url_info(db, bclient, bsites, max_per_site=args.bing_check)
 
@@ -327,6 +330,7 @@ def quick(args, dash, state, settings):
                     google.inspect_due(db, gclient, props, only_urls=urls)
                 if not (settings.get("submit_paused") or args.no_submit or args.dry_run):
                     submitted = submit.run(db, list(changes), bing_client=bclient, bing_sites=bsites)
+                    signal_fresh(db, changes, gclient, props, bclient, bsites)
             results, intel = brain.analyze(db, config.SITES)
             report.write(db, results)
             run_summary = upload(dash, db, results, intel, submitted, disabled) if dash else None
@@ -345,6 +349,23 @@ def quick(args, dash, state, settings):
         # Only advance after processing succeeds; a crash must not silently lose WordPress updates.
         if changes:
             fresh.acknowledge(db, changes)
+
+
+def signal_fresh(db, changes, gclient, props, bclient, bsites):
+    """Tell Google and Bing that a sitemap or feed changed, but only the ones that already list the new post, so no
+    submission is spent on a cached copy. Best effort: a failure here never costs the fresh tick (the daily run
+    resubmits whatever changed)."""
+    try:
+        ready = sitemaps.fresh_ready(db, changes)
+        if not ready:
+            return
+        if props:
+            google.sync_sitemaps(db, gclient, props, only=ready)
+        if bsites:
+            bing.sync_feeds(db, bclient, bsites, only=ready)
+        sitemaps.ping_hubs(db, list(ready), only=ready)
+    except Exception as e:
+        log(f"[sitemaps] fresh signals failed: {type(e).__name__}: {str(e)[:150]}")
 
 
 def daily_due(db, hhmm, now=None):

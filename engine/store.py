@@ -117,6 +117,7 @@ MIGRATIONS = [
     "ALTER TABLE triage ADD COLUMN odds REAL",
     "ALTER TABLE triage ADD COLUMN why TEXT",
     "ALTER TABLE gsc ADD COLUMN last_attempt_at TEXT",
+    "ALTER TABLE sitemap_submits ADD COLUMN engine TEXT",      # NULL = google (rows written before Bing was added)
 ]
 
 
