@@ -872,8 +872,14 @@ async function viewGrowth(params) {
           h("span", { class: "muted tiny", text: `  position ${p.pos}, ${plural(p.impr, "impression")}` }))), tip));
     }
     const qs = x.queries || [];
+    // The engine links to pages close to the top with the searches' own wording; show where that stands.
+    const lk = (S.st.links || []).filter((l) => l.target === x.url);
+    const nApplied = lk.filter((l) => l.status === "applied").length;
+    const nOpen = lk.filter((l) => l.status === "proposed" || l.status === "approved").length;
+    const linkNote = nApplied || nOpen ? h("div", {}, h("a", { class: "tiny", href: `#/links?site=${encodeURIComponent(chosen || "")}`,
+      text: `Internal links: ${nApplied} applied${nOpen ? `, ${nOpen} waiting` : ""}` })) : null;
     return h("tr", {}, h("td", { class: "page" }, pageLink(x.url, x.title), h("div", {}, h("span", { class: "chip", text: ENGINE[x.src] || x.src }),
-        h("span", { class: "chip", text: OPP_KIND[x.kind][0] }))),
+        h("span", { class: "chip", text: OPP_KIND[x.kind][0] })), linkNote),
       h("td", { class: "n", title: "position for its biggest search", text: String(x.pos) }), h("td", { class: "n", text: fmt(x.impr_total || x.impr) }),
       h("td", { class: "n", title: x.expected_ctr != null ? `biggest search: usual click-through at this position on this site is ${(x.expected_ctr * 100).toFixed(1)}%` : "",
         text: fmt(qs.reduce((n, q) => n + (q.clicks || 0), 0) || x.clicks) }),
@@ -1193,6 +1199,7 @@ function viewLinks(params) {
       h("div", {}, "On ", h("a", { href: l.source, target: "_blank", rel: "noopener", text: l.source_title || l.source }),
         h("span", { class: "arrow", text: " link to " }), h("a", { href: l.target, target: "_blank", rel: "noopener", text: l.target_title || l.target })),
       h("div", { class: "small muted" }, "“", ...markIn(decodeEntities(l.context), decodeEntities(l.anchor)), "”"),
+      l.why ? h("div", { class: "tiny", text: `Why: ${l.why}` }) : null,
       l.result ? h("div", { class: `tiny ${l.status === "failed" ? "bad" : "muted"}`, text: l.result }) : null,
       h("div", { class: "row" },
         l.status === "proposed" ? [h("button", { class: "btn small primary", onclick: (e) => act([l.id], "approve", e.currentTarget) }, "Approve"),

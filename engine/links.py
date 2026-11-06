@@ -150,6 +150,10 @@ MAX_PER_TARGET = 3          # the model's "add links" estimate is for about 3 ne
 MAX_PER_SOURCE = 2          # new links proposed into one page per run
 MAX_PER_SITE = 60           # proposals per site per run (each one waits for the owner's approval)
 STOCK_SHARE = 0.08          # a phrase found in the text of more than 8% of a site's pages is a stock phrase, not a name
+# Growth anchors: an indexed page that ranks around 4-15 for a search (engine/opportunities.py "close_to_top") gets links
+# whose anchor is that search, from trusted pages whose text already says it. Ranked against indexing gains by this
+# heuristic (estimated extra clicks per 4 weeks, compressed), not by a prediction of what one link is worth.
+GROWTH_GAIN_SCALE = 0.1
 
 
 def stem(w):
@@ -321,9 +325,57 @@ def candidates(raw, keys, starts=None):
     return found
 
 
+def query_phrases(query, own=frozenset()):
+    """Anchor keys a search offers: the whole search, and the part that runs from the first to the last word the
+    target's own title uses ("how often to water philodendron" -> also "water philodendron" for a page titled
+    "Philodendron Watering Tips"). Each keeps at least two topic words."""
+    words = [t for t, _, _ in tokens(query)]
+    out = []
+    named = [i for i, w in enumerate(words) if w in own and _topical(w)]
+    lo, hi = (named[0], named[-1] + 1) if named else (0, 0)
+    for key in (tuple(words), tuple(words[lo:hi])):
+        if 2 <= len(key) <= 5 and sum(_topical(w) for w in key) >= 2 and not any(YEAR.match(w) for w in key) \
+                and key not in out:
+            out.append(key)
+    return out
+
+
+def growth_targets(db, site, opportunities, buckets, names, owners, taken):
+    """{phrase: (target, why)} and {target: gain} for pages that already rank close to the top for a search.
+
+    A search becomes an anchor only when: it names the target (shares a topic word with its title), no other page's
+    title or slug contains it, no other page of the site ranks better for it (an anchor must not feed a competitor),
+    and it is not already some other page's title anchor."""
+    best = {}
+    for r in db.execute("SELECT url, query, pos FROM page_queries WHERE site=? AND pos IS NOT NULL", (site,)):
+        cur = best.get(r["query"])
+        if cur is None or r["pos"] < cur[1]:
+            best[r["query"]] = (r["url"], r["pos"])
+    keys, gains = {}, {}
+    for item in (opportunities or {}).get("items") or []:
+        t = item.get("url")
+        if item.get("kind") != "close_to_top" or t not in buckets or buckets[t][0] != "INDEXED" or "IGNORED" in buckets[t][1]:
+            continue
+        own = {w for c in names.get(t, ([], []))[0] for w in c if _topical(w)}
+        engine = "Google" if item.get("src") == "google" else "Bing"
+        for q in item.get("queries") or []:
+            leader = best.get(q["query"])
+            if leader and leader[0] != t and leader[1] < q["pos"]:
+                continue
+            for key in query_phrases(q["query"], own):
+                if not own & set(key) or owners.get(key, {t}) - {t} or key in taken or key in keys:
+                    continue
+                keys[key] = (t, f"Ranks about #{q['pos']:.0f} on {engine} for “{q['query']}” ({q['impr']:,} impressions in "
+                                f"4 weeks): links with that wording from pages that already rank help it toward the top 3.")
+                gains[t] = max(gains.get(t, 0.0), GROWTH_GAIN_SCALE * math.log1p(item.get("gain") or 0))
+    return keys, gains
+
+
 def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
     """Natural-anchor proposals: for each page where links should help (best expected gain first), up to
-    MAX_PER_TARGET links from different trusted pages whose article text already names it."""
+    MAX_PER_TARGET links from different trusted pages whose article text already names it. Two kinds of target:
+    pages not indexed yet (anchor: a whole phrase of the title) and indexed pages close to the top for a search
+    (anchor: that search, see growth_targets)."""
     titles = {r["url"]: r["title"] or "" for r in db.execute("SELECT url, title FROM audits")}
     out = []
     for site, wpc in clients.items():
@@ -362,6 +414,14 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
             for k, is_main in title_phrases(chunks, common).items():
                 if owners[k] == {t} and _usable(k, common, is_main, set(main), core):
                     keys[k] = t
+        why = {k: "Not indexed yet: links from pages Google already indexes raise the odds it gets indexed." for k in keys}
+        gains = dict(link_gain)
+        qkeys, qgains = growth_targets(db, site, res.get("opportunities"), buckets, names, owners, set(keys))
+        for k, (t, reason) in qkeys.items():
+            keys[k], why[k] = t, reason
+        for t, g in qgains.items():
+            gains[t] = max(gains.get(t, 0.0), g)
+        targets = sorted(set(targets) | set(qgains), key=lambda u: -gains.get(u, 0))
         strength = {}
         for u, (b, f) in buckets.items():
             if b in BLOCKERS or "IGNORED" in f or u not in texts or not (b == "INDEXED" or "BING_EARNER" in f):
@@ -377,7 +437,7 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
                 if src in strength and t != src and not links_to(raw, t):
                     hits[t].append((len(key) + strength[src], key, src, s, e))
         stock = {k for k, n in used.items() if n > max(3, STOCK_SHARE * len(texts))}
-        per_source, made = defaultdict(int), 0
+        per_source, made, paired = defaultdict(int), 0, set()
         for t in targets:
             if made >= per_site:
                 break
@@ -385,8 +445,8 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
             for rank, key, src, s, e in sorted(hits.get(t, []), key=lambda h: -h[0]):
                 if picked >= MAX_PER_TARGET or made >= per_site:
                     break
-                if key in stock or per_source[src] >= MAX_PER_SOURCE:
-                    continue
+                if key in stock or per_source[src] >= MAX_PER_SOURCE or (src, t) in paired:
+                    continue                             # one link per source and target, whichever wording ranks first
                 raw = texts[src]
                 hit = find(raw, raw[s:e], t)             # the occurrence apply() will link: the first safe one
                 if not hit:
@@ -397,12 +457,15 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
                     continue
                 out.append({"id": link_id(src, t), "site": site, "source": src, "source_title": titles.get(src, ""),
                             "target": t, "target_title": titles.get(t, ""), "anchor": raw[a:b], "context": context,
-                            "score": round(rank, 2), "gain": round(link_gain.get(t, 0), 4)})
+                            "score": round(rank, 2), "gain": round(gains.get(t, 0), 4), "why": why.get(key)})
                 per_source[src] += 1
+                paired.add((src, t))
                 picked += 1
                 made += 1
         n_targets = len({p["target"] for p in out if p["site"] == site})
-        log(f"[links] {site}: {made} link proposals with natural anchors for {n_targets} pages "
+        n_growth = len({p["target"] for p in out if p["site"] == site and p["target"] in qgains})
+        log(f"[links] {site}: {made} link proposals with natural anchors for {n_targets} pages ({n_growth} of them ranking "
+            f"close to the top: anchors from their searches) "
             f"({len(strength)} trusted source pages scanned, {len(stock)} stock phrases skipped, {changed} posts re-read)")
     return out
 

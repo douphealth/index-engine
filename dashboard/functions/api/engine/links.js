@@ -19,13 +19,14 @@ export const onRequestPost = handle(async ({ request, env }) => {
     if (!/^[0-9a-f]{16}$/.test(String(p.id)) || !SITE_RE.test(String(p.site))) continue;
     if (!/^https?:\/\//i.test(String(p.source)) || !/^https?:\/\//i.test(String(p.target))) continue;     // real pages only
     stmts.push(env.DB.prepare(
-      `INSERT INTO link_proposals (id, site, source, source_title, target, target_title, anchor, context, score, gain, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?)
+      `INSERT INTO link_proposals (id, site, source, source_title, target, target_title, anchor, context, score, gain, why, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?)
        ON CONFLICT(id) DO UPDATE SET source_title = excluded.source_title, target_title = excluded.target_title,
-         anchor = excluded.anchor, context = excluded.context, score = excluded.score, gain = excluded.gain, updated_at = excluded.updated_at
+         anchor = excluded.anchor, context = excluded.context, score = excluded.score, gain = excluded.gain, why = excluded.why,
+         updated_at = excluded.updated_at
        WHERE link_proposals.status = 'proposed'`
     ).bind(p.id, p.site, s(p.source, 600), s(p.source_title, 300), s(p.target, 600), s(p.target_title, 300), s(p.anchor, 200),
-      s(p.context, 600), Number(p.score) || 0, Number(p.gain) || 0, t, t));
+      s(p.context, 600), Number(p.score) || 0, Number(p.gain) || 0, s(p.why, 400), t, t));
   }
   for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
   return json({ ok: true, proposals: proposals.length });

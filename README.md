@@ -49,6 +49,13 @@ your PC (Windows task, every 10 min)                    Cloudflare: index-engine
   - Every link is backed up, verified in WordPress and on the page visitors get, logged, and can be undone.
   - Sites behind Cloudflare keep serving the old copy of a page for up to about 4 hours. After each link change the engine clears the cache of just that page with its own token (`Index-Engine-Cloudflare-Token.txt`, needs **Zone · Cache Purge**; it never tries any other credential). Without that permission the card says when visitors and Google will see the link, and every tick re-checks until they do.
   - Optional auto-approve stays off by default and never applies to gearuptofit.
+- **Growth links (since 6 Nov 2026).** A page that is indexed and ranks around positions 4–15 for a search (the Growth page's "close to the top") also gets internal-link proposals. The anchor is that search's own wording, taken from trusted pages whose text already says it. Guards:
+  - the search must name the page (share a word with its title);
+  - no other page's title or slug may contain it;
+  - no other page of the site may rank better for it, so a link never feeds a competing page;
+  - one link per source and target.
+
+  Each proposal says why on the Links page, and the Growth page shows each page's links applied and waiting. With Autopilot on they are applied like the others.
 - **Fresh-content autopilot.** Every 10-minute tick checks each WordPress site for posts published or updated since the last look. New ones are audited, inspected, gated and submitted within minutes. Google and Bing are then told the sitemap and feed changed, but only after the engine has re-read them and seen the new post (or its new version) listed. A cached sitemap is never resubmitted with old content; the daily run picks it up instead.
 - **Sitemaps and feeds for both engines** (`engine/sitemaps.py`).
   - Every sitemap root and the WordPress RSS feed (`/feed/`) are registered with Search Console and, since 5 Nov 2026, with Bing (`GetFeeds` / `SubmitFeed`). Google accepts an RSS or Atom feed as a sitemap. The XML sitemap is the full inventory; the feed carries recent changes.
