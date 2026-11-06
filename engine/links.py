@@ -598,7 +598,7 @@ def _site_guard_check():
 def apply(db, links, settings, clients, report):
     """Apply approved links and undo requested ones. report(id, status, result, applied_at) mirrors to the dashboard."""
     cap = max(0, min(MAX_PER_DAY, int(settings.get("links_per_site_per_day", 5) or 0)))
-    autopilot = bool(settings.get("link_autopilot"))
+    autopilot = settings.get("link_autopilot", True) is not False      # on unless the owner switched it off
     done = defaultdict(int)
     for r in db.execute("SELECT site FROM link_ops WHERE status='applied' AND julianday('now') - julianday(applied_at) < 1"):
         done[r["site"]] += 1

@@ -264,7 +264,15 @@ function viewActionCenter() {
       [h("div", { class: "card empty", text: "No matching website." })]));
   };
   draw();
-  return h("div", { class: "stack guide-root" }, headline, stats, steps, cards,
+  // A connected PC that reports no version runs an engine from before self-update: one manual pull, then it updates itself.
+  const seenEngine = setting("engine_last_seen", null);
+  const updateCard = data.connected && seenEngine && !seenEngine.version ? h("section", { class: "card stack" },
+    h("h2", { text: "Update the engine on your PC (one time)" }),
+    h("p", { class: "small", text: "Your PC runs an engine version from before self-update, so it misses the newer features: sitemaps and feeds " +
+      "for Google and Bing, direct Search Console links and Growth links. Open Command Prompt on the PC and run these three lines. " +
+      "After that it updates itself and this card disappears." }),
+    h("pre", { class: "small", text: "cd D:\\Claude\\SEO-Setup\\index-engine\ngit pull origin main\npython indexengine.py update" })) : null;
+  return h("div", { class: "stack guide-root" }, headline, updateCard, stats, steps, cards,
     h("div", { class: "card guide-footnote small muted" },
       "Evidence standard: indexation predictions are estimates, not outcomes. Inspect GSC URL evidence after changes. ",
       action("#/overview", "Open full analytics")));
@@ -303,6 +311,12 @@ function priorities() {
   if (es.cls === "bad") {
     add({ tier: 0, title: "Turn on your PC: the engine is offline", minutes: 1, cta: "Runs", href: "#/runs",
       why: `${seen ? `Last seen ${rel(seen.at)}` : "Never connected"}. Until it runs, no link is applied, no page is submitted or checked.` });
+  }
+  if (es.cls !== "bad" && seen && !seen.version) {
+    add({ tier: 0, title: "Update the engine on your PC (one time)", minutes: 2, cta: "Settings", href: "#/settings",
+      why: "Your PC runs an engine version from before self-update, so it misses the newer features (sitemaps and feeds for Google and Bing, " +
+        "working Search Console links, Growth links). In Command Prompt run: cd D:\\Claude\\SEO-Setup\\index-engine, then git pull origin main, " +
+        "then python indexengine.py update. After that it updates itself and this item disappears." });
   }
   if (setting("submit_paused", false)) {
     add({ tier: 0, title: "Everything is paused", minutes: 1, cta: "Resume", href: "#/settings",
@@ -1127,7 +1141,7 @@ function viewLinks(params) {
   const cap = Number(setting("links_per_site_per_day", 5));
   const paused = setting("submit_paused", false);
   const pausedSites = new Set(setting("sites_disabled", []));
-  const autopilot = setting("link_autopilot", false);
+  const autopilot = setting("link_autopilot", true);
   const es = engineStatus();
   const pcNote = es.cls === "bad" ? "your PC is offline, so it happens when it is switched on"
     : seen ? `your PC (last seen ${rel(seen.at)}) checks every 10 minutes` : "your PC checks every 10 minutes";
@@ -1357,7 +1371,7 @@ function viewSettings() {
   const inspect = h("input", { type: "number", min: 0, max: 2000, placeholder: "no cap", value: setting("inspect_max_per_site", null) ?? "" });
   const time = h("input", { type: "time", value: setting("daily_run_time", "10:30") });
   const freshChk = h("input", { type: "checkbox", checked: setting("fresh_check", true) });
-  const autopilot = h("input", { type: "checkbox", checked: setting("link_autopilot", false) });
+  const autopilot = h("input", { type: "checkbox", checked: setting("link_autopilot", true) });
   const linkCap = h("input", { type: "number", min: 0, max: 10, value: setting("links_per_site_per_day", 5) });
   const autoUpdate = h("input", { type: "checkbox", checked: setting("auto_update", true) });
   const running = (setting("engine_last_seen", null) || {}).version;

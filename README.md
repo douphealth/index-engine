@@ -48,7 +48,7 @@ your PC (Windows task, every 10 min)                    Cloudflare: index-engine
   - You approve on the Links page; your PC applies them within 10 minutes, at most N per site per day (default 5, max 10).
   - Every link is backed up, verified in WordPress and on the page visitors get, logged, and can be undone.
   - Sites behind Cloudflare keep serving the old copy of a page for up to about 4 hours. After each link change the engine clears the cache of just that page with its own token (`Index-Engine-Cloudflare-Token.txt`, needs **Zone · Cache Purge**; it never tries any other credential). Without that permission the card says when visitors and Google will see the link, and every tick re-checks until they do.
-  - Optional auto-approve stays off by default and never applies to gearuptofit.
+  - Autopilot is on unless you switch it off in Settings (since 6 Nov 2026): the best-ranked proposals are applied without waiting for approval, within the daily cap per site. It never applies to gearuptofit, whose rules require your click.
 - **Growth links (since 6 Nov 2026).** A page that is indexed and ranks around positions 4–15 for a search (the Growth page's "close to the top") also gets internal-link proposals. The anchor is that search's own wording, taken from trusted pages whose text already says it. Guards:
   - the search must name the page (share a word with its title);
   - no other page's title or slug may contain it;

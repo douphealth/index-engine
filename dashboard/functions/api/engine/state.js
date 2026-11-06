@@ -19,8 +19,11 @@ export const onRequestGet = handle(async ({ request, env }) => {
   ]);
   const s = {};
   for (const r of settings.results) s[r.key] = JSON.parse(r.value);
+  // Link autopilot is on unless the owner switched it off. The effective value goes back in the settings, so an
+  // engine that reads the setting directly (older versions) follows the same rule.
+  s.link_autopilot = s.link_autopilot !== false;
   let work = links.results;
-  if (s.link_autopilot === true) {
+  if (s.link_autopilot) {
     const auto = await env.DB.prepare(
       `SELECT id, site, source, target, anchor, status FROM link_proposals
        WHERE status = 'proposed' AND site NOT IN (${STRICT_SITES.map(() => "?").join(",")}) ORDER BY gain DESC LIMIT 60`
