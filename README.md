@@ -190,6 +190,21 @@ The first run fetches every page (about 4,000 URLs across the 10 sites on 23 Oct
 - **Clicking "Request indexing" for you.** There is no API for it, and automating the Search Console UI is bot activity. The app gives you a short daily list (`request_indexing_today.csv`) with direct links instead. It includes only URLs where a request can help: Google has never seen the page, the page has been fixed since Google's last look, or it changed after Google crawled it.
 - **Editing your sites.** It recommends; you or an agent apply changes one batch at a time (see `PORTFOLIO-GUARDRAILS.md`).
 
+## AXIOM change control (site write lock)
+
+Every WordPress content write (link insert or undo, and any `WPClient.update`) is meant to happen while the engine holds the
+site's global write lock, shared with the AXIOM bots, Hermes and cloud agents (protocol `axiom-cc v1`: create-only
+`axiom-cc/lock|release/<site>/<n>` refs plus a JSON ledger issue, see `engine/axiom_cc.py`).
+
+- `AXIOM_CC_MODE`, or `change_lock_mode` if that key is already in the settings payload the engine reads. The stricter one wins. The dashboard settings form does not save this key yet, so the environment variable is the switch.
+  - `off`: no checks.
+  - `observe` (default): takes and releases the lock when it can and logs what `enforce` would block; never blocks.
+  - `enforce`: no lock means no write (left approved, retried next tick). Ledger unreachable or no token means no write (fail closed), unless `AXIOM_CC_FAIL_OPEN=1`.
+- Token: `AXIOM_CC_TOKEN`, or the file `AXIOM-Change-Control-Token.txt` next to the other credential files (`INDEX_ENGINE_CC_TOKEN_FILE`). It needs to be a fine-grained token limited to the ledger repo (Contents and Issues: read/write). A general `GITHUB_TOKEN` is ignored on purpose, and the token is scrubbed from logs.
+- Location: `AXIOM_CC_REPO` (default `douphealth/hermes-config-001`), `AXIOM_CC_LEDGER_ISSUE` (default `6`).
+- Stale locks are reported, never broken.
+- Not gated: IndexNow, Bing and GSC submissions, Cloudflare cache purges, and the Yoast and code-snippets fixes scripts (they do not call `WPClient.update`). A script that does, including `fixes/gutf_recover_20261028.py`, is refused in enforce mode unless this process holds the lock.
+
 ## Output (`out/`)
 
 | File | Use it for |

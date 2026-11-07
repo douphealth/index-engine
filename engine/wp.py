@@ -117,4 +117,6 @@ class WPClient:
                 page += 1
 
     def update(self, pid, typ, raw):
+        from . import changelock
+        changelock.guard_update(self.site)
         return self._call("POST", f"{typ}/{pid}", json={"content": raw})
