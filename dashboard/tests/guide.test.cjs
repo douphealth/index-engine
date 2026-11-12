@@ -87,7 +87,7 @@ test("keeps indexing submissions separate from observed outcomes", () => {
   const d = derive(summary, state, { now: NOW });
   assert.equal(d.impact.gained, 3);
   assert.match(d.steps[4].detail, /not proof/);
-  assert.equal(d.steps[4].href, "#/overview");
+  assert.equal(d.steps[4].href, "#/results");
 });
 
 test("does not crash while a first run is pending or data are empty", () => {

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Analysis, offline (local data only): triage -> odds model -> request list ranked by expected gain ->
 best next actions -> measured impact of past actions."""
-from . import aiaccess, impact, model, opportunities, revival, traffic, triage
+from . import aiaccess, impact, model, opportunities, results as measured, revival, traffic, triage
 
 
 def analyze(db, sites):
@@ -18,5 +18,7 @@ def analyze(db, sites):
         res["revival"] = revival.analyze(db, site, res["traffic"])
         res["revival"]["headline"] = revival.headline(site, res["traffic"], res["revival"], res["health"])
     db.commit()
-    return results, {"model": meta, "actions": actions, "potential": potential, "link_gain": gains["add_links"],
+    learned = measured.summary(db)
+    learned["calibration"] = measured.calibration(db, learned)
+    return results, {"results": learned, "model": meta, "actions": actions, "potential": potential, "link_gain": gains["add_links"],
                      "impact": impact.compute(db)}

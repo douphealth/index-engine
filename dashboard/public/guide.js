@@ -129,8 +129,8 @@
         number: 5, title: "Verify observed outcomes",
         metric: lastSuccess ? "Last successful run recorded" : "No completed run recorded",
         status: lastSuccess && fresh ? "ready" : "attention",
-        detail: "Check Google's latest recorded verdicts and measured gains/losses. Submission is not proof of indexing.",
-        href: "#/overview", cta: "See evidence & trends",
+        detail: "See what the engine's links measurably did, against similar pages that got none, and Google's latest verdicts. Submission is not proof of indexing.",
+        href: "#/results", cta: "See measured results",
       },
     ];
     return {

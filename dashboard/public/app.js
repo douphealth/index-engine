@@ -836,6 +836,56 @@ function aiAccessCard(sites) {
     h("div", { class: "muted tiny", text: "A ✓ from a live request is conclusive. A block at the edge is evidence, not proof: the request comes from your PC, not from the crawler's own network." }));
 }
 
+/* ------------------------------------------------------------------ measured results of the engine's links */
+function viewResults() {
+  if (!S.summary) return noData();
+  const R = S.summary.results || {};
+  const g = R.growth, ix = R.index, cal = R.calibration || {};
+  const signed = (x) => (x === null || x === undefined ? "–" : `${x > 0 ? "+" : ""}${Math.round(x * 100)}%`);
+  const posTxt = (x) => (x === null || x === undefined ? "–" : x < 0 ? `${Math.abs(x)} places higher` : x > 0 ? `${x} places lower` : "no change");
+  const stat = (big, label) => h("div", { class: "kpi" }, h("div", { class: "v", text: big }), h("div", { class: "l", text: label }));
+  const learned = (k, what) => {
+    const m = cal[k] || 1;
+    return m > 1 ? `${what} measurably beat similar pages without links, so the engine now ranks them higher.`
+      : m < 1 ? `${what} did not beat similar pages without links, so the engine now ranks them lower and favours what works.`
+      : `${what}: not enough measured pages yet to change how they are ranked (needs 15).`;
+  };
+  const growthCard = g ? h("div", { class: "card stack" }, h("h2", { text: `Links to pages that already rank (${fmt(g.n)} measured)` }),
+    h("div", { class: "grid kpis" },
+      stat(signed(g.median_impr_lift), "impressions, beyond what similar unlinked pages did"),
+      stat(signed(g.median_clicks_lift), "clicks, beyond similar unlinked pages"),
+      stat(posTxt(g.median_pos_change), "average position, beyond similar unlinked pages"),
+      stat(`${fmt(g.beat_controls)} of ${fmt(g.n)}`, `pages beat their comparison pages${g.p_value !== null && g.p_value !== undefined ? ` (chance this is luck: ${g.p_value < 0.001 ? "<0.1%" : Math.round(g.p_value * 1000) / 10 + "%"})` : ""}`)),
+    h("p", { class: "small", text: learned("growth", "Links to ranking pages") }))
+    : h("div", { class: "card stack" }, h("h2", { text: "Links to pages that already rank" }),
+      h("p", { class: "muted small", text: "No page measured yet. Each page is measured 31 days after its first link: the 28 days before against the 28 days after, compared with similar pages of the same site that got no link." }));
+  const indexCard = ix ? h("div", { class: "card stack" }, h("h2", { text: `Links to pages not indexed yet (${fmt(ix.n)} measured)` }),
+    h("div", { class: "grid kpis" },
+      stat(pct(ix.indexed_rate), "indexed by Google within 30 days of the link"),
+      stat(pct(ix.control_rate), "of similar pages without a link, in the same 30 days"),
+      stat(ix.lift === null || ix.lift === undefined ? "–" : `${ix.lift > 0 ? "+" : ""}${Math.round(ix.lift * 100)} pts`, "difference, in percentage points")),
+    h("p", { class: "small", text: learned("index", "Links to unindexed pages") }))
+    : h("div", { class: "card stack" }, h("h2", { text: "Links to pages not indexed yet" }),
+      h("p", { class: "muted small", text: "No page measured yet. A page counts once Google has inspected it again after its first link (31+ days)." }));
+  const rows = (R.pages || []).map((p) => {
+    const d = p.data || {};
+    const what = p.kind === "growth"
+      ? `impressions ${signed(d.impr_lift)}, clicks ${signed(d.clicks_lift)} vs similar pages; position ${d.before && d.before.pos || "–"} → ${d.after && d.after.pos || "–"}`
+        + (d.anchor_query ? `; “${d.anchor_query.query}” ${d.anchor_query.pos_before || "–"} → ${d.anchor_query.pos_after || "–"}` : "")
+      : `${d.indexed ? "indexed" : "not indexed"} within 30 days (similar unlinked pages: ${pct(d.control_rate)})`;
+    return h("tr", {}, h("td", { class: "page" }, h("a", { href: p.target, target: "_blank", rel: "noopener", text: shortPath(p.target) || p.target }),
+      h("div", { class: "muted tiny", text: p.site })),
+      h("td", { text: p.kind === "growth" ? "already ranked" : "not indexed" }), h("td", { class: "n", text: fmt(p.links) }),
+      h("td", { text: (p.applied_at || "").slice(0, 10) }), h("td", { class: "small", text: what }));
+  });
+  return h("div", { class: "stack" }, h("h1", { text: "Results" }),
+    h("p", { class: "muted", text: "What the internal links the engine applied measurably did. Each linked page is compared with similar pages of the same site that got no link in the same weeks, so seasonal and site-wide swings cancel out. These are comparisons on your own sites, not controlled experiments: strong evidence, not proof." }),
+    growthCard, indexCard,
+    rows.length ? h("div", { class: "card stack" }, h("h2", { text: "Measured pages" }), h("div", { class: "tablewrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ...["Page", "Before the link", "Links", "First link", "Result"].map((x, i) => h("th", { class: i === 2 ? "n" : null, text: x })))),
+      h("tbody", {}, ...rows)))) : null);
+}
+
 async function viewGrowth(params) {
   if (!S.summary) return noData();
   const sites = S.summary.sites.filter((s) => !isPaused(s.site));
@@ -1454,7 +1504,7 @@ async function render() {
   const app = document.getElementById("app");
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
   const [asked, arg] = path.split("/");
-  const route = ["site", "overview", "revival", "growth", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
+  const route = ["site", "overview", "revival", "growth", "results", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
   const params = new URLSearchParams(query || "");
   setTab(route === "site" ? "" : route || "");
   document.title = `${route === "site" && arg ? safeDecode(arg) : (route ? route[0].toUpperCase() + route.slice(1) : "Overview")} · Index Engine`;
@@ -1464,6 +1514,7 @@ async function render() {
     else if (route === "overview") node = viewOverview();
     else if (route === "revival") node = await viewRevival(params);
     else if (route === "growth") node = await viewGrowth(params);
+    else if (route === "results") node = viewResults();
     else if (route === "plan") node = viewPlan(params);
     else if (route === "links") node = viewLinks(params);
     else if (route === "alerts") node = viewAlerts();

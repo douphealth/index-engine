@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine import (aiaccess, alerts, audit, bing, brain, config, discover, fresh, google, links, publish,  # noqa: E402
                     queries, report, revival, sitemaps, store, submit, traffic, update, wp)
+from engine import results as measured  # noqa: E402
 from engine.dashboard import Dashboard, apply_state, cached_settings, safe  # noqa: E402
 from engine.util import load_credentials, log, log_text, now_iso, open_log, parse_ts, utf8_stdout  # noqa: E402
 
@@ -171,6 +172,7 @@ def pipeline(db, args, sites):
     if props:
         google.pull_performance(db, gclient, props)
         queries.pull_google(db, gclient, props)                    # every (query, page) pair: one call per property
+        measured.measure(db, gclient, props)                       # did the links the engine applied work? (read-only)
     if bsites:
         bing.pull_performance(db, bclient, bsites)
         queries.pull_bing(db, bclient, bsites, max_total=QUERY_DAILY_MAX)   # more pages are read on idle ticks

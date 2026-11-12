@@ -104,7 +104,7 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             t[0] += bc; t[1] += bi; t[2] += gc; t[3] += gi
     portfolio_series = [[d, *v] for d, v in sorted(series.items())]
     summary = {"generated_at": generated_at, "evidence_schema": 2, "sites": sites, "requests": requests_, "portfolio_series": portfolio_series,
-               "model": intel.get("model"), "impact": imp,
+               "model": intel.get("model"), "impact": imp, "results": intel.get("results"),
                "actions": [dict(a, gsc_link=glinks.get(a.get("url"))) for a in intel.get("actions") or []]}
     return summary, tables, {"totals": totals, "sites": per_site}
 

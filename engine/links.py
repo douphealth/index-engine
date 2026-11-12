@@ -340,7 +340,7 @@ def query_phrases(query, own=frozenset()):
     return out
 
 
-def growth_targets(db, site, opportunities, buckets, names, owners, taken):
+def growth_targets(db, site, opportunities, buckets, names, owners, taken, scale=1.0):
     """{phrase: (target, why)} and {target: gain} for pages that already rank close to the top for a search.
 
     A search becomes an anchor only when: it names the target (shares a topic word with its title), no other page's
@@ -367,7 +367,7 @@ def growth_targets(db, site, opportunities, buckets, names, owners, taken):
                     continue
                 keys[key] = (t, f"Ranks about #{q['pos']:.0f} on {engine} for “{q['query']}” ({q['impr']:,} impressions in "
                                 f"4 weeks): links with that wording from pages that already rank help it toward the top 3.")
-                gains[t] = max(gains.get(t, 0.0), GROWTH_GAIN_SCALE * math.log1p(item.get("gain") or 0))
+                gains[t] = max(gains.get(t, 0.0), GROWTH_GAIN_SCALE * scale * math.log1p(item.get("gain") or 0))
     return keys, gains
 
 
@@ -377,6 +377,9 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
     pages not indexed yet (anchor: a whole phrase of the title) and indexed pages close to the top for a search
     (anchor: that search, see growth_targets)."""
     titles = {r["url"]: r["title"] or "" for r in db.execute("SELECT url, title FROM audits")}
+    from . import results as measured
+    learned = measured.calibration(db)              # what the engine's own measured links say about each kind
+    link_gain = {u: g * learned["index"] for u, g in link_gain.items()}
     out = []
     for site, wpc in clients.items():
         res = results.get(site) or {}
@@ -416,7 +419,8 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
                     keys[k] = t
         why = {k: "Not indexed yet: links from pages Google already indexes raise the odds it gets indexed." for k in keys}
         gains = dict(link_gain)
-        qkeys, qgains = growth_targets(db, site, res.get("opportunities"), buckets, names, owners, set(keys))
+        qkeys, qgains = growth_targets(db, site, res.get("opportunities"), buckets, names, owners, set(keys),
+                                       scale=learned["growth"])
         for k, (t, reason) in qkeys.items():
             keys[k], why[k] = t, reason
         for t, g in qgains.items():

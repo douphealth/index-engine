@@ -78,6 +78,17 @@ class GSCClient:
                 return rows
             start_row += len(got)
 
+    def search_page_queries(self, prop, page, start, end):
+        """{query: (clicks, impressions, position)} for one page in a date range (all data, final and fresh)."""
+        r = self._s().post(f"{API}/sites/{quote(prop, safe='')}/searchAnalytics/query",
+                           json={"startDate": str(start), "endDate": str(end), "dimensions": ["query"], "rowLimit": 5000,
+                                 "dimensionFilterGroups": [{"filters": [{"dimension": "page", "operator": "equals",
+                                                                         "expression": page}]}]}, timeout=180)
+        if r.status_code != 200:
+            raise RuntimeError(f"searchAnalytics(page queries) HTTP {r.status_code}: {r.text[:160]}")
+        return {row["keys"][0].lower(): (int(row.get("clicks", 0)), int(row.get("impressions", 0)), float(row.get("position") or 0))
+                for row in r.json().get("rows", [])}
+
     def search_dates(self, prop, start, end):
         """Daily clicks and impressions for the whole property, final data only."""
         r = self._s().post(f"{API}/sites/{quote(prop, safe='')}/searchAnalytics/query",

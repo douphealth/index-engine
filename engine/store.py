@@ -100,6 +100,10 @@ CREATE TABLE IF NOT EXISTS page_queries(src TEXT, url TEXT, site TEXT, query TEX
 CREATE INDEX IF NOT EXISTS page_queries_site ON page_queries(site, src);
 CREATE TABLE IF NOT EXISTS query_fetch(src TEXT, url TEXT, site TEXT, fetched_at TEXT, rows INT, PRIMARY KEY(src, url));
 
+-- Measured result of the engine's links per target page (engine/results.py): before/after against unlinked pages.
+CREATE TABLE IF NOT EXISTS results(target TEXT PRIMARY KEY, site TEXT, kind TEXT, applied_at TEXT, links INT,
+  anchor TEXT, measured_at TEXT, data TEXT);
+
 -- Whether each search and AI crawler may read the site (robots.txt) and what a request in its name gets (the edge).
 CREATE TABLE IF NOT EXISTS ai_access(site TEXT, bot TEXT, role TEXT, robots_ok INT, http INT, state TEXT, checked_at TEXT,
   PRIMARY KEY(site, bot));
