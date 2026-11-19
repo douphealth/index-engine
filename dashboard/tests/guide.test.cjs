@@ -154,3 +154,15 @@ test("a paused site's traffic drop is not raised", () => {
   state.settings.sites_disabled = { value: ["one.example"] };
   assert.equal(derive(summary, state, { now: NOW }).drops.length, 0);
 });
+
+test("a site a search engine has nearly stopped showing outranks a 28-day verdict of stable", () => {
+  const { summary, state } = withTraffic({ bing: "stable", google: "stable" });
+  summary.sites[0].recovery = { state: "collapsed", engine: "google", totals: { fix: 2, noindex: 40, merge: 3 } };
+  const d = derive(summary, state, { now: NOW });
+  assert.deepEqual(d.collapsed, ["one.example"]);
+  assert.equal(d.steps[2].status, "attention");
+  assert.match(d.steps[2].detail, /almost stopped showing/);
+  assert.match(d.steps[2].href, /^#\/recovery\?site=one\.example$/);
+  state.settings.sites_disabled = { value: ["one.example"] };
+  assert.deepEqual(derive(summary, state, { now: NOW }).collapsed, []);
+});

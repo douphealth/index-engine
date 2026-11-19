@@ -175,6 +175,7 @@ def pipeline(db, args, sites):
         measured.measure(db, gclient, props)                       # did the links the engine applied work? (read-only)
     if bsites:
         bing.pull_performance(db, bclient, bsites)
+        bing.pull_inbound_links(db, bclient, bsites)               # weekly: pages other sites link to (prune plan safety)
         queries.pull_bing(db, bclient, bsites, max_total=QUERY_DAILY_MAX)   # more pages are read on idle ticks
     if not args.no_creds:
         aiaccess.run(db, sites)                                      # can search and AI crawlers read each site?

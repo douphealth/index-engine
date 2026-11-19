@@ -89,7 +89,7 @@
           stale: snapshotAge === null || snapshotAge > 1.5 || auditAge === null || auditAge > 7,
           clicks: (num(row.gsc_clicks) || 0) + (num(row.bing_clicks) || 0),
           clicksKnown: num(row.gsc_clicks) !== null || num(row.bing_clicks) !== null,
-          review: row.bucket !== "INDEXED" || flags.some(f => ["TRUST_RISK", "NEAR_DUPLICATE", "HEAVY_PAGE", "NOT_IN_SITEMAP"].includes(f)),
+          review: row.bucket !== "INDEXED" || flags.some(f => ["TRUST_RISK", "NEAR_DUPLICATE", "HEAVY_PAGE", "NOT_IN_SITEMAP", "TEMPLATE_ARTIFACT"].includes(f)),
         });
       }
       coverage.push({ site: meta.site, loaded: true, count, invalid, paused: disabled.has(meta.site), generatedAt: table.generated_at });

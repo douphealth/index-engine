@@ -354,6 +354,26 @@ function priorities() {
     }
   }
 
+  // ---- a site an engine has (nearly) stopped showing: nothing else on it matters until the cause is known
+  for (const s of live) {
+    const r = s.recovery;
+    if (!r || !["collapsed", "severe_drop"].includes(r.state)) continue;
+    const t = r.totals || {};
+    add({ tier: 0, site: s.site, minutes: 30, cta: "Open Recovery", href: `#/recovery?site=${encodeURIComponent(s.site)}`,
+      title: `${ENGINE[r.engine] || "Search"} has ${r.state === "collapsed" ? "almost stopped showing" : "sharply cut"} ${s.site}`,
+      why: `${r.headline} First rule out a manual action; then the prune plan: ${plural(t.fix || 0, "page")} to fix, ${fmt(t.noindex || 0)} to noindex, ` +
+        `${fmt(t.merge || 0)} to merge. Submitting or requesting indexing will not change a site-wide judgment.` });
+  }
+  for (const s of live) {
+    const tp = (s.recovery || {}).templates;
+    if (tp && tp.pages >= Math.max(3, 0.1 * (tp.scanned || 0)) && !["collapsed", "severe_drop"].includes((s.recovery || {}).state)) {
+      add({ tier: 3, site: s.site, minutes: tp.pages * 10, cta: "See pages", href: `#/site/${s.site}?flag=TEMPLATE_ARTIFACT`,
+        title: `Remove automated-content leftovers from ${plural(tp.pages, "post")} on ${s.site}`,
+        why: "Numbered template headings, pipeline leftovers or the same headings repeated across posts. These are what Google's scaled-content policy targets." });
+    }
+  }
+  const recovering = new Set(live.filter((s) => s.recovery && s.recovery.engine === "google" && ["collapsed", "severe_drop"].includes(s.recovery.state)).map((s) => s.site));
+
   // ---- quick wins: ranked by expected pages per minute
   const proposed = S.st.links.filter((l) => l.status === "proposed" && liveSet.has(l.site));
   for (const [site, ls] of Object.entries(bySite(proposed))) {
@@ -369,7 +389,7 @@ function priorities() {
   }
   const rate = requestRate();
   const perDay = setting("manual_queue_per_site", 10) || 10;
-  for (const [site, rs] of Object.entries(bySite(openRequests().filter((r) => liveSet.has(r.site))))) {
+  for (const [site, rs] of Object.entries(bySite(openRequests().filter((r) => liveSet.has(r.site) && !recovering.has(r.site))))) {
     const today = rs.slice(0, perDay);
     const gain = today.reduce((g, r) => g + rate * (1 - (r.odds === "" || r.odds === null || r.odds === undefined ? 0.2 : +r.odds)), 0);
     add({ tier: 1, site, gain, minutes: today.length, cta: "Request", href: `#/requests?site=${encodeURIComponent(site)}`,
@@ -1497,6 +1517,113 @@ function viewConnections() {
       h("tbody", {}, ...rows))));
 }
 
+
+/* ------------------------------------------------------------------ recovery
+   Is each engine still showing the site at all, and for a site it has (nearly) stopped showing: the steps that rule out
+   a technical cause, then one decision per page (keep, fix, merge, redirect, noindex, review) with its evidence. */
+const VIS = {
+  collapsed: ["Collapsed", "v bad"], severe_drop: ["Severe drop", "v bad"], declining: ["Declining", "v warn"], stable: ["Stable", "v"],
+  growing: ["Growing", "v good"], never_visible: ["Little search data", ""], too_little_data: ["Not enough history", ""],
+};
+const DECISION = {
+  fix: ["Fix", "Earns impressions or clicks but is flagged (trust, thin, templated). Fix these first: they are pages Google still shows."],
+  noindex: ["Noindex", "No clicks and next to no impressions on either engine, and thin, flagged or left out of Google's index. Noindex is reversible."],
+  merge: ["Merge", "A near-copy of a stronger page. Move anything unique into the target, then 301."],
+  redirect: ["Redirect", "No search value, but other sites link to it. 301 to the target so the links keep counting."],
+  review: ["Review", "The rules do not decide it. Your call."],
+  keep: ["Keep", "Earns search traffic, or is the home page or a hub."],
+};
+function visChip(e) {
+  const [label, cls] = VIS[(e || {}).state] || VIS.too_little_data;
+  return h("span", { class: `chip ${cls}`, text: label });
+}
+function visLine(e, name) {
+  if (!e || !e.ref_impr_per_day) return h("div", { class: "small muted", text: `${name}: not enough daily data yet.` });
+  const st = e.step ? ` Biggest step down around ${e.step.day}: ${fmt(Math.round(e.step.before))} → ${fmt(Math.round(e.step.after))} impressions/day.` : "";
+  return h("div", { class: "small" }, h("b", { text: `${name}: ` }), visChip(e),
+    h("span", { text: ` ${fmt(Math.round(e.recent_impr_per_day))} impressions/day in the last 14 days against a usual ${fmt(Math.round(e.ref_impr_per_day))} (${pct(e.ratio)}).${st}` }));
+}
+function pruneCsv(site, rows) {
+  const cols = ["decision", "url", "title", "why", "target", "bucket", "flags", "google_clicks_90d", "google_impr_90d", "bing_clicks", "bing_impr", "words", "age_days", "inbound_links"];
+  const esc = (v) => { const t = v === null || v === undefined ? "" : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+  const text = [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n");
+  const a = h("a", { href: URL.createObjectURL(new Blob(["﻿" + text], { type: "text/csv" })), download: `prune-plan-${site}.csv` });
+  document.body.append(a); a.click(); a.remove();
+}
+async function viewRecovery(params) {
+  if (!S.summary) return noData();
+  const sites = S.summary.sites.filter((s) => !isPaused(s.site) && s.recovery);
+  const intro = h("div", { class: "stack" }, h("h1", { text: "Recovery" }),
+    h("p", { class: "muted", text: "Is each engine still showing your sites at all? Recent impressions are compared with each site's own usual level over the past year, " +
+      "not only with the month before, so a collapse that happened months ago is not read as “stable”. For a site Google judges as a whole, the lever is fewer, " +
+      "better pages: every page gets one decision with its evidence. Nothing here edits a site." }));
+  if (!sites.length) return h("div", { class: "stack" }, intro, h("div", { class: "card empty", text: "No recovery data yet. It appears after the next daily run of the updated engine." }));
+  const v = (S.view.__recovery ||= { site: "", decision: "" });
+  preset(v, params, ["site", "decision"]);
+  const rank = { collapsed: 0, severe_drop: 1, declining: 2, stable: 3, growing: 4, never_visible: 5, too_little_data: 6 };
+  const order = [...sites].sort((a, b) => (rank[a.recovery.state] ?? 9) - (rank[b.recovery.state] ?? 9));
+  const chosen = order.some((s) => s.site === v.site) ? v.site : order[0].site;
+  const open = (site) => { location.hash = `#/recovery?site=${encodeURIComponent(site)}`; };
+  const table = h("div", { class: "tablewrap" }, h("table", {},
+    h("thead", {}, h("tr", {}, ...["Site", "Google", "Bing", "Fix", "Noindex", "Merge", "Templated posts"].map((x, i) => h("th", { class: i > 2 ? `n${i > 4 ? " hide-sm" : ""}` : (i === 2 ? "hide-sm" : null), text: x })))),
+    h("tbody", {}, ...order.map((s) => {
+      const r = s.recovery, t = r.totals || {};
+      return h("tr", { class: `click ${s.site === chosen ? "sel" : ""}`, tabindex: "0", role: "button", "aria-label": `Show ${s.site}`, onclick: () => open(s.site),
+        onkeydown: (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); open(s.site); } } },
+        h("td", {}, h("b", { text: s.site })), h("td", {}, visChip(r.google)), h("td", { class: "hide-sm" }, visChip(r.bing)),
+        h("td", { class: "n", text: fmt(t.fix) }), h("td", { class: "n", text: fmt(t.noindex) }), h("td", { class: "n hide-sm", text: fmt(t.merge) }),
+        h("td", { class: "n hide-sm", text: r.templates ? `${fmt(r.templates.pages)} / ${fmt(r.templates.scanned)}` : "–" }));
+    }))));
+  const s = order.find((x) => x.site === chosen);
+  const r = s.recovery;
+  const steps = (r.steps || []).map((st, i) => h("li", {}, h("span", { text: st.what + " " }),
+    st.href ? h("a", { href: st.href, target: st.href.startsWith("#") ? null : "_blank", rel: "noopener", text: st.cta || "Open" }) : null));
+  const tp = r.templates || {};
+  const boiler = (tp.boilerplate || []).slice(0, 6).map(([hd, n]) => h("li", { class: "small" }, h("span", { text: `“${hd}” ` }), h("span", { class: "muted", text: `on ${fmt(n)} posts` })));
+  const card = h("div", { class: "card stack" },
+    h("h2", { text: s.site, style: { margin: 0 } }),
+    r.headline ? h("p", { text: r.headline }) : h("p", { class: "muted", text: "No collapse or severe drop on either engine." }),
+    visLine(r.google, "Google"), visLine(r.bing, "Bing"),
+    r.breadth && r.breadth.pages_90d ? h("div", { class: "small muted", text: `Pages Google showed at all: ${fmt(r.breadth.pages_14d)} in the last 14 days, ${fmt(r.breadth.pages_90d)} in 90 days.` }) : null,
+    steps.length ? h("ol", { class: "stack small" }, ...steps) : null,
+    boiler.length ? h("details", { class: "small" }, h("summary", { text: `Headings repeated across ${s.site}'s posts (${fmt(tp.pages)} of ${fmt(tp.scanned)} posts carry template signs)` }), h("ul", {}, ...boiler)) : null,
+    r.inbound_known ? null : h("div", { class: "small muted", text: "Bing's inbound-link report has not been read for this site yet, so pages with outside links cannot be told apart: check backlinks before noindexing." }));
+
+  const data = await loadSite(chosen);
+  const all = (data && data.prune) || [];
+  const counts = Object.fromEntries(Object.keys(DECISION).map((k) => [k, all.filter((x) => x.decision === k).length]));
+  const dec = counts[v.decision] ? v.decision : "";
+  const items = dec ? all.filter((x) => x.decision === dec) : all.filter((x) => x.decision !== "keep");
+  const filter = h("div", { class: "row" },
+    h("button", { class: `btn small ${dec ? "" : "primary"}`, onclick: () => { v.decision = ""; render(); } }, `To act on (${all.length - (counts.keep || 0)})`),
+    ...Object.entries(DECISION).filter(([k]) => counts[k]).map(([k, [label]]) =>
+      h("button", { class: `btn small ${dec === k ? "primary" : ""}`, title: DECISION[k][1], onclick: () => { v.decision = k; render(); } }, `${label} (${counts[k]})`)),
+    h("span", { class: "spacer" }),
+    all.length ? h("button", { class: "btn small", onclick: () => pruneCsv(chosen, all) }, "Download CSV") : null);
+  const SHOW = 300;
+  const whyOf = (x) => [h("div", { text: x.why }), ...(x.artifacts || []).map((a) => h("div", { class: "tiny muted", text: a }))];
+  const body = items.slice(0, SHOW).map((x) => h("tr", {},
+    h("td", { class: "page" }, httpUrl(x.url) ? h("a", { href: x.url, target: "_blank", rel: "noopener", text: x.title || shortPath(x.url) }) : h("span", { text: x.title || x.url }),
+      h("div", { class: "tiny muted", text: shortPath(x.url) }),
+      x.target ? h("div", { class: "tiny" }, h("span", { text: "→ " }), h("a", { href: x.target, target: "_blank", rel: "noopener", text: shortPath(x.target) })) : null,
+      h("div", { class: "show-sm small" }, h("span", { class: "chip", text: (DECISION[x.decision] || [x.decision])[0] }),
+        h("span", { class: "muted tiny", text: `${fmt(x.google_clicks_90d + x.bing_clicks)} clicks · ${fmt(x.google_impr_90d + x.bing_impr)} impressions` }), ...whyOf(x))),
+    h("td", { class: "hide-sm" }, h("span", { class: "chip", title: (DECISION[x.decision] || [])[1] || "", text: (DECISION[x.decision] || [x.decision])[0] })),
+    h("td", { class: "n hide-sm", text: `${fmt(x.google_clicks_90d + x.bing_clicks)}` }),
+    h("td", { class: "n hide-sm", text: fmt(x.google_impr_90d + x.bing_impr) }),
+    h("td", { class: "n hide-sm", text: fmt(x.words) }),
+    h("td", { class: "small hide-sm" }, ...whyOf(x))));
+  const plan = h("div", { class: "card stack" }, h("h2", { text: "Page decisions", style: { margin: 0 } }),
+    h("p", { class: "small muted", text: "Clicks and impressions: Google's last 90 days plus Bing's page report. Apply one batch at a time, with a backup, and re-check two to four weeks later. " +
+      "Check clicks on both engines before removing anything (they are in the row)." }),
+    filter,
+    items.length ? h("div", { class: "tablewrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ...["Page", "Decision", "Clicks", "Impressions", "Words", "Why"].map((x, i) => h("th", { class: i ? `${[2, 3, 4].includes(i) ? "n " : ""}hide-sm` : null, text: x })))),
+      h("tbody", {}, ...body))) : h("div", { class: "empty", text: "No pages in this group." }),
+    items.length > SHOW ? h("div", { class: "small muted", text: `Showing ${SHOW} of ${fmt(items.length)}. Download the CSV for all of them.` }) : null);
+  return h("div", { class: "stack" }, intro, table, card, plan);
+}
+
 /* ------------------------------------------------------------------ router */
 const safeDecode = (x) => { try { return decodeURIComponent(x); } catch { return x; } };   // a hand-typed "%" must not break the page
 
@@ -1504,7 +1631,7 @@ async function render() {
   const app = document.getElementById("app");
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
   const [asked, arg] = path.split("/");
-  const route = ["site", "overview", "revival", "growth", "results", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
+  const route = ["site", "overview", "recovery", "revival", "growth", "results", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
   const params = new URLSearchParams(query || "");
   setTab(route === "site" ? "" : route || "");
   document.title = `${route === "site" && arg ? safeDecode(arg) : (route ? route[0].toUpperCase() + route.slice(1) : "Overview")} · Index Engine`;
@@ -1512,6 +1639,7 @@ async function render() {
     let node;
     if (route === "site" && arg) node = await viewSite(safeDecode(arg), params);
     else if (route === "overview") node = viewOverview();
+    else if (route === "recovery") node = await viewRecovery(params);
     else if (route === "revival") node = await viewRevival(params);
     else if (route === "growth") node = await viewGrowth(params);
     else if (route === "results") node = viewResults();

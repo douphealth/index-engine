@@ -64,6 +64,10 @@ class BingClient:
         """Daily clicks and impressions for the whole site (about 16 months)."""
         return self._get("GetRankAndTrafficStats", siteUrl=site_url) or []
 
+    def link_counts(self, site_url, page=0):
+        """Pages of the site that other sites link to, with the number of links (GetLinkCounts; paged)."""
+        return self._get("GetLinkCounts", siteUrl=site_url, page=page) or {}
+
     def crawl_stats(self, site_url):
         """Bing's daily crawl report: pages in its index, pages crawled, errors, robots blocks, 4xx/5xx."""
         return self._get("GetCrawlStats", siteUrl=site_url) or []
@@ -177,6 +181,37 @@ def pull_performance(db, client, bsites):
                           bing_at=excluded.bing_at""", (url, site, c, i, now))
         db.commit()
         log(f"[bing] {site}: {len(agg)} pages with Bing impressions, {sum(1 for c, _ in agg.values() if c)} with clicks")
+
+
+INBOUND_REFRESH_DAYS = 7
+INBOUND_MAX_PAGES = 25
+
+
+def pull_inbound_links(db, client, bsites, force=False):
+    """Bing's inbound-link report per site, at most weekly. Replaces the site's rows only after a complete read."""
+    for site, burl in bsites.items():
+        last = db.execute("SELECT MAX(at) FROM inbound_links WHERE site=?", (site,)).fetchone()[0]
+        if last and not force and (days_since(last) or 0) < INBOUND_REFRESH_DAYS:
+            continue
+        got, page, total = {}, 0, 1
+        try:
+            while page < min(total, INBOUND_MAX_PAGES):
+                d = client.link_counts(burl, page)
+                for it in d.get("Links") or []:
+                    u = norm(it.get("Url") or "")
+                    if u:
+                        got[u] = got.get(u, 0) + int(it.get("Count") or 0)
+                total = int(d.get("TotalPages") or 1)
+                page += 1
+        except Exception as e:
+            log(f"[bing] {site}: GetLinkCounts failed: {str(e)[:120]}")
+            continue
+        now = now_iso()
+        db.execute("DELETE FROM inbound_links WHERE site=?", (site,))
+        rows = [(u, site, n, now) for u, n in got.items()] or [(config.site_base(site) + "/#none", site, 0, now)]
+        db.executemany("INSERT OR REPLACE INTO inbound_links(url, site, links, at) VALUES(?,?,?,?)", rows)
+        db.commit()
+        log(f"[bing] {site}: inbound links read for {len(got)} pages")
 
 
 def store_page_trend(db, site, daily):

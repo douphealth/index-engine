@@ -34,7 +34,7 @@
         known, share: known >= 10 ? count("INDEXED") / known : null,
         gsc: Boolean(s.gsc_property), bing: Boolean(s.bing_site),
         conflicts: number(s.conflicts), flags: s.flags || {},
-        traffic: s.traffic || null,
+        traffic: s.traffic || null, recovery: s.recovery || null,
       };
     });
     const enabled = sites.filter((s) => s.enabled);
@@ -88,6 +88,11 @@
     drops.sort((a, b) => (b.prev - b.now) - (a.prev - a.now));
     const hasTraffic = enabled.some((s) => s.traffic && (s.traffic.bing || s.traffic.google));
     const worst = drops[0];
+    // A site an engine has (nearly) stopped showing outranks any 28-day drop: it can be months old and read as "stable".
+    const collapsed = enabled.filter((s) => s.recovery && (s.recovery.state === "collapsed" || s.recovery.state === "severe_drop"))
+      .sort((a, b) => (a.recovery.state === "collapsed" ? 0 : 1) - (b.recovery.state === "collapsed" ? 0 : 1));
+    const fall = collapsed[0];
+    const engineName = (e) => e === "bing" ? "Bing" : e === "google" ? "Google" : "Search";
     const steps = [
       {
         number: 1, title: "Check connections & freshness",
@@ -109,13 +114,17 @@
       },
       {
         number: 3, title: "Recover lost search traffic",
-        metric: !hasTraffic ? "No traffic history yet" : drops.length ? drops.length + " clear traffic drop" + (drops.length > 1 ? "s" : "") : "No clear traffic drop",
-        status: drops.length ? "attention" : hasTraffic ? "clear" : "ready",
-        detail: worst ? worst.site + ": " + (worst.src === "bing" ? "Bing" : "Google") + " clicks fell " + Math.abs(Math.round(worst.pct)) + "% ("
+        metric: fall ? collapsed.length + " site" + (collapsed.length > 1 ? "s" : "") + " search engines have nearly stopped showing"
+          : !hasTraffic ? "No traffic history yet" : drops.length ? drops.length + " clear traffic drop" + (drops.length > 1 ? "s" : "") : "No clear traffic drop",
+        status: fall || drops.length ? "attention" : hasTraffic ? "clear" : "ready",
+        detail: fall ? fall.site + ": " + engineName(fall.recovery.engine) + " " + (fall.recovery.state === "collapsed" ? "has almost stopped showing it" : "shows it far less than usual")
+            + ". Rule out a manual action first, then work the prune plan. Submitting more URLs will not fix a site-wide judgment."
+          : worst ? worst.site + ": " + (worst.src === "bing" ? "Bing" : "Google") + " clicks fell " + Math.abs(Math.round(worst.pct)) + "% ("
             + worst.prev.toLocaleString() + " to " + worst.now.toLocaleString() + ") in the latest 28 days. Open Revival to see which pages lost clicks and what holds each back."
           : hasTraffic ? "Compared with the previous 28 days, no site shows a drop that is both large and statistically clear. Small numbers are never called."
           : "The next engine run records daily clicks from Bing and Google.",
-        href: worst ? "#/revival?site=" + encodeURIComponent(worst.site) : "#/revival", cta: worst ? "See what lost traffic" : "Open Revival",
+        href: fall ? "#/recovery?site=" + encodeURIComponent(fall.site) : worst ? "#/revival?site=" + encodeURIComponent(worst.site) : "#/revival",
+        cta: fall ? "Open Recovery" : worst ? "See what lost traffic" : "Open Revival",
       },
       {
         number: 4, title: "Strengthen valuable pages",
@@ -138,7 +147,7 @@
       lastSeen, heartbeatAgeMinutes, dataAgeMinutes, lastRun, lastSuccess, queued, missingGsc,
       problems, toImprove, requests: requests.length, proposed, actions: actions.length,
       highAlerts: highAlerts.length, alerts: alerts.length, indexed: sum("indexed"),
-      known: sum("known"), urls: sum("urls"), impact, steps, issueSite, drops, hasTraffic,
+      known: sum("known"), urls: sum("urls"), impact, steps, issueSite, drops, hasTraffic, collapsed: collapsed.map((s) => s.site),
     };
   }
 

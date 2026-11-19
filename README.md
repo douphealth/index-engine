@@ -26,6 +26,12 @@ your PC (Windows task, every 10 min)                    Cloudflare: index-engine
 
 ## What makes it smart and autonomous
 
+- **Recovery: is each engine still showing the site at all? (since 19 Nov 2026; `engine/recovery.py`, Recovery page).** The traffic verdicts compare 28 days with the 28 before, so a site that collapsed months ago reads as "stable at almost zero" and kept getting submissions and request lists that cannot help it.
+  - **Visibility.** The latest 14 days of impressions per engine against the site's own usual level: the 80th percentile of its 28-day averages over the past ~13 months, with the last six weeks left out. Below 20% of usual is *collapsed*, below 50% a *severe drop*. The date of the biggest step down (14 days before vs after) is reported so it can be matched to a Google update or a site change. A site that never had 10 impressions a day is not judged.
+  - **What a collapse changes.** It becomes the first urgent priority and the Action Center's traffic step, with direct links to Search Console's Manual actions, Security issues and Page indexing reports (no API exposes these). The site's "Request indexing" quick win is dropped: requests cannot reverse a site-wide judgment.
+  - **Prune plan.** Every indexable post and page gets one decision with its evidence: *keep* (earns clicks or ≥100 impressions on either engine, or is the home page/a hub), *fix* (has demand but is flagged), *merge* (near-copy of a stronger page; target given), *redirect* (no search value but other sites link to it; closest indexed page given), *noindex* (no clicks and under 20 impressions on both engines, at least 120 days old, and thin, flagged or left out of Google's index), *review* (the rules do not decide). Downloadable as CSV and written to `out/prune_plan.csv`. Nothing is applied.
+  - **Inbound links.** Bing's `GetLinkCounts` is read weekly per site, so a page other sites link to is redirected, never just noindexed. Until it has been read, the page says so.
+  - **Scaled-content signals (flag `TEMPLATE_ARTIFACT`).** From the stored WordPress content: runs of 3+ headings that differ only by a number and say more than "Week N" ("Use-case notes for … #1 … #7"), pipeline leftovers ("WordPress Media Library", "Image generation failed", "as an AI language model", "[insert …]"), and headings repeated on 25%+ of a site's posts that are not ordinary section names (FAQ, Conclusion, Key takeaways and similar are ignored). On 19 Nov 2026 live gearuptofit and affiliatemarketingforsuccess articles carried all three while Google showed only their home pages.
 - **Revival: traffic is the goal, indexation is a means.** The engine keeps the daily history both engines publish and says, with the evidence, where each site's clicks are moving and why that is hard to read.
   - **Sources.** Bing: `GetRankAndTrafficStats` (daily clicks and impressions, about 16 months), `GetCrawlStats` (daily: pages in Bing's index, pages crawled, errors, robots blocks, 4xx/5xx) and the per-page daily rows of `GetPageStats`. Google: Search Analytics by date and by page.
   - **Windows.** The latest 28 days of data against the 28 before, ending on the last day each engine reported, not on today.
@@ -119,6 +125,7 @@ python D:\Claude\SEO-Setup\index-engine\indexengine.py tick
 
 | Page | What you can do |
 |---|---|
+| Recovery | Whether Google and Bing still show each site (against its own usual level), the date of the step down, the checks that rule out a manual action or technical block, the headings repeated across a site's posts, and the per-page prune plan with CSV |
 | Overview | **Your priorities**: one ranked to-do list (urgent problems, then quick wins by expected pages indexed per minute, then technical fixes, then content work), each with its expected gain, effort and a one-click link. Also: where pages get stuck (found → indexable → known to Google → crawled → indexed), the indexed-share trend, top pages, last-30-days impact, alerts, and every site with its next step |
 | Revival | Per-site traffic verdicts with confidence (Bing and Google), a daily-clicks chart, where the lost clicks went by kind of page, Bing's crawl report and its findings, and the pages to recover first with a specific next step for each |
 | Plan | What decides indexing on your sites (the model's drivers and accuracy) and every action ranked by expected gain, with one-click handling |
@@ -205,6 +212,7 @@ The first run fetches every page (about 4,000 URLs across the 10 sites on 23 Oct
 | `internal_link_plan.csv` | For each stuck page: up to 3 related pages Google already indexes, or that earn Bing clicks, that should link to it |
 | `request_indexing_today.csv` | Up to 10 URLs per site for the Search Console button, with direct links |
 | `near_duplicates.csv` | Pairs whose main text overlaps by 50% or more |
+| `prune_plan.csv` | One decision per indexable page (keep, fix, merge, redirect, noindex, review), with the evidence and the target for merges and redirects |
 | `urls.csv` | Every URL with bucket, flags, reason, action and value score |
 | `summary.csv` | Per-site counts, plus the change in indexed pages since the first run |
 | `index_engine.db` | All state (SQLite). Delete it to start over |

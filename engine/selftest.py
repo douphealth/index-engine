@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
-from . import (audit, bing, brain, config, dashboard, discover, fresh, google, links, model, queries, report, sitemaps, store,
+from . import (audit, bing, brain, config, dashboard, discover, fresh, google, links, model, queries, recovery, report, sitemaps, store,
                submit, traffic, triage, util, wp)
 
 KEY = "abcdef1234567890abcdef1234567890"
@@ -548,6 +548,11 @@ def main():
     check({"gained", "lost", "requests", "links", "bing"} <= set(intel["impact"]), "impact report built")
     summ3, tabs3, _ = publish.build(db, res3, util.now_iso(), {}, (), intel)
     s3 = summ3["sites"][0]
+    rec3, prune3 = s3["recovery"], {urlsplit(x["url"]).path: x for x in tabs3[base]["prune"]}
+    check(rec3 and rec3["state"] in recovery.VIS_STATES and set(rec3["totals"]) == set(recovery.DECISIONS)
+          and prune3 and all(x["decision"] in recovery.DECISIONS and x["why"] for x in prune3.values())
+          and "/noindex/" not in prune3 and prune3.get("/", {}).get("decision", "keep") == "keep",
+          "recovery: visibility verdict and one evidenced decision per indexable page reach the dashboard (blocked pages left out)")
     tr3, rev3 = s3["traffic"], tabs3[base]["revival"]
     check(tr3["bing"]["clicks"]["verdict"] == "declining" and tr3["bing"]["clicks_prev"] == 550 and tr3["bing"]["clicks_now"] == 280
           and tr3["google"]["clicks_now"] == 56 and len(tabs3[base]["traffic_series"]) == 120 and bool(summ3["portfolio_series"]),

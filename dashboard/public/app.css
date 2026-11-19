@@ -160,6 +160,7 @@ ol.tight { margin: 0; padding-left: 20px; display: grid; gap: 2px; }
 .chip.v { font-weight: 600; }
 .chip.v.bad { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
 .chip.v.good { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
+.chip.v.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
 .chart.tall { height: 200px; }
 .chart .mark { stroke: var(--muted); stroke-dasharray: 3 3; opacity: .6; }
 tr.sel td { background: var(--soft); }
@@ -185,8 +186,10 @@ details.card > summary { cursor: pointer; }
 .login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
 .login form { width: min(360px, 100%); }
 .login .err { color: var(--bad); min-height: 1.5em; font-size: 14px; }
+.show-sm { display: none; }
 @media (max-width: 640px) {
   .hide-sm { display: none; }
+  .show-sm { display: block; margin-top: 4px; }
   ol.prio li { flex-wrap: wrap; }
   ol.prio .body { flex-basis: calc(100% - 38px); }
   ol.prio li > .btn { margin-left: 38px; }

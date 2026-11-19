@@ -104,6 +104,11 @@ CREATE TABLE IF NOT EXISTS query_fetch(src TEXT, url TEXT, site TEXT, fetched_at
 CREATE TABLE IF NOT EXISTS results(target TEXT PRIMARY KEY, site TEXT, kind TEXT, applied_at TEXT, links INT,
   anchor TEXT, measured_at TEXT, data TEXT);
 
+-- External links pointing at each page (Bing GetLinkCounts), read weekly: a page other sites link to is redirected, never
+-- just noindexed, by the prune plan.
+CREATE TABLE IF NOT EXISTS inbound_links(url TEXT PRIMARY KEY, site TEXT, links INT, at TEXT);
+CREATE INDEX IF NOT EXISTS inbound_links_site ON inbound_links(site);
+
 -- Whether each search and AI crawler may read the site (robots.txt) and what a request in its name gets (the edge).
 CREATE TABLE IF NOT EXISTS ai_access(site TEXT, bot TEXT, role TEXT, robots_ok INT, http INT, state TEXT, checked_at TEXT,
   PRIMARY KEY(site, bot));

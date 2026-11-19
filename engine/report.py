@@ -95,6 +95,10 @@ def write(db, results):
                                                  "shared_terms", "similarity", "source_bing_clicks", "source_google_clicks"])
     _csv(out / "request_indexing_today.csv", manual, ["site", "url", "bucket", "value", "search_console_link"])
     _csv(out / "near_duplicates.csv", dups, ["site", "url", "similar_to", "estimated_overlap"])
+    prune = [dict(x, site=site, artifacts=" | ".join(x.get("artifacts") or []))
+             for site, res in results.items() for x in (res.get("recovery") or {}).get("plan") or []]
+    _csv(out / "prune_plan.csv", prune, ["site", "decision", "url", "title", "why", "target", "bucket", "flags", "google_clicks_90d",
+                                          "google_impr_90d", "bing_clicks", "bing_impr", "words", "age_days", "inbound_links", "artifacts"])
 
     summary = []
     for site, res in results.items():
