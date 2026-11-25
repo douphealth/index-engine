@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from urllib.parse import urlsplit
 
 from . import config, queries
-from .triage import BLOCKERS
+from .triage import BLOCKERS, tokens
 
 MAX_POS = 20
 PRIOR_IMPR = 300            # how many impressions' worth of portfolio data a site's own curve starts from
@@ -30,6 +30,8 @@ P_CHANCE = 0.02             # ... and less than a 2% chance of doing that by luc
 SPLIT_SHARE = 0.25          # split: every page counted holds at least a quarter of the search's impressions
 SPLIT_MIN_IMPR = 50
 TOP_ITEMS = 60
+GAP_MAX_WORDS = 6           # close_to_top: the "title never says ..." note is for searches of at most this many words
+GAP_MAX_MISSING = 3         # ... that the title misses at most this many topic words of (more: the page is about something else)
 ENGINE = {"bing": "Bing", "google": "Google"}
 
 
@@ -140,6 +142,20 @@ def portfolio_curves(db):
     return out
 
 
+def missing_words(query, title, h1):
+    """The topic words of a search that neither the page's title nor its main heading contains, as the searcher typed
+    them (plural and singular count as the same word). The title is the strongest on-page signal for what a page is
+    about, and the first thing a searcher reads, so a page shown for a search its title never mentions has a specific,
+    checkable gap."""
+    have = tokens(f"{title or ''} {h1 or ''}")
+    out = []
+    for w in re.findall(r"[a-z0-9]+", (query or "").lower()):
+        t = tokens(w)
+        if t and not t <= have and w not in out:
+            out.append(w)
+    return out
+
+
 def _desc_state(desc):
     if desc is None or not desc.strip():
         return "missing"
@@ -150,7 +166,7 @@ def analyze(db, site, buckets, prior=None):
     """Opportunities for one site. buckets: {url: (bucket, flags)} from triage, so blocked or ignored pages are skipped."""
     prior = prior if prior is not None else portfolio_curves(db)
     brand = brands(db, site)
-    rows = db.execute("""SELECT q.src, q.url, q.query, q.clicks, q.impr, q.pos, a.title, a.description
+    rows = db.execute("""SELECT q.src, q.url, q.query, q.clicks, q.impr, q.pos, a.title, a.description, a.h1
                          FROM page_queries q LEFT JOIN audits a ON a.url=q.url
                          WHERE q.site=? AND q.pos IS NOT NULL""", (site,)).fetchall()
     live = [r for r in rows if r["url"] in buckets and buckets[r["url"]][0] not in BLOCKERS
@@ -173,13 +189,18 @@ def analyze(db, site, buckets, prior=None):
             target = curve[2]
             gain = i * max(0.0, target - max(ctr, here))
             if gain >= MIN_GAIN:
+                # Only for a search short enough to be a topic (Bing also reports whole sentences as "searches").
+                missing = missing_words(q, r["title"], r["h1"]) if (r["title"] or r["h1"]) and len(q.split()) <= GAP_MAX_WORDS else []
+                missing = missing if len(missing) <= GAP_MAX_MISSING else []
+                gap = (f" Its title and main heading never say {', '.join('“' + w + '”' for w in missing[:4])}: if the page does "
+                       "cover that, say so in the title or heading.") if missing else ""
                 items.append({**base, "kind": "close_to_top", "expected_ctr": round(here, 4), "target_ctr": round(target, 4),
-                              "gain": round(gain, 1),
+                              "gain": round(gain, 1), "missing": missing,
                               "advice": (f"Shown on {ENGINE[src]} for “{q}” at about position {pos:.0f} ({i:,} times in 4 weeks, "
                                          f"{c} clicks). In the top 3 it would get an estimated +{gain:.0f} clicks per 4 weeks, judging by "
                                          "your own site's click-through by position. Make the page answer this search plainly near the "
                                          "top, cover what the searcher needs that it lacks (with named, checkable sources), and link to "
-                                         "it from related pages that already rank.")})
+                                         "it from related pages that already rank." + gap)})
         elif pos <= 5.5 and i >= MIN_IMPR_CTR and ctr < CTR_SHORTFALL * here:
             chance = p_at_most(c, i, here)
             if chance < P_CHANCE:
@@ -233,7 +254,7 @@ def by_page(found):
         more = f" It also shows for {len(xs) - 1} related search{'es' if len(xs) > 2 else ''} listed here." if len(xs) > 1 else ""
         advice = lead["advice"].replace(f"+{lead['gain']:.0f} clicks", f"+{gain:.0f} clicks (all its searches together)") if len(xs) > 1 else lead["advice"]
         out.append({**{k: lead.get(k) for k in ("kind", "src", "url", "title", "query", "pos", "impr", "clicks", "ctr", "expected_ctr",
-                                                 "target_ctr", "title_len", "description")},
+                                                 "target_ctr", "title_len", "description", "missing")},
                     "gain": gain, "impr_total": sum(x["impr"] for x in xs), "advice": advice + more,
                     "queries": [{k: x[k] for k in ("query", "pos", "impr", "clicks", "ctr", "gain")} for x in xs[:8]]})
     return sorted(out, key=lambda x: -x["gain"])

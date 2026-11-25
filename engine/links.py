@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from . import config, store
+from . import config, memo, store
 from .triage import BLOCKERS, STOP as _STOP, clean_title
 from .util import SECRETS, bare_host, days_since, get, log, norm, now_iso
 
@@ -176,6 +176,7 @@ real way step thing help work start now then fast proven essential surprising am
 free expert simple smart powerful perfect great good better right common key important definitive near me understanding
 unlock unlocking discover explore exploring mastering decode decoding power importance significance safely quickly
 naturally easily set boost improve""".split()}
+ARTICLES = {"a", "an", "the"}
 END_EDGE = EDGE | {stem(w) for w in "daily weekly monthly yearly today tonight often need".split()}
 # What follows these in a title is what the page is NOT about ("Running Shoes Without a Carbon Plate").
 NEGATION = {"without", "no", "not", "non", "never", "instead", "avoid"}
@@ -207,6 +208,59 @@ def title_words(url, title):
             [t for t, _, _ in tokens(slug[-1].replace("-", " "))] if slug else [])
 
 
+def page_names(url, title, h1=None):
+    """title_words(), plus the phrases of the page's main heading when it is worded differently from the title. Running
+    text names a page by its heading as often as by its (search-tuned) title. Heading chunks come after the title's, so
+    the title's first chunk stays the main part and a heading phrase must share a topic word with it (see _usable); it
+    must also be made of words the title or the address already has (see heading_only)."""
+    chunks, slug = title_words(url, title)
+    if h1 and clean_title(h1) != clean_title(title or ""):
+        chunks = chunks + [c for c in title_words(url, h1)[0] if c not in chunks]
+    return chunks, slug
+
+
+# How much a source on the target's own subject outranks an unrelated one (see relatedness). A source's strength spans
+# about 2 to 8 (indexed, plus the log of its clicks): a page whose name shares a third of the target's topic words is
+# preferred over an unrelated page with several times its clicks, and a very strong page still wins.
+RELATED_WEIGHT = 6.0
+# Filler words a title phrase may drop from its start, but that belong to the name where the text says them too
+# ("New Balance ...", "best time to run"). Function words ("the", "it", "to") never start an anchor.
+LEAD_OK = {stem(w) for w in "new best top complete ultimate simple easy quick".split()}
+
+
+def lead_word(chunks, key):
+    """The filler word the title has right before this phrase (None when there is none). title_phrases() drops it ("New
+    Balance Fresh Foam X" offers "balance fresh foam x"), but where the source text says it too, the anchor reads right
+    only with it."""
+    n = len(key)
+    for words in chunks:
+        for i in range(1, len(words) - n + 1):
+            if tuple(words[i:i + n]) == key and words[i - 1] in LEAD_OK:
+                return words[i - 1]
+    return None
+
+
+def relatedness(target, source, df, pages):
+    """0..1: how much of their subject two pages share, judged by the topic words both of their names have. Rare words
+    count for more (a word on few pages says more about a page than one on many), and two words that only a page or
+    two have make the pair fully related. A link from a page about the same subject is the one a reader follows and the
+    one engines read as a recommendation, so it is preferred over a stronger but unrelated page that merely contains
+    the phrase."""
+    shared = target & source
+    if not shared:
+        return 0.0
+    rarest = math.log(1 + pages) + 1
+    return min(1.0, sum(math.log((1 + pages) / (1 + df.get(w, 0))) + 1 for w in shared) / (2 * rarest))
+
+
+def heading_only(key, title_keys, known):
+    """True for a heading phrase that says something the page's title and address do not: one of its topic words is in
+    neither. The heading may word the page's name differently ("Burnout Symptoms" for a page titled "Burnout at Work"
+    at /burnout-symptoms/), but a word only the heading has is its phrasing, not the page's name ("turn goals" from
+    "How to Turn Goals Into Finished Results")."""
+    return key not in title_keys and any(_topical(w) and w not in known for w in key)
+
+
 def all_grams(chunks, slug):
     """Every 2-5 word run of a page's title chunks and slug: what the page's name contains."""
     out = set()
@@ -229,6 +283,8 @@ def title_phrases(chunks, common):
                 key = tuple(words[i:i + n])
                 before, after = words[i - 1] if i else None, words[i + n] if i + n < len(words) else None
                 if key[0] in EDGE or key[0] in TAIL_OK or key[-1] in END_EDGE or NEGATION & set(words[:i]):
+                    continue
+                if after in ARTICLES:                    # "take to run" | "a mile": cut in the middle of what it says
                     continue
                 if (before and before not in STOP and before not in common) or (after and after not in STOP and after not in TAIL_OK):
                     continue
@@ -300,16 +356,16 @@ def candidate_starts(keys):
     return starts
 
 
-def candidates(raw, keys, starts=None):
-    """{key: (start, end)} for the first safe occurrence in raw of each phrase key."""
+def candidates(raw, keys, starts=None, runs=None):
+    """{key: (start, end)} for the first safe occurrence in raw of each phrase key. runs: the (start, end) of the safe
+    text runs to read, in order, when the caller knows which ones can hold a key (possible_runs); every safe run
+    otherwise."""
     found = {}
     if starts is None:
         starts = candidate_starts(keys)
     if not any(starts.values()):
         return found
-    for s, e, ok in segments(raw):
-        if not ok:
-            continue
+    for s, e in (runs if runs is not None else [(s, e) for s, e, ok in segments(raw) if ok]):
         toks = tokens(raw[s:e])
         for n in (5, 4, 3, 2):
             if not starts[n] or len(toks) < n + 3:       # inside a sentence, not a bare label or list entry
@@ -323,6 +379,41 @@ def candidates(raw, keys, starts=None):
                 if all(GAP.match(raw[s + toks[j][2]:s + toks[j + 1][1]]) for j in range(i, i + n - 1)):
                     found[key] = (s + toks[i][1], s + toks[i + n - 1][2])
     return found
+
+
+STEMS_VERSION = "stems-2"     # change it whenever segments(), tokens() or stem() change: cached word streams are redone
+
+
+def stem_stream(raw):
+    """[[start, end, "stemmed words"]] for every safe run of text in a post that is long enough to hold an anchor (5
+    words or more). Depends only on the content, so engine/memo.py keeps it until the post changes: reading it back is
+    what replaces parsing every post on every run."""
+    out = []
+    for s, e, ok in segments(raw):
+        if ok:
+            toks = tokens(raw[s:e])
+            if len(toks) >= 5:
+                out.append([s, e, " ".join(t for t, _, _ in toks)])
+    return out
+
+
+def possible_runs(stream, keys, starts):
+    """The (start, end) of the runs of a post's stem_stream in which some phrase key occurs as consecutive words. The
+    stream holds the same words in the same runs as the post, so candidates() finds in these runs exactly what it would
+    find reading the whole post."""
+    first = starts[2] | starts[3] | starts[4] | starts[5]
+    out = []
+    if not first:
+        return out
+    for s, e, text in stream:
+        words = text.split(" ")
+        size = len(words)
+        for i, w in enumerate(words):
+            if w in first and any(size >= n + 3 and i + n <= size and w in starts[n] and tuple(words[i:i + n]) in keys
+                                  for n in (5, 4, 3, 2)):
+                out.append((s, e))
+                break
+    return out
 
 
 def query_phrases(query, own=frozenset()):
@@ -354,7 +445,11 @@ def growth_targets(db, site, opportunities, buckets, names, owners, taken, scale
     keys, gains = {}, {}
     for item in (opportunities or {}).get("items") or []:
         t = item.get("url")
-        if item.get("kind") != "close_to_top" or t not in buckets or buckets[t][0] != "INDEXED" or "IGNORED" in buckets[t][1]:
+        if item.get("kind") != "close_to_top" or t not in buckets or "IGNORED" in buckets[t][1]:
+            continue
+        # A Google ranking needs a page Google has indexed (anything else is a stale ranking). A Bing ranking stands on
+        # its own: a page Google has not indexed yet but Bing already ranks only has to serve its own content.
+        if buckets[t][0] in BLOCKERS or (item.get("src") == "google" and buckets[t][0] != "INDEXED"):
             continue
         own = {w for c in names.get(t, ([], []))[0] for w in c if _topical(w)}
         engine = "Google" if item.get("src") == "google" else "Bing"
@@ -376,7 +471,9 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
     MAX_PER_TARGET links from different trusted pages whose article text already names it. Two kinds of target:
     pages not indexed yet (anchor: a whole phrase of the title) and indexed pages close to the top for a search
     (anchor: that search, see growth_targets)."""
-    titles = {r["url"]: r["title"] or "" for r in db.execute("SELECT url, title FROM audits")}
+    titles, headings = {}, {}
+    for r in db.execute("SELECT url, title, h1 FROM audits"):
+        titles[r["url"]], headings[r["url"]] = r["title"] or "", r["h1"] or ""
     from . import results as measured
     learned = measured.calibration(db)              # what the engine's own measured links say about each kind
     link_gain = {u: g * learned["index"] for u, g in link_gain.items()}
@@ -392,12 +489,13 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
             log(f"[links] {site}: could not read post content ({str(e)[:120]}); using the stored copy")
             changed = 0
         texts = corpus(db, site)
-        names = {u: title_words(u, titles.get(u)) for u in buckets}
+        names = {u: page_names(u, titles.get(u), headings.get(u)) for u in buckets}
         df = defaultdict(int)
         for chunks, _slug in names.values():
             for w in {w for c in chunks for w in c}:
                 df[w] += 1
         common = {w for w, k in df.items() if k > 0.25 * max(1, len(buckets))}
+        topic = {u: {w for c in chunks for w in c if _topical(w) and w not in common} for u, (chunks, _slug) in names.items()}
         owners = defaultdict(set)                        # phrase -> pages whose title/slug has it (2 = not unique)
         for u, (chunks, slug) in names.items():
             for k in all_grams(chunks, slug):
@@ -414,8 +512,10 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
             ranked = [w for w in main if (len(w) >= 4 and not w.isdigit()) or (w.isdigit() and len(w) >= 3)] or main
             low = min((df[w] for w in ranked), default=0)
             core = {w for w in ranked if df[w] == low}
+            own = title_words(t, titles.get(t))[0]
+            title_keys, known = title_phrases(own, common), {w for c in own for w in c} | set(slug)
             for k, is_main in title_phrases(chunks, common).items():
-                if owners[k] == {t} and _usable(k, common, is_main, set(main), core):
+                if owners[k] == {t} and _usable(k, common, is_main, set(main), core) and not heading_only(k, title_keys, known):
                     keys[k] = t
         why = {k: "Not indexed yet: links from pages Google already indexes raise the odds it gets indexed." for k in keys}
         gains = dict(link_gain)
@@ -434,19 +534,24 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
             strength[u] = (2.0 if b == "INDEXED" else 1.0) + math.log1p((r["gsc_clicks"] + r["bing_clicks"]) if r else 0)
         hits, used = defaultdict(list), defaultdict(int)     # target -> [(rank, source, start, end)]; phrase -> pages
         starts = candidate_starts(keys)
+        streams = memo.per_post(db, site, "stem_stream", STEMS_VERSION, stem_stream) if keys else {}
         for src, raw in texts.items():
-            for key, (s, e) in candidates(raw, keys, starts).items():
+            runs = possible_runs(streams[src], keys, starts) if src in streams else None
+            if runs is not None and not runs:
+                continue                                 # no phrase in this post: nothing to read
+            for key, (s, e) in candidates(raw, keys, starts, runs).items():
                 used[key] += 1
                 t = keys[key]
                 if src in strength and t != src and not links_to(raw, t):
-                    hits[t].append((len(key) + strength[src], key, src, s, e))
+                    related = relatedness(topic.get(t, set()), topic.get(src, set()), df, len(buckets))
+                    hits[t].append((len(key) + strength[src] + RELATED_WEIGHT * related, key, src, s, e))
         stock = {k for k, n in used.items() if n > max(3, STOCK_SHARE * len(texts))}
         per_source, made, paired = defaultdict(int), 0, set()
         for t in targets:
             if made >= per_site:
                 break
             picked = 0
-            for rank, key, src, s, e in sorted(hits.get(t, []), key=lambda h: -h[0]):
+            for rank, key, src, s, e in sorted(hits.get(t, []), key=lambda h: (-h[0], h[2])):
                 if picked >= MAX_PER_TARGET or made >= per_site:
                     break
                 if key in stock or per_source[src] >= MAX_PER_SOURCE or (src, t) in paired:
@@ -459,9 +564,16 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
                 prev = re.search(r"([A-Za-z0-9]+)[\s-]+$", raw[max(0, a - 40):a])
                 if prev and _topical(stem(prev.group(1))) and stem(prev.group(1)) in {w for c in names[t][0] for w in c}:
                     continue
+                if prev and stem(prev.group(1)) == lead_word(names[t][0], key):
+                    # The text has the title's own word in front of the phrase: link the full name, when that is as safe.
+                    longer = find(raw, raw[a - len(prev.group(0)):b], t)
+                    if longer and longer[1] == b:
+                        a, b, context = longer
+                both = sorted(topic.get(t, set()) & topic.get(src, set()), key=lambda w: (df.get(w, 0), w))[:3]
+                same = f" The linking page is on the same subject (both are about {', '.join(both)})." if both else ""
                 out.append({"id": link_id(src, t), "site": site, "source": src, "source_title": titles.get(src, ""),
                             "target": t, "target_title": titles.get(t, ""), "anchor": raw[a:b], "context": context,
-                            "score": round(rank, 2), "gain": round(gains.get(t, 0), 4), "why": why.get(key)})
+                            "score": round(rank, 2), "gain": round(gains.get(t, 0), 4), "why": (why.get(key) or "") + same})
                 per_source[src] += 1
                 paired.add((src, t))
                 picked += 1

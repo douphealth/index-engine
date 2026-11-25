@@ -10,6 +10,17 @@ dashboard/.dev.vars
 .env
 .env.*
 
+# Credential files must live one level up (D:\Claude\SEO-Setup), never here. If one is dropped into this folder by
+# mistake, these patterns keep it out of every commit.
+*Token*.txt
+*Tokens*.txt
+*API*.txt
+*Keys*.txt
+GSC-Bing.txt
+credentials.txt
+Index-Engine-*.txt
+Index-Engine-*.json
+
 # Tooling
 .venv/
 dashboard/node_modules/

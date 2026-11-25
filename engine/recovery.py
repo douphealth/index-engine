@@ -24,10 +24,10 @@ Two questions the rest of the engine did not answer:
 import datetime as dt
 import html
 import re
-import zlib
 from collections import Counter, defaultdict
 from urllib.parse import quote, urlsplit
 
+from . import memo
 from .triage import BLOCKERS, clean_title, tokens
 from .util import days_since
 
@@ -219,37 +219,46 @@ def _shape(heading):
     return re.sub(r"#?\d+", "#", heading.lower())
 
 
+POST_SCAN_VERSION = "post-scan-1"     # change it whenever post_scan (or a pattern it uses) changes: cached scans are redone
+
+
+def post_scan(text):
+    """What one post's content shows by itself: {"heads": its h2-h4 headings, "found": numbered-template and leftover
+    findings}. Depends on nothing but the text, so engine/memo.py keeps it until the post changes."""
+    hs = [_text(m.group(2)) for m in HEADING.finditer(text)]
+    hs = [x for x in hs if 3 <= len(x) <= 160]
+    found = []
+    shapes = Counter(_shape(x) for x in hs if re.search(r"\d", x))
+    for shape, n in shapes.items():
+        if n >= NUMBERED_RUN and len(re.findall(r"[a-z]+", shape)) >= NUMBERED_MIN_WORDS:
+            found.append(f"{n} headings follow one numbered template (“{shape.replace('#', 'N')}”)")
+    for x in hs:
+        if LEFTOVERS.search(x):
+            found.append(f"automation leftover in a heading: “{x[:90]}”")
+    body = _text(text)
+    m = LEFTOVERS.search(body)
+    if m and not any("leftover" in f for f in found):
+        found.append(f"automation leftover in the text: “…{body[max(0, m.start() - 30):m.end() + 40].strip()}…”")
+    return {"heads": hs, "found": found}
+
+
 def template_scan(db, site):
     """Scaled-content signals in the stored WordPress content: headings repeated on a large share of the site's posts,
     runs of headings that differ only by a number ("... #1", "... #2", ...), and text an automated pipeline left behind.
-    Returns {"pages": {url: [findings]}, "boilerplate": [(heading, posts)], "scanned": n}. Read-only."""
+    Returns {"pages": {url: [findings]}, "boilerplate": [(heading, posts)], "scanned": n}. Read-only on the sites; each
+    post is read once and again only after it changes (engine/memo.py)."""
     heads, found = {}, defaultdict(list)
-    for url, raw in db.execute("SELECT url, raw FROM link_corpus WHERE site=?", (site,)):
-        try:
-            text = zlib.decompress(raw).decode("utf-8", "replace")
-        except (zlib.error, TypeError):
-            continue
-        hs = [_text(m.group(2)) for m in HEADING.finditer(text)]
-        hs = [x for x in hs if 3 <= len(x) <= 160]
-        heads[url] = hs
-        shapes = Counter(_shape(x) for x in hs if re.search(r"\d", x))
-        for shape, n in shapes.items():
-            if n >= NUMBERED_RUN and len(re.findall(r"[a-z]+", shape)) >= NUMBERED_MIN_WORDS:
-                found[url].append(f"{n} headings follow one numbered template (“{shape.replace('#', 'N')}”)")
-        for x in hs:
-            if LEFTOVERS.search(x):
-                found[url].append(f"automation leftover in a heading: “{x[:90]}”")
-        body = _text(text)
-        m = LEFTOVERS.search(body)
-        if m and not any("leftover" in f for f in found[url]):
-            found[url].append(f"automation leftover in the text: “…{body[max(0, m.start() - 30):m.end() + 40].strip()}…”")
+    for url, scan in memo.per_post(db, site, "post_scan", POST_SCAN_VERSION, post_scan).items():
+        heads[url] = scan["heads"]
+        if scan["found"]:
+            found[url].extend(scan["found"])
     n = len(heads)
     norm_h = lambda x: re.sub(r"[^\w\s&-]", "", x.lower()).strip()  # noqa: E731
     per = Counter(h for hs in heads.values() for h in {norm_h(x) for x in hs})
     floor = max(BOILER_MIN, BOILER_SHARE * n)
     boiler = sorted(((h, k) for h, k in per.items() if k >= floor and h not in GENERIC
                      and len(re.findall(r"[^\W\d_]{3,}", h)) >= 2),
-                    key=lambda x: -x[1])
+                    key=lambda x: (-x[1], x[0]))             # ties in a fixed order: two runs on the same data agree
     bset = {h for h, _ in boiler}
     for url, hs in heads.items():
         mine = sorted({norm_h(x) for x in hs} & bset)

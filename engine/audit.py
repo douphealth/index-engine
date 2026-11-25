@@ -342,6 +342,40 @@ def save(db, rec, lastmod):
                    [(rec["url"], d, int(c)) for d, c in links])
 
 
+class Pace:
+    """How many requests may be in flight to one site, decided by how the site answers. It starts at the polite default.
+    A run of fast answers earns one more at a time, up to PER_HOST_MAX. A failed fetch, a 429 or 5xx or a bot challenge
+    halves it at once (down to 1) and makes the level below the one that hurt the ceiling for the rest of the run. A
+    slow answer does the same but never takes it below the default: a site that is simply slow is read as before.
+    Sites listed in SLOW_HOSTS keep their fixed number."""
+
+    def __init__(self, site):
+        fixed = config.SLOW_HOSTS.get(site)
+        self.base = self.limit = fixed or config.PER_HOST_CONCURRENCY
+        self.ceiling = fixed or max(config.PER_HOST_MAX, self.limit)
+        self.peak, self.fast = self.limit, 0
+
+    def saw(self, rec):
+        status, ms = rec["status"], rec["ms"] or 0
+        if status is None or status == 429 or status >= 500 or rec["error"] == "bot challenge":
+            self.ceiling = max(1, min(self.ceiling, self.limit - 1))
+            self.limit = max(1, self.limit // 2)
+            self.fast = 0
+        elif ms > config.AUDIT_SLOW_MS:
+            if self.limit > self.base:
+                self.ceiling = max(self.base, self.limit - 1)
+                self.limit = max(self.base, self.limit // 2)
+            self.fast = 0
+        elif ms <= config.AUDIT_FAST_MS:
+            self.fast += 1
+            if self.fast >= config.AUDIT_RAMP_AFTER and self.limit < self.ceiling:
+                self.limit += 1
+                self.peak = max(self.peak, self.limit)
+                self.fast = 0
+        else:
+            self.fast = 0
+
+
 def run(db, sites, force=False, max_per_site=None):
     work = due_rows(db, sites, force, max_per_site)
     total = sum(len(v) for v in work.values())
@@ -351,16 +385,16 @@ def run(db, sites, force=False, max_per_site=None):
     log(f"[audit] {total} pages due across {len(work)} sites")
     parsers = {s: robots_parser(store.get_meta(db, s).get("robots", "")) for s in work}
     queues = {s: deque(items) for s, items in work.items()}
-    limit = {s: config.SLOW_HOSTS.get(s, config.PER_HOST_CONCURRENCY) for s in work}
+    pace = {s: Pace(s) for s in work}
     active = defaultdict(int)
     inflight = {}
     done_n, t0 = 0, time.time()
     fetched, failed = defaultdict(int), defaultdict(int)
-    with ThreadPoolExecutor(max_workers=max(1, sum(limit.values()))) as ex:
+    with ThreadPoolExecutor(max_workers=max(1, min(total, sum(p.ceiling for p in pace.values())))) as ex:
         while queues or inflight:
             for s in list(queues):
                 q = queues[s]
-                while q and active[s] < limit[s]:
+                while q and active[s] < pace[s].limit:
                     _, url, site, lastmod = q.popleft()
                     inflight[ex.submit(fetch_page, url, parsers[site])] = (site, lastmod)
                     active[s] += 1
@@ -373,6 +407,7 @@ def run(db, sites, force=False, max_per_site=None):
                 site, lastmod = inflight.pop(f)
                 active[site] -= 1
                 rec = f.result()
+                pace[site].saw(rec)
                 fetched[site] += 1
                 failed[site] += rec["status"] is None
                 save(db, rec, lastmod)
@@ -381,6 +416,9 @@ def run(db, sites, force=False, max_per_site=None):
                     db.commit()
                     rate = done_n / max(1e-6, time.time() - t0)
                     log(f"  audited {done_n}/{total}  ({rate:.1f}/s, ~{(total - done_n) / max(rate, 1e-6) / 60:.0f} min left)")
+    raised = [f"{s} {p.peak}" for s, p in pace.items() if p.peak > config.PER_HOST_CONCURRENCY]
+    if raised:
+        log(f"  fast sites were read with more requests in flight (up to): {', '.join(raised)}")
     for site, n in fetched.items():
         if n >= 10 and failed[site] / n > 0.2:
             alerts.add(db, site, None, "fetch_errors", "high",

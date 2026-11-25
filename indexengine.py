@@ -32,7 +32,8 @@ from engine import (aiaccess, alerts, audit, bing, brain, cleanup, config, disco
                     queries, report, revival, sitemaps, store, submit, traffic, update, wp)
 from engine import results as measured  # noqa: E402
 from engine.dashboard import Dashboard, apply_state, cached_settings, register_sites, safe  # noqa: E402
-from engine.util import load_credentials, log, log_text, now_iso, open_log, parse_ts, utf8_stdout  # noqa: E402
+from engine.util import (load_credentials, log, log_text, now_iso, open_log, parse_ts, stage, stage_report,  # noqa: E402
+                         utf8_stdout)
 
 
 class Locked(Exception):
@@ -179,55 +180,66 @@ def apply_cleanups(db, dash, state, settings):
 def pipeline(db, args, sites):
     """The full engine. Returns (results, {site: {channel: n}}, intel, proposals or None)."""
     if not args.skip_discover:
-        discover.run(db, sites, use_wp=not args.no_wp)
+        with stage("discover"):
+            discover.run(db, sites, use_wp=not args.no_wp)
     if not args.skip_audit:
-        audit.run(db, sites, force=args.force_audit, max_per_site=args.audit_max)
+        with stage("audit"):
+            audit.run(db, sites, force=args.force_audit, max_per_site=args.audit_max)
 
     gclient, bclient, props, bsites = engines(args, db, sites)
-    if props or bsites:
-        traffic.pull(db, gclient, props, bclient, bsites)          # daily history first: page windows end on its last day
-    if props:
-        google.pull_performance(db, gclient, props)
-        queries.pull_google(db, gclient, props)                    # every (query, page) pair: one call per property
-        measured.measure(db, gclient, props)                       # did the links the engine applied work? (read-only)
-    if bsites:
-        bing.pull_performance(db, bclient, bsites)
-        bing.pull_inbound_links(db, bclient, bsites)               # weekly: pages other sites link to (prune plan safety)
-        queries.pull_bing(db, bclient, bsites, max_total=QUERY_DAILY_MAX)   # more pages are read on idle ticks
-    if not args.no_creds:
-        aiaccess.run(db, sites)                                      # can search and AI crawlers read each site?
+    with stage("search data"):
+        if props or bsites:
+            traffic.pull(db, gclient, props, bclient, bsites)      # daily history first: page windows end on its last day
+        if props:
+            google.pull_performance(db, gclient, props)
+            queries.pull_google(db, gclient, props)                # every (query, page) pair: one call per property
+            measured.measure(db, gclient, props)                   # did the links the engine applied work? (read-only)
+        if bsites:
+            bing.pull_performance(db, bclient, bsites)
+            bing.pull_inbound_links(db, bclient, bsites)           # weekly: pages other sites link to (prune plan safety)
+            queries.pull_bing(db, bclient, bsites, max_total=QUERY_DAILY_MAX)   # more pages are read on idle ticks
+        if not args.no_creds:
+            aiaccess.run(db, sites)                                # can search and AI crawlers read each site?
     if props and args.inspect_max != 0:
-        google.inspect_due(db, gclient, props, max_per_site=args.inspect_max, include_taxonomy=args.include_taxonomy)
+        with stage("Google inspection"):
+            google.inspect_due(db, gclient, props, max_per_site=args.inspect_max, include_taxonomy=args.include_taxonomy)
 
     submitted = {}
-    if not args.no_submit:
-        submitted = submit.run(db, sites, bing_client=bclient, bing_sites=bsites, dry_run=args.dry_run, both=args.both,
-                               include_taxonomy=args.include_taxonomy, max_per_site=args.submit_max)
-        if props:
-            google.sync_sitemaps(db, gclient, props, dry_run=args.dry_run)
-        if bsites:
-            bing.sync_feeds(db, bclient, bsites, dry_run=args.dry_run)
-        sitemaps.ping_hubs(db, sites, dry_run=args.dry_run)
-    if bsites and args.bing_check:
-        bing.check_url_info(db, bclient, bsites, max_per_site=args.bing_check)
+    with stage("submit"):
+        if not args.no_submit:
+            submitted = submit.run(db, sites, bing_client=bclient, bing_sites=bsites, dry_run=args.dry_run, both=args.both,
+                                   include_taxonomy=args.include_taxonomy, max_per_site=args.submit_max)
+            if props:
+                google.sync_sitemaps(db, gclient, props, dry_run=args.dry_run)
+            if bsites:
+                bing.sync_feeds(db, bclient, bsites, dry_run=args.dry_run)
+            sitemaps.ping_hubs(db, sites, dry_run=args.dry_run)
+    with stage("Bing crawl checks"):
+        if bsites and args.bing_check:
+            bing.check_url_info(db, bclient, bsites, max_per_site=args.bing_check)
 
-    if not args.no_creds and not args.no_wp:
-        revival.probe_missing(db, sites)                             # live GETs for URLs that earned clicks but are unlisted
-    results, intel = brain.analyze(db, config.SITES)
-    if props or bsites:
-        revival.raise_alerts(db, results, set(sites))
+        if not args.no_creds and not args.no_wp:
+            revival.probe_missing(db, sites)                       # live GETs for URLs that earned clicks but are unlisted
+    with stage("analysis"):
+        results, intel = brain.analyze(db, config.SITES)
+        if props or bsites:
+            revival.raise_alerts(db, results, set(sites))
     m = intel["model"]
     log(f"[model] trained on {m.get('n')} Google verdicts ({m.get('indexed')} indexed), held-out AUC {m.get('auc')}, "
         f"quality {m.get('quality')}; {len(intel['actions'])} best next actions")
     proposals = None
     if not args.no_links and not args.no_creds:
-        proposals = links.propose(db, results, intel["link_gain"], wp_clients([s for s in sites if s in wp.SITE_DIRS]))
+        with stage("link proposals"):
+            proposals = links.propose(db, results, intel["link_gain"], wp_clients([s for s in sites if s in wp.SITE_DIRS]))
     if not args.no_wp:                                              # from the stored content: no WordPress calls
-        intel["cleanups"] = cleanup.propose(db, results, [s for s in sites if s in wp.SITE_DIRS])
-    path = report.write(db, results)
+        with stage("cleanup proposals"):
+            intel["cleanups"] = cleanup.propose(db, results, [s for s in sites if s in wp.SITE_DIRS])
+    with stage("report"):
+        path = report.write(db, results)
     log("")
     print_status(db, config.SITES)
     log(f"\nReport: {path}")
+    log(stage_report())
     return results, (submitted if not args.dry_run else {}), intel, proposals
 
 
