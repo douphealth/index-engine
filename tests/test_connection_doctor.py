@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import patch
 
-from engine import doctor
+from engine import config, doctor
 
 
 class DoctorTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class DoctorTests(unittest.TestCase):
             self.assertEqual(result["sources"]["google"]["status"], "missing")
             self.assertEqual(result["sources"]["bing"]["status"], "missing")
             self.assertEqual(result["sources"]["credential_file"]["status"], "missing")
-            self.assertEqual(len(result["sites"]), 10)
+            self.assertEqual(len(result["sites"]), len(config.SITES))
             gsc_client.assert_not_called()
             bing_client.assert_not_called()
             self.assertFalse(any("private_key" in str(item) for item in result["sites"]))
