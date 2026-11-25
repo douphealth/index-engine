@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from engine import (aiaccess, alerts, audit, bing, brain, cleanup, config, discover, fresh, google, links, publish,  # noqa: E402
                     queries, report, revival, sitemaps, store, submit, traffic, update, wp)
 from engine import results as measured  # noqa: E402
-from engine.dashboard import Dashboard, apply_state, cached_settings, safe  # noqa: E402
+from engine.dashboard import Dashboard, apply_state, cached_settings, register_sites, safe  # noqa: E402
 from engine.util import load_credentials, log, log_text, now_iso, open_log, parse_ts, utf8_stdout  # noqa: E402
 
 
@@ -452,6 +452,7 @@ def tick(args):
     state = safe(dash.state, what="pull state") if dash else None
     # When the dashboard cannot be reached, keep honouring the last settings (paused / disabled sites) it gave us.
     settings = (state.get("settings") or {}) if state is not None else cached_settings(db)
+    register_sites(settings)
     if self_update(args, db, dash, settings) == "updated":
         print("Engine updated; the next tick runs the new version.")
         return

@@ -6,6 +6,8 @@ Finds every URL your sites publish and works out why each one is or isn't indexe
 
 The dashboard is built as a Cloudflare Pages app (`dashboard/functions`, `dashboard/public`). In production it runs as a **Worker with static assets**, because the Cloudflare account is at its 100 Pages-project limit. It is the same code: `wrangler pages functions build` compiles `functions/` into one Worker (`dashboard/wrangler.worker.jsonc`), with `run_worker_first` so the password check runs before any file is served. If a Pages slot frees up, `npm run deploy:pages` deploys it to Pages unchanged.
 
+**Adding a website:** Settings → Websites → type the domain(s) → Add. No code change: the PC adds it to its site list on the next tick and the first full run discovers every URL. For full data, also add the engine's Google service account as a user of the site's Search Console property, and add the site to Bing Webmaster Tools. Link and cleanup work needs a WordPress login on the PC (`engine/wp.py`).
+
 ## How it fits together
 
 ```

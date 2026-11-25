@@ -1494,6 +1494,46 @@ function viewRuns() {
     h("h3", { text: "Last run log" }), logBox);
 }
 
+const DOMAIN_RE = /^(?=.{4,80}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/;
+const cleanDomain = (v) => {
+  const d = String(v || "").trim().toLowerCase().replace(/^[a-z]+:\/\//, "").split(/[/?#:]/)[0].replace(/\.$/, "");
+  return DOMAIN_RE.test(d) ? d : null;
+};
+/* Websites: every site the engine tracks, plus a box to add more by domain name (no code change needed). */
+function websitesCard(checks, known) {
+  const extra = setting("sites_extra", []) || [];
+  const bare = (d) => d.replace(/^www\./, "");
+  const save = async (list, msg) => {
+    try { await api.post("/api/settings", { sites_extra: list }); await loadAll(); toast(msg, 7000); render(); } catch (e) { toast(e.message, 6000); }
+  };
+  const input = h("textarea", { rows: 3, placeholder: "One domain per line, e.g. example.com", "aria-label": "Websites to add" });
+  const add = () => {
+    const raw = input.value.split(/[\s,;]+/).filter(Boolean);
+    const good = [...new Set(raw.map(cleanDomain).filter(Boolean))];
+    const bad = raw.filter((x) => !cleanDomain(x));
+    const have = new Set([...known, ...extra].map(bare));
+    const fresh = good.filter((d) => !have.has(bare(d)));
+    if (!fresh.length) { toast(bad.length ? `Not a domain name: ${bad.slice(0, 3).join(", ")}` : "Already tracked.", 6000); return; }
+    save([...extra, ...fresh].slice(0, 100), `Added ${fresh.join(", ")}. Your PC starts tracking ${fresh.length === 1 ? "it" : "them"} on its next tick; ` +
+      `the first full run discovers every URL${bad.length ? `. Skipped (not a domain): ${bad.slice(0, 3).join(", ")}` : ""}.`);
+  };
+  const pending = extra.filter((d) => !known.includes(d));
+  return h("div", { class: "card stack" }, h("h2", { text: "Websites" }),
+    checks.length ? h("div", { class: "grid sites-grid" }, ...checks) : null,
+    h("div", { class: "muted tiny", text: "Unticked sites are skipped by every run, link edit, cleanup and fresh-content check, even when you pick one in Run now." }),
+    pending.length ? h("div", { class: "stack small" }, h("b", { text: "Added, waiting for the engine's first run" }),
+      ...pending.map((d) => h("div", { class: "row" }, h("span", { text: d }), h("span", { class: "spacer" }),
+        h("button", { class: "btn small", onclick: () => save(extra.filter((x) => x !== d), `${d} removed.`) }, "Remove")))) : null,
+    h("label", { class: "stack small" }, "Add websites", input),
+    h("div", { class: "muted tiny", text: "Plain domain names. For full data, the site also needs the engine's Google service account as a user of its Search Console property " +
+      "(Settings → Users and permissions) and to be in Bing Webmaster Tools. Without them the engine still discovers, audits and submits through IndexNow where a key file exists. " +
+      "Link and cleanup work needs a WordPress login on the PC." }),
+    h("div", {}, h("button", { class: "btn primary", onclick: add }, "Add")),
+    extra.filter((d) => known.includes(d)).length ? h("details", { class: "small" }, h("summary", { class: "muted", text: "Remove a website you added" }),
+      ...extra.filter((d) => known.includes(d)).map((d) => h("div", { class: "row" }, h("span", { text: d }), h("span", { class: "spacer" }),
+        h("button", { class: "btn small", onclick: () => { if (confirm(`Stop tracking ${d}? Its results stay until the next run.`)) save(extra.filter((x) => x !== d), `${d} removed.`); } }, "Remove")))) : null);
+}
+
 function viewSettings() {
   const sites = S.summary ? S.summary.sites.map((s) => s.site) : [];
   const disabled = new Set(setting("sites_disabled", []));
@@ -1529,8 +1569,7 @@ function viewSettings() {
   };
   const field = (label, input, help) => h("div", { class: "stack" }, h("label", { class: "stack small" }, label, input), help ? h("div", { class: "muted tiny", text: help }) : null);
   return h("div", { class: "stack" }, h("h1", { text: "Settings" }),
-    h("div", { class: "card stack" }, h("h2", { text: "Sites" }), h("div", { class: "grid sites-grid" }, ...checks),
-      h("div", { class: "muted tiny", text: "Unticked sites are skipped by every run, link edit and fresh-content check, even when you pick one in Run now." })),
+    websitesCard(checks, sites),
     h("div", { class: "card stack" }, h("h2", { text: "Engine" }),
       h("label", { class: "chk" }, paused, "Pause everything that changes something: submissions (Bing, IndexNow, sitemaps and feeds to Google and Bing, WebSub), link edits and content cleanups on your sites"),
       h("div", { class: "muted tiny", text: "While paused the engine only measures, Autonomous mode included. Approved links and cleanups wait; Undo waits too." }),

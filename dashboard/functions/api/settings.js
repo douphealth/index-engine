@@ -1,6 +1,8 @@
 // Engine settings the owner can change. The engine reads them at the start of every run.
 import { handle, HttpError, json, now, readJson, SITE_RE } from "../../lib/http.js";
 
+const DOMAIN_RE = /^(?=.{4,80}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/;
+
 const VALIDATE = {
   sites_disabled: (v) => Array.isArray(v) && v.length <= 50 && v.every((s) => SITE_RE.test(s)),
   submit_paused: (v) => typeof v === "boolean",
@@ -12,6 +14,8 @@ const VALIDATE = {
   links_per_site_per_day: (v) => Number.isInteger(v) && v >= 0 && v <= 10,
   cleanups_per_site_per_day: (v) => Number.isInteger(v) && v >= 0 && v <= 30,
   autonomous: (v) => typeof v === "boolean",
+  // Websites added from the dashboard (plain domain names); the engine adds them to its site list on the next tick.
+  sites_extra: (v) => Array.isArray(v) && v.length <= 100 && v.every((s) => typeof s === "string" && DOMAIN_RE.test(s)),
   autonomous_strict_sites: (v) => typeof v === "boolean",
   auto_update: (v) => typeof v === "boolean",
 };

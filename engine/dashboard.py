@@ -111,6 +111,7 @@ def apply_state(db, state):
     db.commit()
     settings = state.get("settings") or {}
     store.set_meta(db, "__dashboard__", settings=settings, pulled_at=now_iso())   # fail closed when it is unreachable
+    register_sites(settings)
     ignored = sum(1 for r in rows if r.get("ignored"))
     done = sum(1 for r in rows if r.get("requested_at"))
     log(f"[dashboard] pulled: {ignored} ignored URLs, {done} request-indexing marks, settings {sorted(k for k in settings if k != 'engine_last_seen')}")
@@ -123,7 +124,16 @@ def cached_settings(db):
     meta = store.get_meta(db, "__dashboard__")
     if meta.get("settings"):
         log(f"[dashboard] not connected: keeping the settings pulled at {str(meta.get('pulled_at'))[:16]}")
+    register_sites(meta.get("settings") or {})
     return meta.get("settings") or {}
+
+
+def register_sites(settings):
+    """Add the websites the owner listed in the dashboard to this run's site list."""
+    added = config.add_sites(settings.get("sites_extra") or [])
+    if added:
+        log(f"[dashboard] websites added in the dashboard: {', '.join(added)}")
+    return added
 
 
 def safe(fn, *a, what="dashboard call", **kw):

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Settings for the index engine. Edit SITES to add or remove a site."""
 import os
+import re
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -87,6 +88,28 @@ DELIBERATE_REDIRECT_SITES = {"gearuptofit.com"}
 # Manual "Request indexing" in the Search Console UI has no API and a small daily cap per property.
 MANUAL_QUEUE_PER_SITE = 10
 MANUAL_REQUEUE_DAYS = 14
+
+
+DOMAIN_RE = re.compile(r"^(?=.{4,80}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")
+
+
+def clean_domain(value):
+    """'https://www.Example.com/path' -> 'www.example.com'; None when it is not a plain public domain name."""
+    d = str(value or "").strip().lower()
+    d = re.sub(r"^[a-z]+://", "", d).split("/")[0].split("?")[0].split("#")[0].split(":")[0].rstrip(".")
+    return d if DOMAIN_RE.match(d) else None
+
+
+def add_sites(extra):
+    """Websites the owner added in the dashboard (Settings > Websites), appended to SITES in place so every module that
+    reads config.SITES sees them. Returns the ones added now."""
+    added = []
+    for v in extra or []:
+        d = clean_domain(v)
+        if d and d not in SITES and (d[4:] if d.startswith("www.") else "www." + d) not in SITES:
+            SITES.append(d)
+            added.append(d)
+    return added
 
 
 def site_base(site):
