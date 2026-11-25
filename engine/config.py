@@ -34,6 +34,19 @@ SITES = [
     "efficientgptprompts.com",
     "openclaw-skillshub.com",
     "imagealchemy.app",
+    # Added 25 Nov 2026 (owner's list). Cloudflare-hosted sites unless noted; no WordPress login on the PC yet.
+    "outdoormisting.com",        # WordPress (CyberPanel)
+    "tenderatlas.shop",
+    "signalroom.store",
+    "stainsolver.shop",
+    "borderwise.online",
+    "checkthetag.shop",
+    "solarpayback.shop",
+    "stopthat.shop",
+    "buyonce.site",
+    "cabinvolt.shop",
+    "bordercover.shop",
+    "fixorrefund.shop",
 ]
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "

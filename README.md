@@ -184,7 +184,7 @@ npx wrangler secret put <NAME> --config wrangler.worker.jsonc
 - Changing `SESSION_SECRET` signs everyone out.
 - Changing `ENGINE_TOKEN` also requires the new token in `Index-Engine-Dashboard.json`.
 
-The first run fetches every page (about 4,000 URLs across the 10 sites on 23 Oct 2026, roughly 10 minutes). Later runs only re-fetch pages that changed or are older than 7 days.
+The first run fetches every page (about 4,000 URLs across the 10 sites on 23 Oct 2026, roughly 10 minutes; the 12 sites added on 25 Nov 2026 add about 4,600 sitemap URLs, about 3,300 of them on tenderatlas.shop). Later runs only re-fetch pages that changed or are older than 7 days.
 
 ## What happens on each run
 
