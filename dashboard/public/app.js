@@ -203,6 +203,60 @@ function setTab(route) {
 }
 
 /* ------------------------------------------------------------------ guided action center */
+/* Autonomous mode: one switch. What the engine does on its own, what it did in the last 24 hours, and what it never does. */
+function autonomyPanel() {
+  const on = setting("autonomous", false) === true;
+  const strict = setting("autonomous_strict_sites", false) === true;
+  const paused = setting("submit_paused", false) === true;
+  const day = (x) => x && x.applied_at && daysSince(x.applied_at) < 1;
+  const links24 = (S.st.links || []).filter((l) => l.status === "applied" && day(l)).length;
+  const cleans24 = (S.st.cleanups || []).filter((c) => c.status === "applied" && day(c)).length;
+  const openCleans = (S.st.cleanups || []).filter((c) => c.status === "proposed").length;
+  const openLinks = (S.st.links || []).filter((l) => l.status === "proposed").length;
+  const stops = (S.st.alerts || []).filter((a) => !a.acked && a.kind === "autonomous_paused");
+  const toggle = async (btn) => {
+    if (!on && !confirm("Turn on Autonomous mode?\n\nYour PC will apply internal links and content cleanups without waiting for your click, " +
+      `within the daily caps (${setting("cleanups_per_site_per_day", 10)} cleanups and ${setting("links_per_site_per_day", 5)} links per site). ` +
+      "Every change is backed up, verified and can be undone. gearuptofit stays manual unless you include it in Settings.")) return;
+    btn.disabled = true;
+    try { await api.post("/api/settings", { autonomous: !on }); await loadAll(); toast(on ? "Autonomous mode off: changes wait for your approval again." : "Autonomous mode on. Your PC acts on its next tick (within 10 minutes)."); render(); }
+    catch (e) { btn.disabled = false; toast(e.message); }
+  };
+  const li = (t) => h("li", { text: t });
+  return h("section", { class: `card stack autonomy ${on ? "on" : ""}` },
+    h("div", { class: "row" },
+      h("h2", { style: { margin: 0 } }, "Autonomous mode ", h("span", { class: `chip v ${on ? (paused ? "warn" : "good") : ""}`, text: on ? (paused ? "On, but paused" : "On") : "Off" })),
+      h("span", { class: "spacer" }),
+      h("button", { class: `btn ${on ? "" : "primary"}`, onclick: (e) => toggle(e.target) }, on ? "Turn off" : "Turn on")),
+    h("p", { class: "small muted", text: on
+      ? `Your PC finds, fixes and verifies on its own${strict ? ", on every site" : ", on every site except gearuptofit"}. You only need to look at alerts.`
+      : "Off: the engine measures, submits and proposes, and waits for your approval before it changes a post. Turn it on to let it apply the proposals itself." }),
+    paused ? h("div", { class: "small bad", text: "Everything that changes something is paused in Settings, so nothing is applied, autonomous or not." }) : null,
+    ...stops.map((a) => h("div", { class: "small bad", text: a.message })),
+    h("div", { class: "guide-mini-stats" },
+      h("span", {}, h("b", { text: fmt(cleans24) }), " cleanups applied in 24 h"),
+      h("span", {}, h("b", { text: fmt(links24) }), " links applied in 24 h"),
+      h("span", {}, h("b", { text: fmt(openCleans + openLinks) }), " changes proposed, waiting")),
+    h("details", { class: "small" }, h("summary", { text: "What it does on its own, and what it never does" }),
+      h("div", { class: "grid", style: { gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "12px" } },
+        h("div", {}, h("b", { text: "Always, every 10 minutes or daily" }), h("ul", {},
+          li("Finds every URL, audits it, reads Google's and Bing's verdicts and traffic"),
+          li("Submits new and changed indexable pages to Bing, IndexNow, sitemaps and feeds"),
+          li("Detects a site Google stopped showing, and builds the prune plan"),
+          li("Updates itself after the tests pass on your PC"))),
+        h("div", {}, h("b", { text: on ? "Now also without your click" : "With Autonomous mode, without your click" }), h("ul", {},
+          li("Adds the best internal links (anchor already in the text)"),
+          li("Cuts automated-content scaffolding (numbered template sections, leftovers, boilerplate repeated on 5+ posts)"),
+          li("Per site: a daily cap, a one-a-day canary until a cut is verified live, and a stop after 2 failures"))),
+        h("div", {}, h("b", { text: "Never on its own" }), h("ul", {},
+          li("Noindexing, redirecting, merging or deleting pages (the prune plan is yours)"),
+          li("Writing or rewriting text, titles or claims"),
+          li("Requesting indexing in Search Console (Google offers no API for it)"),
+          li("Google's Indexing API for articles"))))),
+    h("div", { class: "row" }, h("a", { class: "btn small", href: "#/recovery" }, "Recovery and cleanup queue"), h("a", { class: "btn small", href: "#/links" }, "Links"),
+      h("a", { class: "btn small", href: "#/settings" }, "Caps and options")));
+}
+
 function viewActionCenter() {
   if (!S.summary) return noData();
   const v = (S.view.__guide ||= { focus: "", q: "" });
@@ -272,7 +326,7 @@ function viewActionCenter() {
       "for Google and Bing, direct Search Console links and Growth links. Open Command Prompt on the PC and run these three lines. " +
       "After that it updates itself and this card disappears." }),
     h("pre", { class: "small", text: "cd D:\\Claude\\SEO-Setup\\index-engine\ngit pull origin main\npython indexengine.py update" })) : null;
-  return h("div", { class: "stack guide-root" }, headline, updateCard, stats, steps, cards,
+  return h("div", { class: "stack guide-root" }, headline, updateCard, autonomyPanel(), stats, steps, cards,
     h("div", { class: "card guide-footnote small muted" },
       "Evidence standard: indexation predictions are estimates, not outcomes. Inspect GSC URL evidence after changes. ",
       action("#/overview", "Open full analytics")));
@@ -372,7 +426,8 @@ function priorities() {
         why: "Numbered template headings, pipeline leftovers or the same headings repeated across posts. These are what Google's scaled-content policy targets." });
     }
   }
-  for (const [site, cs] of Object.entries(bySite((S.st.cleanups || []).filter((c) => c.status === "proposed" && liveSet.has(c.site))))) {
+  const autoSite = (site) => setting("autonomous", false) === true && (site !== "gearuptofit.com" || setting("autonomous_strict_sites", false) === true);
+  for (const [site, cs] of Object.entries(bySite((S.st.cleanups || []).filter((c) => c.status === "proposed" && liveSet.has(c.site) && !autoSite(c.site))))) {
     const words = cs.reduce((n, c) => n + (c.words || 0), 0);
     add({ tier: 0, site, minutes: Math.max(2, cs.length * 0.5), cta: "Review cleanups", href: `#/recovery?site=${encodeURIComponent(site)}`,
       title: `Approve the removal of automated-content scaffolding from ${plural(cs.length, "post")} on ${site}`,
@@ -1449,6 +1504,8 @@ function viewSettings() {
   const time = h("input", { type: "time", value: setting("daily_run_time", "10:30") });
   const freshChk = h("input", { type: "checkbox", checked: setting("fresh_check", true) });
   const autopilot = h("input", { type: "checkbox", checked: setting("link_autopilot", true) });
+  const autonomous = h("input", { type: "checkbox", checked: setting("autonomous", false) === true });
+  const strictSites = h("input", { type: "checkbox", checked: setting("autonomous_strict_sites", false) === true });
   const linkCap = h("input", { type: "number", min: 0, max: 10, value: setting("links_per_site_per_day", 5) });
   const cleanCap = h("input", { type: "number", min: 0, max: 30, value: setting("cleanups_per_site_per_day", 10) });
   const autoUpdate = h("input", { type: "checkbox", checked: setting("auto_update", true) });
@@ -1462,6 +1519,8 @@ function viewSettings() {
       daily_run_time: time.value || "10:30",
       fresh_check: freshChk.checked,
       link_autopilot: autopilot.checked,
+      autonomous: autonomous.checked,
+      autonomous_strict_sites: strictSites.checked,
       links_per_site_per_day: Math.max(0, Math.min(10, Number(linkCap.value || 0))),
       cleanups_per_site_per_day: Math.max(0, Math.min(30, Number(cleanCap.value || 0))),
       auto_update: autoUpdate.checked,
@@ -1473,17 +1532,24 @@ function viewSettings() {
     h("div", { class: "card stack" }, h("h2", { text: "Sites" }), h("div", { class: "grid sites-grid" }, ...checks),
       h("div", { class: "muted tiny", text: "Unticked sites are skipped by every run, link edit and fresh-content check, even when you pick one in Run now." })),
     h("div", { class: "card stack" }, h("h2", { text: "Engine" }),
-      h("label", { class: "chk" }, paused, "Pause everything that changes something: submissions (Bing, IndexNow, sitemaps and feeds to Google and Bing, WebSub) and link edits on your sites"),
-      h("div", { class: "muted tiny", text: "While paused the engine only measures. Approved links wait; Undo waits too." }),
+      h("label", { class: "chk" }, paused, "Pause everything that changes something: submissions (Bing, IndexNow, sitemaps and feeds to Google and Bing, WebSub), link edits and content cleanups on your sites"),
+      h("div", { class: "muted tiny", text: "While paused the engine only measures, Autonomous mode included. Approved links and cleanups wait; Undo waits too." }),
       field("Daily run time on your PC", time, "The engine checks every 10 minutes and runs once a day after this time. Google's inspection quota resets at midnight Pacific (10:00 in Greece)."),
       field("Request-indexing list size per site", queue, "Search Console allows roughly 10 manual requests a day per property."),
       field("Max URL inspections per site per run", inspect, "Leave empty to use the full daily quota (about 1,950)."),
       h("label", { class: "chk" }, freshChk, "Fresh-content autopilot: every 10 minutes, find new or updated posts and get them audited, inspected and submitted within minutes"),
       h("div", {}, h("button", { class: "btn primary", onclick: save }, "Save settings"))),
+    h("div", { class: "card stack" }, h("h2", { text: "Autonomous mode" }),
+      h("label", { class: "chk" }, autonomous, "Apply proposed internal links and content cleanups without waiting for my approval"),
+      h("div", { class: "muted tiny", text: "Within the daily caps below. Each change is backed up, verified in WordPress and on the live page, logged, and can be undone. " +
+        "Per site, until one cleanup is confirmed gone from the live page, at most one autonomous cleanup runs a day; two failures in a row stop autonomous cleanups on that site for 24 hours and raise an urgent alert. " +
+        "It never noindexes, redirects, merges or deletes pages, and never writes text." }),
+      h("label", { class: "chk" }, strictSites, "Include gearuptofit (its AGENTS.md asks for your click on every change; tick only if you are overriding that rule)"),
+      field("Cleanups applied per site per day (max 30)", cleanCap, "Cleanups beyond this wait for the next day. Each one saves and re-dates a post. 0 pauses cleanups."),
+      h("div", {}, h("button", { class: "btn primary", onclick: save }, "Save settings"))),
     h("div", { class: "card stack" }, h("h2", { text: "Internal links" }),
-      field("Cleanups applied per site per day (max 30)", cleanCap, "Approved cleanups (Recovery page) beyond this wait for the next day. Each one saves and re-dates a post. 0 pauses cleanups."),
       field("Links applied per site per day (max 10)", linkCap, "Approved links beyond this wait for a free slot. Keep it low: your portfolio guardrails forbid bulk edits, and every saved post is re-dated. 0 pauses link changes."),
-      h("label", { class: "chk" }, autopilot, "Autopilot: also apply the best-ranked proposals without waiting for approval (never on gearuptofit, whose rules require your click)"),
+      h("label", { class: "chk" }, autopilot, "Link autopilot: apply the best-ranked link proposals without waiting for approval (always on in Autonomous mode; gearuptofit only if included above)"),
       h("div", { class: "muted tiny", text: "Every applied link is backed up, verified on the live page, logged, and can be undone from the Links page." }),
       h("div", {}, h("button", { class: "btn primary", onclick: save }, "Save settings"))),
     h("div", { class: "card stack" }, h("h2", { text: "Engine updates" }),

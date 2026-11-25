@@ -23,20 +23,33 @@ export const onRequestGet = handle(async ({ request, env }) => {
   for (const r of settings.results) s[r.key] = JSON.parse(r.value);
   // Link autopilot is on unless the owner switched it off. The effective value goes back in the settings, so an
   // engine that reads the setting directly (older versions) follows the same rule.
-  s.link_autopilot = s.link_autopilot !== false;
+  // Autonomous mode (one switch in Settings) implies the link autopilot and adds the cleanup queue's proposals.
+  // Strict sites stay out of both unless the owner included them explicitly.
+  s.autonomous = s.autonomous === true;
+  s.link_autopilot = s.autonomous || s.link_autopilot !== false;
+  const excluded = s.autonomous && s.autonomous_strict_sites === true ? ["-"] : STRICT_SITES;
+  const notIn = `site NOT IN (${excluded.map(() => "?").join(",")})`;
   let work = links.results;
   if (s.link_autopilot) {
     const auto = await env.DB.prepare(
       `SELECT id, site, source, target, anchor, status FROM link_proposals
-       WHERE status = 'proposed' AND site NOT IN (${STRICT_SITES.map(() => "?").join(",")}) ORDER BY gain DESC LIMIT 60`
-    ).bind(...STRICT_SITES).all();
+       WHERE status = 'proposed' AND ${notIn} ORDER BY gain DESC LIMIT 60`
+    ).bind(...excluded).all();
     work = work.concat(auto.results);
+  }
+  let cleanupWork = cleanups.results;
+  if (s.autonomous) {
+    const auto = await env.DB.prepare(
+      `SELECT id, site, url, sections, status FROM cleanup_proposals
+       WHERE status = 'proposed' AND ${notIn} ORDER BY words DESC LIMIT 120`
+    ).bind(...excluded).all();
+    cleanupWork = cleanupWork.concat(auto.results);
   }
   return json({
     settings: s,
     url_state: urls.results,
     commands: commands.results.filter(c => c.kind === "run" || (c.kind === "doctor" && capabilities.includes("doctor"))).map((c) => ({ ...c, options: JSON.parse(c.options || "{}") })),
     links: work,
-    cleanups: cleanups.results,
+    cleanups: cleanupWork,
   });
 });

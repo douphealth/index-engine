@@ -11,6 +11,8 @@ const VALIDATE = {
   link_autopilot: (v) => typeof v === "boolean",
   links_per_site_per_day: (v) => Number.isInteger(v) && v >= 0 && v <= 10,
   cleanups_per_site_per_day: (v) => Number.isInteger(v) && v >= 0 && v <= 30,
+  autonomous: (v) => typeof v === "boolean",
+  autonomous_strict_sites: (v) => typeof v === "boolean",
   auto_update: (v) => typeof v === "boolean",
 };
 

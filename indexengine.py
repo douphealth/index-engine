@@ -166,11 +166,14 @@ def apply_cleanups(db, dash, state, settings):
 
     cleanup.recheck(db, report_)
     disabled = set(settings.get("sites_disabled") or [])
-    todo = [c for c in (state or {}).get("cleanups") or [] if c.get("site") not in disabled and c.get("status") in ("approved", "undo")]
+    todo = [c for c in (state or {}).get("cleanups") or []
+            if c.get("site") not in disabled and c.get("status") in ("approved", "undo", "proposed")]
     if not todo:
         return set()
     clients = wp_clients(sorted({c["site"] for c in todo}))
-    return cleanup.apply(db, todo, settings, clients, report_)
+    touched = cleanup.apply(db, todo, settings, clients, report_)
+    safe(alerts.push, dash, db, what="push alerts")                 # a tripped circuit breaker is urgent news
+    return touched
 
 
 def pipeline(db, args, sites):

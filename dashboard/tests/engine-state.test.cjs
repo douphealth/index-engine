@@ -70,3 +70,43 @@ test("the heartbeat records a valid engine version and drops anything else", asy
     assert.equal(seen.version, null);
   } finally { db.sql.close(); }
 });
+
+function cleanupRow(db, id, site, status, words = 100) {
+  const t = new Date().toISOString();
+  db.sql.prepare(`INSERT INTO cleanup_proposals (id, site, url, title, sections, words, status, created_at, updated_at)
+                  VALUES (?, ?, ?, 't', '[]', ?, ?, ?, ?)`).run(id, site, `https://${site}/p-${id}/`, words, status, t, t);
+}
+const setting = (db, k, v) => db.sql.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, 'now')").run(k, JSON.stringify(v));
+
+test("cleanups: only approved ones reach the engine until Autonomous mode is switched on", async () => {
+  const db = database();
+  try {
+    cleanupRow(db, "1".repeat(16), "plantastichaven.com", "proposed");
+    cleanupRow(db, "2".repeat(16), "gearuptofit.com", "proposed");
+    cleanupRow(db, "3".repeat(16), "gearuptofit.com", "approved");
+    let s = await state(db);
+    assert.equal(s.settings.autonomous, false);
+    assert.deepEqual(s.cleanups.map((c) => c.id), ["3".repeat(16)]);
+    setting(db, "autonomous", true);
+    s = await state(db);
+    assert.deepEqual(s.cleanups.map((c) => c.id).sort(), ["1".repeat(16), "3".repeat(16)]);   // strict site still left out
+  } finally { db.sql.close(); }
+});
+
+test("Autonomous mode implies the link autopilot and includes strict sites only when the owner opts them in", async () => {
+  const db = database();
+  try {
+    setting(db, "link_autopilot", false);
+    setting(db, "autonomous", true);
+    proposal(db, "a".repeat(16), "plantastichaven.com", "proposed");
+    proposal(db, "b".repeat(16), "gearuptofit.com", "proposed");
+    cleanupRow(db, "2".repeat(16), "gearuptofit.com", "proposed");
+    let s = await state(db);
+    assert.equal(s.settings.link_autopilot, true);
+    assert.deepEqual(s.links.map((l) => l.id), ["a".repeat(16)]);
+    setting(db, "autonomous_strict_sites", true);
+    s = await state(db);
+    assert.deepEqual(s.links.map((l) => l.id).sort(), ["a".repeat(16), "b".repeat(16)]);
+    assert.deepEqual(s.cleanups.map((c) => c.id), ["2".repeat(16)]);
+  } finally { db.sql.close(); }
+});

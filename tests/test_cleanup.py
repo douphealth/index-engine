@@ -197,6 +197,69 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(wp.saves, 0)
 
 
+class AutonomousTests(ApplyTests):
+    """Autonomous mode: proposed cleanups are applied without a click, with a canary and a circuit breaker per site."""
+
+    def add_post(self, wp, slug, pid):
+        url = f"https://{S}/{slug}/"
+        wp.posts[(pid, "posts")] = post(NUMBERED, slug)
+        self.db.execute("INSERT INTO link_corpus(url, site, post_id, post_type, modified, raw) VALUES(?,?,?,?,?,?)",
+                        (url, S, pid, "posts", "x", zlib.compress(wp.posts[(pid, "posts")].encode())))
+        return {"id": cl.cleanup_id(url), "site": S, "url": url, "status": "proposed",
+                "sections": json.dumps(cl.find_cuts(wp.posts[(pid, "posts")]))}
+
+    def live_all(self, wp):
+        pages = {f"https://{S}/{slug}/": pid for slug, pid in (("nimbus", 7), ("b", 8), ("c", 9))}
+        def fake(url, timeout=None):
+            pid = pages[url.split("?")[0]]
+            return FakeResp(wp.posts[(pid, "posts")])
+        return patch.object(cl, "get", fake)
+
+    def test_off_by_default_and_strict_sites_need_their_own_opt_in(self):
+        wp = FakeWP(self.raw)
+        item = dict(self.item, status="proposed")
+        with self.live(wp):
+            cl.apply(self.db, [item], {}, {S: wp}, self.report)
+            self.assertEqual(wp.saves, 0)
+            strict = dict(item, site="gearuptofit.com")
+            cl.apply(self.db, [strict], {"autonomous": True}, {"gearuptofit.com": wp}, self.report)
+            self.assertEqual(wp.saves, 0)
+            cl.apply(self.db, [item], {"autonomous": True}, {S: wp}, self.report)
+        self.assertEqual(self.reports[-1][1], "applied")
+        self.assertEqual(self.db.execute("SELECT auto FROM cleanup_ops").fetchone()[0], 1)
+
+    def test_canary_one_a_day_until_one_is_verified_on_the_live_page(self):
+        wp = FakeWP(self.raw)
+        items = [dict(self.item, status="proposed"), self.add_post(wp, "b", 8), self.add_post(wp, "c", 9)]
+        with patch.object(cl, "get", lambda url, timeout=None: FakeResp(self.raw)):      # live page never changes
+            cl.apply(self.db, items, {"autonomous": True}, {S: wp}, self.report)
+        self.assertEqual(len(self.reports), 1)                       # the canary only
+        with self.live_all(wp):
+            cl.apply(self.db, items[1:], {"autonomous": True}, {S: wp}, self.report)
+        self.assertEqual(len(self.reports), 1)                       # still not verified: wait for tomorrow
+        self.db.execute("DELETE FROM cleanup_ops")
+        wp.posts[(7, "posts")] = self.raw                             # a fresh day: the canary post as it was
+        with self.live_all(wp):
+            cl.apply(self.db, items, {"autonomous": True}, {S: wp}, self.report)
+        self.assertIn("gone from the live page", self.reports[1][2])
+        self.assertEqual(len(self.reports), 4)                       # canary verified live: the rest follow within the cap
+
+    def test_two_failures_open_the_circuit_breaker_and_raise_an_alert(self):
+        wp = FakeWP(self.raw, store_ok=False)
+        wp.update = lambda pid, typ, raw: None                       # WordPress never stores anything
+        items = [dict(self.item, status="proposed"), self.add_post(wp, "b", 8), self.add_post(wp, "c", 9)]
+        with self.live_all(wp):
+            cl.apply(self.db, items, {"autonomous": True}, {S: wp}, self.report)
+        self.assertEqual([r[1] for r in self.reports], ["failed", "failed"])
+        self.assertIsNotNone(cl.breaker(self.db, S))
+        alert = self.db.execute("SELECT severity, kind FROM alerts").fetchone()
+        self.assertEqual((alert[0], alert[1]), ("high", "autonomous_paused"))
+        n = len(self.reports)
+        with self.live_all(wp):
+            cl.apply(self.db, items, {"autonomous": True}, {S: wp}, self.report)
+        self.assertEqual(len(self.reports), n)                       # breaker open: no more autonomous attempts
+
+
 class ProposeTests(unittest.TestCase):
     def test_one_proposal_per_post_and_ignored_pages_are_skipped(self):
         db = new_db()

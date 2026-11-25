@@ -9,8 +9,12 @@ What it proposes to cut (whole sections: the heading and everything up to the ne
   boilerplate  a section whose text is near-identical (shingle overlap >= 80%) on at least 5 posts of the site, so cutting
                it loses nothing unique. A section with the same heading but its own content (a real "Direct answer") is kept.
 Safety rules:
-  * nothing is applied without the owner's approval in the dashboard (no autopilot), at most `cleanups_per_site_per_day`
-    posts per site per day (default 10, never above 30): every save re-dates a post;
+  * nothing is applied without the owner's approval in the dashboard, unless the owner switched on Autonomous mode;
+    either way at most `cleanups_per_site_per_day` posts per site per day (default 10, never above 30): every save
+    re-dates a post. Autonomous mode adds two brakes per site: a canary (until one cleanup is confirmed gone from the
+    live page, at most one autonomous cleanup a day) and a circuit breaker (two failed autonomous cleanups within 24
+    hours stop autonomous cleanups on that site for 24 hours and raise an urgent alert). gearuptofit is left out of
+    Autonomous mode unless the owner includes it explicitly (its AGENTS.md requires the owner's click);
   * a section is cut only when it is cleanly separable: it ends at a later heading of the same or a higher level (or is
     short), and the cut keeps every HTML element and Gutenberg block balanced;
   * the post is re-read at apply time and the sections are found again by their heading text; the raw content is backed up
@@ -30,7 +34,7 @@ import time
 import zlib
 from collections import Counter, defaultdict
 
-from . import config
+from . import alerts, config, store
 from .links import _log_change, _site_guard_check, locate, purge
 from .recovery import GENERIC, LEFTOVERS, NUMBERED_MIN_WORDS, NUMBERED_RUN, _shape
 from .util import get, log, now_iso
@@ -254,30 +258,80 @@ def gone_live(before, after):
     return all(after.get(h, 0) < n for h, n in before.items() if n)
 
 
+STRICT_SITES = {"gearuptofit.com"}
+BREAKER_FAILS = 2
+BREAKER_HOURS = 24
+
+
+def autonomous_for(settings, site):
+    """May the engine act on this site without the owner's click?"""
+    return bool(settings.get("autonomous")) and (site not in STRICT_SITES or bool(settings.get("autonomous_strict_sites")))
+
+
+def breaker(db, site):
+    """The open circuit breaker of this site ({"at", "why"}) or None."""
+    b = store.get_meta(db, site).get("cleanup_breaker")
+    if b and (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(b["at"])).total_seconds() < BREAKER_HOURS * 3600:
+        return b
+    return None
+
+
+def _trip(db, site, why):
+    store.set_meta(db, site, cleanup_breaker={"at": now_iso(), "why": why})
+    alerts.add(db, site, None, "autonomous_paused", "high",
+               f"Autonomous cleanups on {site} stopped for {BREAKER_HOURS} hours after {BREAKER_FAILS} failures in a row "
+               f"(last: {why[:160]}). Approved cleanups still run; check the failed ones on the Recovery page.")
+    log(f"[cleanup] {site}: circuit breaker open: {why[:120]}")
+
+
+def _verified_before(db, site):
+    return db.execute("SELECT 1 FROM cleanup_ops WHERE site=? AND result LIKE '%gone from the live page%' LIMIT 1",
+                      (site,)).fetchone() is not None
+
+
 def apply(db, items, settings, clients, report):
-    """Apply approved cleanups and process undo requests. report(id, status, result, applied_at) mirrors to the dashboard."""
+    """Apply approved cleanups (and, in Autonomous mode, proposed ones) and process undo requests.
+    report(id, status, result, applied_at) mirrors to the dashboard."""
     cap = max(0, min(MAX_PER_DAY, int(settings.get("cleanups_per_site_per_day", DEFAULT_PER_DAY) or 0)))
-    done = defaultdict(int)
-    for r in db.execute("SELECT site FROM cleanup_ops WHERE status='applied' AND julianday('now') - julianday(applied_at) < 1"):
+    done, auto_done = defaultdict(int), defaultdict(int)
+    for r in db.execute("SELECT site, auto FROM cleanup_ops WHERE status='applied' AND julianday('now') - julianday(applied_at) < 1"):
         done[r["site"]] += 1
+        auto_done[r["site"]] += 1 if r["auto"] else 0
+    fails = defaultdict(int)
     touched = set()
     for it in items:
         site, wpc = it["site"], clients.get(it["site"])
         if it["status"] == "undo":
             _undo(db, it, wpc, report)
             continue
-        if it["status"] != "approved" or done[site] >= cap:
+        auto = it["status"] == "proposed"
+        if auto:
+            if not autonomous_for(settings, site) or breaker(db, site):
+                continue
+            if not _verified_before(db, site) and auto_done[site] >= 1:      # canary: one a day until one is verified live
+                continue
+        elif it["status"] != "approved":
+            continue
+        if done[site] >= cap:
             continue
         if not wpc:
-            report(it["id"], "failed", "no WordPress login for this site", None)
+            if not auto:
+                report(it["id"], "failed", "no WordPress login for this site", None)
             continue
-        ok, msg = _apply_one(db, it, wpc)
+        ok, msg = _apply_one(db, it, wpc, auto)
         report(it["id"], "applied" if ok else "failed", msg, now_iso() if ok else None)
         if ok:
             done[site] += 1
+            auto_done[site] += 1 if auto else 0
+            fails[site] = 0
             touched.add(site)
-            _log_change(site, f"- {now_iso()[:16]}Z | Index Engine cleanup queue, owner-approved in the dashboard | {it['url']} | "
+            _log_change(site, f"- {now_iso()[:16]}Z | Index Engine cleanup queue, "
+                              f"{'Autonomous mode' if auto else 'owner-approved in the dashboard'} | {it['url']} | "
                               f"{msg} | backup out/backups/cleanup/{it['id']}*.json; Undo in the dashboard")
+        elif auto:
+            fails[site] += 1
+            if fails[site] >= BREAKER_FAILS:
+                _trip(db, site, msg)
     if "gearuptofit.com" in touched:
         res = _site_guard_check()
         _log_change("gearuptofit.com", f"- {now_iso()[:16]}Z | Index Engine | site_guard.py check after the cleanup batch: {res}")
@@ -286,7 +340,7 @@ def apply(db, items, settings, clients, report):
     return touched
 
 
-def _apply_one(db, it, wpc):
+def _apply_one(db, it, wpc, auto=False):
     try:
         wanted = it.get("sections")
         if isinstance(wanted, str):
@@ -323,9 +377,9 @@ def _apply_one(db, it, wpc):
                       False: "; saved in WordPress, the live page still shows them (page cache?): re-checked every tick"}[seen]
         msg += f"; cache purge: {purged}"
         db.execute("INSERT OR REPLACE INTO cleanup_ops(id, site, url, post_id, post_type, status, applied_at, backup, after_hash, "
-                   "result, gone, live_before) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                   "result, gone, live_before, auto) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                    (it["id"], it["site"], it["url"], loc[0], loc[1], "applied", now_iso(), str(bk), _digest(after), msg,
-                    json.dumps(gone), json.dumps(before) if before else None))
+                    json.dumps(gone), json.dumps(before) if before else None, int(auto)))
         return True, msg
     except Exception as e:
         return False, f"{type(e).__name__}: {str(e)[:160]}"

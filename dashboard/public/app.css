@@ -234,3 +234,6 @@ details.card > summary { cursor: pointer; }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
 .note.good { border-left-color: var(--good); }
 .note.bad { border-left-color: var(--bad); }
+.autonomy { border-left: 4px solid var(--line, #d0d0d0); }
+.autonomy.on { border-left-color: var(--good); }
+.autonomy details ul { margin: 6px 0 0; padding-left: 18px; }
