@@ -16,6 +16,8 @@ from html.parser import HTMLParser
 from urllib import robotparser
 from urllib.parse import urlsplit
 
+import requests
+
 from . import alerts, config, store
 from .util import days_since, get, log, norm, now_iso, same_page, same_site
 
@@ -197,6 +199,43 @@ def _noindex(meta_robots, x_robots):
     return None
 
 
+TRANSIENT_STATUS = (429, 500, 502, 503, 504)
+RETRY_WAIT_DEFAULT, RETRY_WAIT_MAX = 2.0, 10.0
+
+
+def _is_challenge(r, body):
+    return r.status_code in (403, 429, 503) and (r.headers.get("cf-mitigated") == "challenge" or b"Just a moment" in body[:5000])
+
+
+def _retry_wait(r):
+    """Seconds to wait before the one retry: Retry-After when it is a number of seconds, capped."""
+    try:
+        return min(RETRY_WAIT_MAX, max(0.0, float((r.headers.get("Retry-After") or "").strip())))
+    except ValueError:
+        return RETRY_WAIT_DEFAULT
+
+
+def _fetch(url):
+    """GET a page, retrying once on an overloaded-server answer (429/5xx) or a dropped connection.
+    A single transient 503 must not be recorded as the page's state: regressions() would report an indexable page as
+    'now HTTP 503' (seen on a Cloudflare-hosted site on 25 Nov 2026, where the error page even carried noindex).
+    Firewall challenges and read timeouts are not retried (a retry cannot pass the first, and doubles the second)."""
+    for attempt in (1, 2):
+        try:
+            r = get(url, stream=True, allow_redirects=True)
+            body = r.raw.read(MAX_BYTES, decode_content=True)
+            r.close()
+        except requests.exceptions.ConnectionError:
+            if attempt == 2:
+                raise
+            time.sleep(RETRY_WAIT_DEFAULT)
+            continue
+        if attempt == 1 and r.status_code in TRANSIENT_STATUS and not _is_challenge(r, body):
+            time.sleep(_retry_wait(r))
+            continue
+        return r, body
+
+
 def fetch_page(url, rp):
     rec = {"url": url, "checked_at": now_iso(), "status": None, "final_url": None, "hops": 0, "ctype": "",
            "ms": None, "noindex": 0, "noindex_src": None, "canonical": None, "canonical_state": None,
@@ -206,9 +245,7 @@ def fetch_page(url, rp):
     rec["robots_bing"] = int(rp.can_fetch("bingbot", url))
     t0 = time.time()
     try:
-        r = get(url, stream=True, allow_redirects=True)
-        body = r.raw.read(MAX_BYTES, decode_content=True)
-        r.close()
+        r, body = _fetch(url)
     except Exception as e:
         rec["ms"] = int((time.time() - t0) * 1000)
         rec["error"] = type(e).__name__ + ": " + str(e)[:200]
@@ -219,7 +256,7 @@ def fetch_page(url, rp):
     rec["ctype"] = r.headers.get("Content-Type", "").split(";")[0].strip()
     x_robots = r.headers.get("X-Robots-Tag", "")
     link_hdr = r.headers.get("Link", "")
-    if r.status_code in (403, 429, 503) and (r.headers.get("cf-mitigated") == "challenge" or b"Just a moment" in body[:5000]):
+    if _is_challenge(r, body):
         rec["error"] = "bot challenge"           # a firewall answered, not the page; do not report it as broken
         return rec
     if "html" not in rec["ctype"]:
