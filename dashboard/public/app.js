@@ -372,6 +372,13 @@ function priorities() {
         why: "Numbered template headings, pipeline leftovers or the same headings repeated across posts. These are what Google's scaled-content policy targets." });
     }
   }
+  for (const [site, cs] of Object.entries(bySite((S.st.cleanups || []).filter((c) => c.status === "proposed" && liveSet.has(c.site))))) {
+    const words = cs.reduce((n, c) => n + (c.words || 0), 0);
+    add({ tier: 0, site, minutes: Math.max(2, cs.length * 0.5), cta: "Review cleanups", href: `#/recovery?site=${encodeURIComponent(site)}`,
+      title: `Approve the removal of automated-content scaffolding from ${plural(cs.length, "post")} on ${site}`,
+      why: `${fmt(words)} words of numbered template sections, pipeline leftovers and boilerplate blocks repeated across posts: the pattern ` +
+        "Google's scaled-content systems judge. Each cut is shown before you approve; your PC applies it with a backup, checks the live page, and Undo restores it." });
+  }
   const recovering = new Set(live.filter((s) => s.recovery && s.recovery.engine === "google" && ["collapsed", "severe_drop"].includes(s.recovery.state)).map((s) => s.site));
 
   // ---- quick wins: ranked by expected pages per minute
@@ -1443,6 +1450,7 @@ function viewSettings() {
   const freshChk = h("input", { type: "checkbox", checked: setting("fresh_check", true) });
   const autopilot = h("input", { type: "checkbox", checked: setting("link_autopilot", true) });
   const linkCap = h("input", { type: "number", min: 0, max: 10, value: setting("links_per_site_per_day", 5) });
+  const cleanCap = h("input", { type: "number", min: 0, max: 30, value: setting("cleanups_per_site_per_day", 10) });
   const autoUpdate = h("input", { type: "checkbox", checked: setting("auto_update", true) });
   const running = (setting("engine_last_seen", null) || {}).version;
   const save = async () => {
@@ -1455,6 +1463,7 @@ function viewSettings() {
       fresh_check: freshChk.checked,
       link_autopilot: autopilot.checked,
       links_per_site_per_day: Math.max(0, Math.min(10, Number(linkCap.value || 0))),
+      cleanups_per_site_per_day: Math.max(0, Math.min(30, Number(cleanCap.value || 0))),
       auto_update: autoUpdate.checked,
     };
     try { await api.post("/api/settings", body); await loadAll(); toast("Saved. The engine applies it on its next run."); } catch (e) { toast(e.message); }
@@ -1472,6 +1481,7 @@ function viewSettings() {
       h("label", { class: "chk" }, freshChk, "Fresh-content autopilot: every 10 minutes, find new or updated posts and get them audited, inspected and submitted within minutes"),
       h("div", {}, h("button", { class: "btn primary", onclick: save }, "Save settings"))),
     h("div", { class: "card stack" }, h("h2", { text: "Internal links" }),
+      field("Cleanups applied per site per day (max 30)", cleanCap, "Approved cleanups (Recovery page) beyond this wait for the next day. Each one saves and re-dates a post. 0 pauses cleanups."),
       field("Links applied per site per day (max 10)", linkCap, "Approved links beyond this wait for a free slot. Keep it low: your portfolio guardrails forbid bulk edits, and every saved post is re-dated. 0 pauses link changes."),
       h("label", { class: "chk" }, autopilot, "Autopilot: also apply the best-ranked proposals without waiting for approval (never on gearuptofit, whose rules require your click)"),
       h("div", { class: "muted tiny", text: "Every applied link is backed up, verified on the live page, logged, and can be undone from the Links page." }),
@@ -1550,6 +1560,61 @@ function pruneCsv(site, rows) {
   const a = h("a", { href: URL.createObjectURL(new Blob(["﻿" + text], { type: "text/csv" })), download: `prune-plan-${site}.csv` });
   document.body.append(a); a.click(); a.remove();
 }
+
+/* Cleanup queue: one row per post, the exact sections the engine would cut. Nothing is applied without approval. */
+const CUT_KIND = { numbered: "Numbered template", leftover: "Pipeline leftover", boilerplate: "Repeated boilerplate" };
+const CLEAN_STATUS = { proposed: "Proposed", approved: "Approved: waiting for your PC", applied: "Applied", failed: "Failed",
+  rejected: "Rejected", undo: "Undo queued", undone: "Undone" };
+function cleanupCard(site) {
+  const all = (S.st.cleanups || []).filter((c) => c.site === site);
+  if (!all.length) return null;
+  const v = (S.view.__cleanup ||= { status: "proposed" });
+  const counts = all.reduce((m, c) => ((m[c.status] = (m[c.status] || 0) + 1), m), {});
+  const status = counts[v.status] ? v.status : Object.keys(CLEAN_STATUS).find((k) => counts[k]);
+  const items = all.filter((c) => c.status === status);
+  const cap = Number(setting("cleanups_per_site_per_day", 10));
+  const act = async (ids, action, btn) => {
+    if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+    try {
+      const r = await api.post("/api/cleanup", { ids, action });
+      if (r.changed) for (const c of S.st.cleanups) if (ids.includes(c.id)) c.status = r.status;
+      toast(!r.changed ? "Nothing changed: the list was out of date" : action === "approve"
+        ? `Approved ${r.changed}. Your PC applies up to ${cap} per site a day, within 10 minutes when it is on.`
+        : action === "undo" ? `Undo queued for ${r.changed}.` : `${r.changed}: ${CLEAN_STATUS[r.status] || r.status}`, 7000);
+      if (!r.changed) await loadAll();
+      renderChrome(); render();
+    } catch (e) { if (btn) btn.disabled = false; toast(`Not saved: ${e.message}`, 6000); }
+  };
+  const tabs = h("div", { class: "row" }, ...Object.keys(CLEAN_STATUS).filter((k) => counts[k]).map((k) =>
+    h("button", { class: `btn small ${k === status ? "primary" : ""}`, onclick: () => { v.status = k; render(); } }, `${CLEAN_STATUS[k].split(":")[0]} (${counts[k]})`)),
+    h("span", { class: "spacer" }),
+    status === "proposed" && items.length > 1 ? h("button", { class: "btn small", onclick: (e) => act(items.slice(0, 200).map((c) => c.id), "approve", e.target) },
+      `Approve all ${Math.min(200, items.length)}`) : null);
+  const SHOW = 150;
+  const rows = items.slice(0, SHOW).map((c) => {
+    const btns = {
+      proposed: [["approve", "Approve", "primary"], ["reject", "Reject", ""]], approved: [["cancel", "Cancel", ""]],
+      failed: [["approve", "Retry", ""], ["reject", "Reject", ""]], applied: [["undo", "Undo", ""]], rejected: [["reopen", "Reopen", ""]],
+      undone: [["reopen", "Reopen", ""]],
+    }[c.status] || [];
+    return h("div", { class: "card stack", style: { padding: "10px 12px" } },
+      h("div", { class: "row" }, httpUrl(c.url) ? h("a", { href: c.url, target: "_blank", rel: "noopener", text: c.title || shortPath(c.url) }) : h("span", { text: c.url }),
+        h("span", { class: "muted tiny", text: `${fmt(c.words)} words` }), h("span", { class: "spacer" }),
+        ...btns.map(([a, label, cls]) => h("button", { class: `btn small ${cls}`, onclick: (e) => act([c.id], a, e.target) }, label))),
+      h("ul", { class: "small", style: { margin: 0, paddingLeft: "18px" } }, ...(c.sections || []).map((x) => h("li", {},
+        h("span", { class: "chip", text: CUT_KIND[x.kind] || x.kind }), h("b", { text: x.heading }),
+        h("span", { class: "muted tiny", text: ` · ${fmt(x.words)} words` }),
+        x.excerpt ? h("div", { class: "tiny muted", text: `“${x.excerpt}${x.excerpt.length >= 180 ? "…" : ""}”` }) : null))),
+      c.result ? h("div", { class: `tiny ${c.status === "failed" ? "bad" : "muted"}`, text: c.result }) : null);
+  });
+  return h("div", { class: "card stack", id: "cleanup" }, h("h2", { text: "Cleanup queue", style: { margin: 0 } }),
+    h("p", { class: "small muted", text: "Whole sections the engine would cut: numbered template sections, pipeline leftovers, and boilerplate blocks that are near-identical on 5+ posts " +
+      "(a section with the same heading but its own content is kept). Nothing else on the post changes. Your PC applies approved posts with a backup, checks WordPress " +
+      `and the live page, and restores the original if WordPress did not store the change. Undo restores the post. Up to ${cap} posts per site a day (Settings).` }),
+    tabs, ...rows,
+    items.length > SHOW ? h("div", { class: "small muted", text: `Showing ${SHOW} of ${fmt(items.length)}.` }) : null);
+}
+
 async function viewRecovery(params) {
   if (!S.summary) return noData();
   const sites = S.summary.sites.filter((s) => !isPaused(s.site) && s.recovery);
@@ -1621,7 +1686,7 @@ async function viewRecovery(params) {
       h("thead", {}, h("tr", {}, ...["Page", "Decision", "Clicks", "Impressions", "Words", "Why"].map((x, i) => h("th", { class: i ? `${[2, 3, 4].includes(i) ? "n " : ""}hide-sm` : null, text: x })))),
       h("tbody", {}, ...body))) : h("div", { class: "empty", text: "No pages in this group." }),
     items.length > SHOW ? h("div", { class: "small muted", text: `Showing ${SHOW} of ${fmt(items.length)}. Download the CSV for all of them.` }) : null);
-  return h("div", { class: "stack" }, intro, table, card, plan);
+  return h("div", { class: "stack" }, intro, table, card, cleanupCard(chosen), plan);
 }
 
 /* ------------------------------------------------------------------ router */

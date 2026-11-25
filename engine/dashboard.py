@@ -85,6 +85,14 @@ class Dashboard:
         return self._call("POST", "/api/engine/link", json={"id": lid, "status": status, "result": result,
                                                             "applied_at": applied_at})
 
+    def cleanups(self, items, sites):
+        """Replace the open cleanup proposals of these sites (approved/applied/rejected ones are kept)."""
+        return self._call("POST", "/api/engine/cleanups", json={"proposals": items, "sites": sites}, timeout=120)
+
+    def cleanup_result(self, cid, status, result, applied_at=None):
+        return self._call("POST", "/api/engine/cleanup", json={"id": cid, "status": status, "result": result,
+                                                               "applied_at": applied_at})
+
     def put(self, key, body):
         data = body if isinstance(body, (bytes, bytearray)) else (body if isinstance(body, str) else json.dumps(body, separators=(",", ":")))
         if isinstance(data, str):

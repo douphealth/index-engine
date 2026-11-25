@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from engine import (aiaccess, alerts, audit, bing, brain, config, discover, fresh, google, links, publish,  # noqa: E402
+from engine import (aiaccess, alerts, audit, bing, brain, cleanup, config, discover, fresh, google, links, publish,  # noqa: E402
                     queries, report, revival, sitemaps, store, submit, traffic, update, wp)
 from engine import results as measured  # noqa: E402
 from engine.dashboard import Dashboard, apply_state, cached_settings, safe  # noqa: E402
@@ -159,6 +159,20 @@ def apply_links(db, dash, state, settings):
     return links.apply(db, todo, settings, clients, report_)
 
 
+def apply_cleanups(db, dash, state, settings):
+    """Apply owner-approved cleanups (automated-content scaffolding) and process undo requests."""
+    def report_(cid, status, result, applied_at):
+        safe(dash.cleanup_result, cid, status, result, applied_at, what="report cleanup result")
+
+    cleanup.recheck(db, report_)
+    disabled = set(settings.get("sites_disabled") or [])
+    todo = [c for c in (state or {}).get("cleanups") or [] if c.get("site") not in disabled and c.get("status") in ("approved", "undo")]
+    if not todo:
+        return set()
+    clients = wp_clients(sorted({c["site"] for c in todo}))
+    return cleanup.apply(db, todo, settings, clients, report_)
+
+
 def pipeline(db, args, sites):
     """The full engine. Returns (results, {site: {channel: n}}, intel, proposals or None)."""
     if not args.skip_discover:
@@ -205,6 +219,8 @@ def pipeline(db, args, sites):
     proposals = None
     if not args.no_links and not args.no_creds:
         proposals = links.propose(db, results, intel["link_gain"], wp_clients([s for s in sites if s in wp.SITE_DIRS]))
+    if not args.no_wp:                                              # from the stored content: no WordPress calls
+        intel["cleanups"] = cleanup.propose(db, results, [s for s in sites if s in wp.SITE_DIRS])
     path = report.write(db, results)
     log("")
     print_status(db, config.SITES)
@@ -216,6 +232,8 @@ def upload(dash, db, results, intel, submitted, disabled, proposals=None, propos
     run_summary = safe(publish.push, dash, db, results, now_iso(), submitted, log_text(), disabled, intel, what="upload results")
     if proposals is not None:
         safe(dash.proposals, proposals, sorted(proposal_sites), what="upload link proposals")
+    if intel.get("cleanups") is not None:
+        safe(dash.cleanups, intel["cleanups"][:1000], sorted(proposal_sites), what="upload cleanup proposals")
     safe(alerts.push, dash, db, what="push alerts")
     return run_summary
 
@@ -258,6 +276,7 @@ def run(args, dash=None, state=None, trigger="manual"):
         try:
             if dash and state and writes_allowed(args, settings):
                 apply_links(db, dash, state, settings)
+                apply_cleanups(db, dash, state, settings)
             results, submitted, intel, proposals = pipeline(db, args, sites)
         except Exception as e:
             log(traceback.format_exc())
@@ -309,7 +328,9 @@ def quick(args, dash, state, settings):
             apply_state(db, state)
         disabled = set(settings.get("sites_disabled") or [])
         sites = [s for s in config.SITES if s not in disabled]
-        touched = apply_links(db, dash, state, settings) if (dash and state and writes_allowed(args, settings)) else set()
+        touched = set()
+        if dash and state and writes_allowed(args, settings):
+            touched = apply_links(db, dash, state, settings) | apply_cleanups(db, dash, state, settings)
         changes = fresh.changed(db, sites) if settings.get("fresh_check", True) else {}
         if not changes and not touched:
             db.commit()

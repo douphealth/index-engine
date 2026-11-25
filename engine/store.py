@@ -104,6 +104,10 @@ CREATE TABLE IF NOT EXISTS query_fetch(src TEXT, url TEXT, site TEXT, fetched_at
 CREATE TABLE IF NOT EXISTS results(target TEXT PRIMARY KEY, site TEXT, kind TEXT, applied_at TEXT, links INT,
   anchor TEXT, measured_at TEXT, data TEXT);
 
+-- Posts the cleanup queue changed (engine/cleanup.py): for verification, re-checks and undo.
+CREATE TABLE IF NOT EXISTS cleanup_ops(id TEXT PRIMARY KEY, site TEXT, url TEXT, post_id INT, post_type TEXT, status TEXT,
+  applied_at TEXT, backup TEXT, after_hash TEXT, result TEXT, gone TEXT, live_before TEXT);
+
 -- External links pointing at each page (Bing GetLinkCounts), read weekly: a page other sites link to is redirected, never
 -- just noindexed, by the prune plan.
 CREATE TABLE IF NOT EXISTS inbound_links(url TEXT PRIMARY KEY, site TEXT, links INT, at TEXT);
