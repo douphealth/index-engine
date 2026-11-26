@@ -75,5 +75,38 @@ class TransientRetry(unittest.TestCase):
         self.assertTrue(rec["error"].startswith("ReadTimeout"))
 
 
+class RetryMeetsPacingAndStorage(unittest.TestCase):
+    def test_a_page_answered_on_the_retry_halves_the_pace(self):
+        p = audit.Pace("busy.test")
+        before = p.limit = 4
+        p.saw({"status": 200, "ms": 100, "error": None, "retried": "503"})
+        self.assertEqual(p.limit, before // 2)
+        p2 = audit.Pace("calm.test")
+        p2.limit = 4
+        p2.saw({"status": 200, "ms": 100, "error": None, "retried": None})
+        self.assertEqual(p2.limit, 4)
+
+    def test_timing_excludes_the_retry_wait(self):
+        clock = iter([100.0, 100.0, 105.0, 105.5])        # fetch_page t0, attempt 1, attempt 2, end
+        def fake_get(url, **kw):
+            return responses.pop(0)
+        responses = [FakeResp(503), FakeResp(200)]
+        with patch.object(audit, "get", side_effect=fake_get), patch.object(audit.time, "sleep"), \
+                patch.object(audit.time, "time", side_effect=lambda: next(clock)):
+            rec = audit.fetch_page("https://example.com/a", Rp())
+        self.assertEqual((rec["status"], rec["retried"], rec["ms"]), (200, "503", 500))
+
+    def test_save_does_not_store_the_retry_flag(self):
+        import sqlite3
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        cols = ("url", "checked_at", "status", "lastmod_at_check")
+        db.execute(f"CREATE TABLE audits({','.join(cols)}, PRIMARY KEY(url))")
+        db.execute("CREATE TABLE links(src, dst, in_content)")
+        with patch.object(audit, "regressions"):
+            audit.save(db, {"url": "u", "checked_at": "t", "status": 200, "links": [], "retried": "503"}, None)
+        self.assertEqual(tuple(db.execute("SELECT status FROM audits").fetchone()), (200,))
+
+
 if __name__ == "__main__":
     unittest.main()

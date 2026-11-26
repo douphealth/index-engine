@@ -219,8 +219,12 @@ def _fetch(url):
     """GET a page, retrying once on an overloaded-server answer (429/5xx) or a dropped connection.
     A single transient 503 must not be recorded as the page's state: regressions() would report an indexable page as
     'now HTTP 503' (seen on a Cloudflare-hosted site on 25 Nov 2026, where the error page even carried noindex).
-    Firewall challenges and read timeouts are not retried (a retry cannot pass the first, and doubles the second)."""
+    Firewall challenges and read timeouts are not retried (a retry cannot pass the first, and doubles the second).
+    Returns (response, body, what the first attempt got if it was retried, start time of the attempt kept): the page's
+    timing excludes the wait, and the pacing still learns that the site was overloaded."""
+    retried = None
     for attempt in (1, 2):
+        t0 = time.time()
         try:
             r = get(url, stream=True, allow_redirects=True)
             body = r.raw.read(MAX_BYTES, decode_content=True)
@@ -228,12 +232,14 @@ def _fetch(url):
         except requests.exceptions.ConnectionError:
             if attempt == 2:
                 raise
+            retried = "connection"
             time.sleep(RETRY_WAIT_DEFAULT)
             continue
         if attempt == 1 and r.status_code in TRANSIENT_STATUS and not _is_challenge(r, body):
+            retried = str(r.status_code)
             time.sleep(_retry_wait(r))
             continue
-        return r, body
+        return r, body, retried, t0
 
 
 def fetch_page(url, rp):
@@ -245,7 +251,7 @@ def fetch_page(url, rp):
     rec["robots_bing"] = int(rp.can_fetch("bingbot", url))
     t0 = time.time()
     try:
-        r, body = _fetch(url)
+        r, body, rec["retried"], t0 = _fetch(url)   # "retried" is for the pacing only; save() drops it
     except Exception as e:
         rec["ms"] = int((time.time() - t0) * 1000)
         rec["error"] = type(e).__name__ + ": " + str(e)[:200]
@@ -371,6 +377,7 @@ def regressions(db, rec):
 def save(db, rec, lastmod):
     regressions(db, rec)
     links = rec.pop("links", [])
+    rec.pop("retried", None)
     rec["lastmod_at_check"] = lastmod
     cols = list(rec)
     db.execute(f"INSERT OR REPLACE INTO audits({','.join(cols)}) VALUES({','.join('?' * len(cols))})", [rec[c] for c in cols])
@@ -394,7 +401,8 @@ class Pace:
 
     def saw(self, rec):
         status, ms = rec["status"], rec["ms"] or 0
-        if status is None or status == 429 or status >= 500 or rec["error"] == "bot challenge":
+        if (status is None or status == 429 or status >= 500 or rec["error"] == "bot challenge"
+                or rec.get("retried")):           # answered on the retry: the site was still overloaded
             self.ceiling = max(1, min(self.ceiling, self.limit - 1))
             self.limit = max(1, self.limit // 2)
             self.fast = 0
