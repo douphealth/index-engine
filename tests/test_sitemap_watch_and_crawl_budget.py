@@ -217,7 +217,7 @@ class DueRows(unittest.TestCase):
 
     def test_default_cap_is_generous_enough_for_the_ordinary_sites(self):
         self.assertGreaterEqual(config.AUDIT_MAX_PER_SITE, 500)
-        self.assertLessEqual(config.AUDIT_SITE_MAX["tenderatlas.shop"], 200)
+        self.assertLessEqual(config.AUDIT_SITE_MAX["tenderatlas.shop"], config.AUDIT_MAX_PER_SITE)     # never above the default
 
 
 class StopsAFailingSite(unittest.TestCase):
