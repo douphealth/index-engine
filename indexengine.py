@@ -182,9 +182,10 @@ def pipeline(db, args, sites):
     if not args.skip_discover:
         with stage("discover"):
             discover.run(db, sites, use_wp=not args.no_wp)
+    away = {}
     if not args.skip_audit:
         with stage("audit"):
-            audit.run(db, sites, force=args.force_audit, max_per_site=args.audit_max)
+            away = audit.run(db, sites, force=args.force_audit, max_per_site=args.audit_max) or {}
 
     gclient, bclient, props, bsites = engines(args, db, sites)
     with stage("search data"):
@@ -207,13 +208,18 @@ def pipeline(db, args, sites):
     submitted = {}
     with stage("submit"):
         if not args.no_submit:
-            submitted = submit.run(db, sites, bing_client=bclient, bing_sites=bsites, dry_run=args.dry_run, both=args.both,
+            # A site that answered "come back later" during the audit is down right now: nothing of it is submitted, and
+            # its sitemaps are not re-announced, until a run finds it answering again.
+            up = [s for s in sites if s not in away]
+            for s in away:
+                log(f"[submit] {s}: skipped - the site answered that it is temporarily unavailable during this run's audit")
+            submitted = submit.run(db, up, bing_client=bclient, bing_sites=bsites, dry_run=args.dry_run, both=args.both,
                                    include_taxonomy=args.include_taxonomy, max_per_site=args.submit_max)
             if props:
-                google.sync_sitemaps(db, gclient, props, dry_run=args.dry_run)
+                google.sync_sitemaps(db, gclient, {s: p for s, p in props.items() if s not in away}, dry_run=args.dry_run)
             if bsites:
-                bing.sync_feeds(db, bclient, bsites, dry_run=args.dry_run)
-            sitemaps.ping_hubs(db, sites, dry_run=args.dry_run)
+                bing.sync_feeds(db, bclient, {s: b for s, b in bsites.items() if s not in away}, dry_run=args.dry_run)
+            sitemaps.ping_hubs(db, up, dry_run=args.dry_run)
     with stage("Bing crawl checks"):
         if bsites and args.bing_check:
             bing.check_url_info(db, bclient, bsites, max_per_site=args.bing_check)

@@ -6,12 +6,14 @@ Googlebot and bingbot, canonical target, main-content word count, a content sket
 near-duplicate detection, and every internal link (to find orphans and plan internal links).
 Read-only: plain GETs, a few per host at a time.
 """
+import datetime as dt
 import hashlib
 import json
 import re
 import time
 from collections import defaultdict, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from urllib import robotparser
 from urllib.parse import urlsplit
@@ -201,18 +203,47 @@ def _noindex(meta_robots, x_robots):
 
 TRANSIENT_STATUS = (429, 500, 502, 503, 504)
 RETRY_WAIT_DEFAULT, RETRY_WAIT_MAX = 2.0, 10.0
+RETRY_HOLD = 300            # a Retry-After this long (seconds) is not waited out: the site's audit ends for this run
 
 
 def _is_challenge(r, body):
     return r.status_code in (403, 429, 503) and (r.headers.get("cf-mitigated") == "challenge" or b"Just a moment" in body[:5000])
 
 
-def _retry_wait(r):
-    """Seconds to wait before the one retry: Retry-After when it is a number of seconds, capped."""
+def retry_after(r):
+    """Seconds the server asked us to stay away (its Retry-After, as a number or a date), or None when it did not say."""
+    raw = (r.headers.get("Retry-After") or "").strip()
+    if not raw:
+        return None
     try:
-        return min(RETRY_WAIT_MAX, max(0.0, float((r.headers.get("Retry-After") or "").strip())))
+        return max(0.0, float(raw))
     except ValueError:
-        return RETRY_WAIT_DEFAULT
+        pass
+    try:
+        when = parsedate_to_datetime(raw)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=dt.timezone.utc)
+        return max(0.0, (when - dt.datetime.now(dt.timezone.utc)).total_seconds())
+    except (TypeError, ValueError):
+        return None
+
+
+def _retry_wait(r):
+    """Seconds to wait before the one retry: Retry-After when the server gave one, capped."""
+    asked = retry_after(r)
+    return RETRY_WAIT_DEFAULT if asked is None else min(RETRY_WAIT_MAX, asked)
+
+
+def asks_to_come_back_later(r, body):
+    """Seconds, when an overloaded-server answer (429/5xx) says to stay away for RETRY_HOLD or longer; else 0.
+    That is the site announcing an outage, not a page being slow: tenderatlas.shop answers 503 with Retry-After 3600
+    while its database is down (seen 26 Nov 2026, when the audit then waited 10 s on each of 400 such pages). A retry
+    seconds later cannot succeed, every further request loads a site that is already failing, and the answer says
+    nothing about the page."""
+    if r.status_code not in TRANSIENT_STATUS or _is_challenge(r, body):
+        return 0
+    asked = retry_after(r) or 0
+    return int(asked) if asked >= RETRY_HOLD else 0
 
 
 def _fetch(url):
@@ -236,6 +267,8 @@ def _fetch(url):
             time.sleep(RETRY_WAIT_DEFAULT)
             continue
         if attempt == 1 and r.status_code in TRANSIENT_STATUS and not _is_challenge(r, body):
+            if asks_to_come_back_later(r, body):
+                return r, body, retried, t0          # the site said when to come back: no wait, no second request
             retried = str(r.status_code)
             time.sleep(_retry_wait(r))
             continue
@@ -264,6 +297,10 @@ def fetch_page(url, rp):
     link_hdr = r.headers.get("Link", "")
     if _is_challenge(r, body):
         rec["error"] = "bot challenge"           # a firewall answered, not the page; do not report it as broken
+        return rec
+    hold = asks_to_come_back_later(r, body)
+    if hold:
+        rec["hold"], rec["error"] = hold, "asked to come back later"     # run() ends the site's audit; never stored
         return rec
     if "html" not in rec["ctype"]:
         src = _noindex([], x_robots)
@@ -443,32 +480,43 @@ class Breaker:
     """Stops one site's audit when it starts failing part-way through: AUDIT_STOP_AFTER failed answers in a row (404,
     410, 429, 5xx or none) after at least AUDIT_STOP_MIN_OK normal ones in the same run. A site that answered and then
     stopped is overloaded or its database gave out; a block of dead URLs at the start of a queue is not that, and is
-    read to the end."""
+    read to the end.
+
+    The same number of server-side failures in a row (429, 5xx, or no answer) stops it even when nothing answered
+    normally first: dead URLs answer 404 or 410, so a run that opens with nothing but server errors is a site that is
+    down, and every further request only adds to its load. A firewall challenge is neither: the page was not asked."""
 
     def __init__(self):
-        self.ok = self.streak = 0
+        self.ok = self.streak = self.down = 0
         self.stopped = False
 
     def saw(self, rec):
         status = rec["status"]
+        server = (status is None or status == 429 or status >= 500) and rec.get("error") != "bot challenge"
         if status is None or status in (404, 410, 429) or status >= 500:
             self.streak += 1
+            self.down = self.down + 1 if server else 0
         else:
             self.ok += 1
-            self.streak = 0
-        if not self.stopped and self.streak >= config.AUDIT_STOP_AFTER and self.ok >= config.AUDIT_STOP_MIN_OK:
+            self.streak = self.down = 0
+        if not self.stopped and ((self.streak >= config.AUDIT_STOP_AFTER and self.ok >= config.AUDIT_STOP_MIN_OK)
+                                 or self.down >= config.AUDIT_STOP_AFTER):
             self.stopped = True
             return True
         return False
 
 
 def run(db, sites, force=False, max_per_site=None):
+    """Audits the pages that are due. Returns {site: seconds} for the sites that answered "come back later" (see
+    asks_to_come_back_later): their audit ended there, nothing was recorded against their pages, and the caller
+    submits nothing for them in this run."""
     held = {}
     work = due_rows(db, sites, force, max_per_site, held)
     total = sum(len(v) for v in work.values())
+    away = {}
     if not total:
         log("[audit] nothing due")
-        return
+        return away
     log(f"[audit] {total} pages due across {len(work)} sites")
     for site, left in held.items():
         log(f"  {site}: {len(work[site])} pages this run, {left} more in later runs (at most "
@@ -498,6 +546,26 @@ def run(db, sites, force=False, max_per_site=None):
                 site, lastmod = inflight.pop(f)
                 active[site] -= 1
                 rec = f.result()
+                if rec.get("hold"):
+                    # Not stored: the page's last known state stands. Requests already in flight to the site come
+                    # back the same way and are dropped here too.
+                    total -= 1
+                    if site not in away:
+                        away[site] = rec["hold"]
+                        left = len(queues.pop(site, ()))
+                        total -= left
+                        mins = max(1, round(rec["hold"] / 60))
+                        log(f"  {site}: answered HTTP {rec['status']} and asked to come back in {mins} min; its audit ends "
+                            f"here for this run ({left + 1 + active[site]} pages wait for the next), nothing is recorded "
+                            "against its pages and nothing is submitted for it")
+                        alerts.add(db, site, None, "site_unavailable", "high",
+                                   f"The site answered HTTP {rec['status']} and asked crawlers to come back in {mins} minutes "
+                                   "(Retry-After). That is the site saying it is temporarily down, for example because "
+                                   f"its database stopped answering. The engine stopped reading it after {fetched[site]} "
+                                   "pages in this run, recorded nothing against its pages, and submitted none of its URLs: "
+                                   "inviting a search engine to a page that answers 503 teaches it the page is unreliable. "
+                                   "Search engines that crawl the site meanwhile get the same 503.")
+                    continue
                 pace[site].saw(rec)
                 fetched[site] += 1
                 failed[site] += rec["status"] is None
@@ -509,11 +577,16 @@ def run(db, sites, force=False, max_per_site=None):
                     b = breaker[site]
                     log(f"  {site}: {b.streak} failed answers in a row after {b.ok} normal ones; stopped for this run, "
                         f"{left} pages left for the next")
-                    alerts.add(db, site, None, "site_failing", "high",
-                               f"{b.streak} pages in a row answered 404 or an error after {b.ok} had answered normally, so the "
-                               f"audit of this site stopped for this run ({left} pages wait for the next one). A site that "
-                               "starts failing part-way through a crawl is usually overloaded, or its database stopped "
-                               "answering; the pages themselves are probably fine and are fetched again tomorrow.")
+                    if b.ok:
+                        what = (f"{b.streak} pages in a row answered 404 or an error after {b.ok} had answered normally, so "
+                                f"the audit of this site stopped for this run ({left} pages wait for the next one). A site "
+                                "that starts failing part-way through a crawl is usually overloaded, or its database "
+                                "stopped answering; the pages themselves are probably fine and are fetched again tomorrow.")
+                    else:
+                        what = (f"{b.streak} pages in a row answered a server error or did not answer, and none answered "
+                                f"normally, so the audit of this site stopped for this run ({left} pages wait for the next "
+                                "one). The site looks down or overloaded right now; its pages are fetched again tomorrow.")
+                    alerts.add(db, site, None, "site_failing", "high", what)
                 if done_n % 100 == 0 or done_n == total:
                     db.commit()
                     rate = done_n / max(1e-6, time.time() - t0)
@@ -526,3 +599,4 @@ def run(db, sites, force=False, max_per_site=None):
             alerts.add(db, site, None, "fetch_errors", "high",
                        f"{failed[site]} of {n} pages did not answer (timeouts or connection errors). Crawlers slow down on sites that do this.")
     db.commit()
+    return away
