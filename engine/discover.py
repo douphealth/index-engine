@@ -10,8 +10,8 @@ import re
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
 
-from . import alerts, config, sitemaps, store
-from .util import get, log, norm, now_iso, same_site
+from . import alerts, audit, config, sitemaps, store
+from .util import get, log, norm, now_iso, parse_ts, same_site
 
 SM = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
 ASSET_RE = re.compile(r"\.(jpe?g|png|webp|gif|svg|avif|pdf|mp4|webm|zip|css|js)$", re.I)
@@ -167,6 +167,81 @@ def _wp_published_scan(base, site_host, max_pages=60):
     return out, True
 
 
+HISTORY_KEEP = 12           # sitemap readings kept per site
+SAMPLE = 12                 # dropped pages fetched to tell a deliberate removal from a broken sitemap
+SWING = 0.10                # a change of more than this share (and of at least 20 URLs) counts as a swing
+GROWTH_FACTOR, GROWTH_MIN = 3, 300
+
+
+def unstable(history, now=None, window_days=3):
+    """True when the number of listed URLs has swung back and forth: among the last six readings of the last three
+    days, at least two changes of direction, each move larger than SWING. One drop or one jump is not this."""
+    now = parse_ts(now) if now else None
+    recent = [n for at, n in history[-6:]
+              if not now or not parse_ts(at) or (now - parse_ts(at)).total_seconds() <= window_days * 86400]
+    moves = []
+    for a, b in zip(recent, recent[1:]):
+        if abs(b - a) >= 20 and abs(b - a) > SWING * max(a, b):
+            moves.append(1 if b > a else -1)
+    return sum(1 for x, y in zip(moves, moves[1:]) if x != y) >= 2
+
+
+def spread(urls, k=SAMPLE):
+    """Up to k of the URLs, evenly spaced through the sorted list, so one section of the site cannot fill the sample."""
+    urls = sorted(urls)
+    if len(urls) <= k:
+        return urls
+    return [urls[int(i * len(urls) / k)] for i in range(k)]
+
+
+def page_state(url, rp):
+    """True when the page still answers and is indexable, False when it is gone on purpose (404/410, noindex, a
+    redirect, a canonical elsewhere), None when it cannot be told (no answer, 429, 5xx)."""
+    rec = audit.fetch_page(url, rp)
+    status = rec["status"]
+    if status is None or status == 429 or status >= 500:
+        return None
+    return audit._indexable(status, rec["hops"], rec["noindex"], rec["canonical_state"], rec["robots_google"])
+
+
+def judge_sitemap(db, site, before, found, removed, history, robots=""):
+    """Raise at most one alert about how the sitemap changed since the last complete reading.
+    unstable  it keeps swinging between sizes (the site fails part of the time)
+    pruned    it lost over 10% and the dropped pages checked are gone or noindex: deliberate, for information only
+    shrank    it lost over 10% and dropped pages still answer and are indexable: the sitemap lost them, the site did not
+    grew      it more than tripled (by at least 300 URLs)"""
+    n = len(found)
+    if unstable(history, history[-1][0] if history else None):
+        seen = ", ".join(f"{c:,}" for _, c in history[-4:])
+        alerts.add(db, site, None, "sitemap_unstable", "high",
+                   f"The sitemaps keep changing size: {seen} URLs at the last readings. A sitemap that swings like this "
+                   "usually means the site's database or build fails part of the time, so crawlers see pages vanish and "
+                   "come back. Check the site's error log for the hours it was short.")
+        return "unstable"
+    if before >= 20 and n < (1 - SWING) * before:
+        rp = audit.robots_parser(robots)
+        states = [page_state(u, rp) for u in spread(removed)]
+        known = [s for s in states if s is not None]
+        alive = sum(known)
+        if known and alive <= 0.2 * len(known):
+            alerts.add(db, site, None, "sitemap_pruned", "info",
+                       f"{len(removed):,} URLs left the sitemaps ({before:,} to {n:,}). {len(known) - alive} of the {len(known)} "
+                       "checked now carry noindex, redirect or no longer answer, so this looks deliberate. Nothing to do if it was.")
+            return "pruned"
+        detail = (f" {alive} of the {len(known)} dropped pages checked still answer and are indexable: they left the "
+                  "sitemap but not the site." if known else "")
+        alerts.add(db, site, None, "sitemap_shrank", "high",
+                   f"Sitemaps now list {n:,} URLs, down from {before:,}.{detail} Check for a plugin, Worker or setting change.")
+        return "shrank"
+    if before >= 20 and n >= GROWTH_FACTOR * before and n - before >= GROWTH_MIN:
+        cap = config.AUDIT_SITE_MAX.get(site, config.AUDIT_MAX_PER_SITE)
+        alerts.add(db, site, None, "sitemap_grew", "warn",
+                   f"Sitemaps now list {n:,} URLs, up from {before:,}. If that was not a planned launch, check what generates "
+                   f"the new URLs. The engine reads at most {cap} of this site's pages per run, so it is not flooded.")
+        return "grew"
+    return None
+
+
 def run(db, sites, use_wp=True):
     for site in sites:
         base = config.site_base(site)
@@ -187,10 +262,17 @@ def run(db, sites, use_wp=True):
         sitemap_complete = bool(roots) and not errors
         wp, wp_complete = _wp_published_scan(base, host) if use_wp else (None, False)
         now = now_iso()
-        before = store.get_meta(db, site).get("sitemap_count") or 0
-        if sitemap_complete and before >= 20 and len(found) < 0.9 * before:
-            alerts.add(db, site, None, "sitemap_shrank", "high",
-                       f"Sitemaps now list {len(found)} URLs, down from {before}. Check for a plugin, Worker or setting change.")
+        meta_before = store.get_meta(db, site)
+        before = meta_before.get("sitemap_count") or 0
+        history = list(meta_before.get("sitemap_history") or [])
+        if sitemap_complete:
+            # Only a complete reading is compared and remembered: a sitemap that failed to load says nothing about size.
+            history = (history + [[now, len(found)]])[-HISTORY_KEEP:]
+            removed = [r["url"] for r in db.execute("SELECT url FROM urls WHERE site=? AND in_sitemap=1", (site,))
+                       if r["url"] not in found]
+            verdict = judge_sitemap(db, site, before, found, removed, history, robots)
+            if verdict:
+                log(f"  sitemap {verdict}: {before} -> {len(found)} URLs")
 
         if sitemap_complete:
             db.execute("UPDATE urls SET in_sitemap=0 WHERE site=?", (site,))
@@ -223,7 +305,7 @@ def run(db, sites, use_wp=True):
         if is_wp and use_wp:
             extra["feed"] = sitemaps.feed_meta(sitemaps.detect_feed(base, host))
         store.set_meta(db, site, **extra, base=base, robots=robots, sitemap_roots=roots, sitemaps_read=read,
-                       sitemap_errors=errors[:20], sitemap_complete=sitemap_complete,
+                       sitemap_errors=errors[:20], sitemap_complete=sitemap_complete, sitemap_history=history,
                        wp=is_wp, wp_complete=wp_complete, wp_count=wp_count,
                        sitemap_count=sitemap_count, missing_from_sitemap=missing, discovered_at=now)
         wp_status = (f"WP observed={len(wp or {})}, inventory={wp_count}, in no sitemap={missing}"

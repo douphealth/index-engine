@@ -1261,6 +1261,47 @@ function viewPlan(params) {
       : h("div", { class: "card empty", text: "No actions for this filter." }));
 }
 
+/* Pages no trusted page links to (engine/linkgaps.py): every site, WordPress or not. Advice only; nothing is applied. */
+const GAP_LABEL = { UNKNOWN_TO_GOOGLE: "unknown to Google", DISCOVERED_NOT_INDEXED: "discovered, not crawled", CRAWLED_NOT_INDEXED: "crawled, not indexed" };
+function linkGapsCard() {
+  const sites = ((S.summary && S.summary.sites) || []).filter((s) => s.link_gaps && s.link_gaps.pages)
+    .sort((a, b) => b.link_gaps.pages - a.link_gaps.pages);
+  if (!sites.length) return null;
+  const v = (S.view.__gaps ||= { site: "" });
+  const total = sites.reduce((n, s) => n + s.link_gaps.pages, 0);
+  const body = h("div", { class: "stack" });
+  const show = async (site) => {
+    v.site = site;
+    body.replaceChildren(h("div", { class: "muted small", text: "Loading…" }));
+    const data = site ? await loadSite(site).catch(() => null) : null;
+    if (v.site !== site) return;
+    const items = ((data && data.link_gaps) || {}).items || [];
+    if (!site) { body.replaceChildren(); return; }
+    if (!items.length) { body.replaceChildren(h("div", { class: "muted small", text: "No list for this site yet. It appears after the next full run." })); return; }
+    body.replaceChildren(h("div", { class: "tablewrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ...["Page that needs a link", "Links to it now", "Pages that could link to it"].map((x, i) => h("th", { class: i === 1 ? "n" : null, text: x })))),
+      h("tbody", {}, ...items.map((x) => h("tr", {},
+        h("td", { class: "page" }, h("a", { href: x.url, target: "_blank", rel: "noopener", text: x.title || shortPath(x.url) }),
+          h("div", { class: "u", text: `${shortPath(x.url)} · ${GAP_LABEL[x.bucket] || x.bucket}` })),
+        h("td", { class: "n", title: "audited pages of this site that link to it, anywhere on the page", text: fmt(x.inlinks) }),
+        h("td", { class: "small" }, ...(x.sources.length ? x.sources.map((s) => h("div", {},
+          h("a", { href: s.url, target: "_blank", rel: "noopener", text: s.title || shortPath(s.url) }),
+          s.shared && s.shared.length ? h("span", { class: "muted tiny", text: `  same subject: ${s.shared.join(", ")}` }) : null))
+          : [h("span", { class: "muted", text: "No indexed page on the same subject yet. Link it from the nearest hub or category page." })]))))))));
+  };
+  const select = h("select", { "aria-label": "Site with pages that need links", onchange: (e) => show(e.target.value) },
+    h("option", { value: "", text: "Choose a site" }),
+    ...sites.map((s) => h("option", { value: s.site, selected: v.site === s.site,
+      text: `${s.site}: ${fmt(s.link_gaps.pages)} page${s.link_gaps.pages === 1 ? "" : "s"}${s.link_gaps.orphans ? `, ${fmt(s.link_gaps.orphans)} with no link at all` : ""}` })));
+  if (v.site) show(v.site);
+  return h("details", { class: "card stack", open: v.site ? "" : null },
+    h("summary", {}, h("b", { text: `Pages no indexed page links to: ${fmt(total)} on ${sites.length} site${sites.length === 1 ? "" : "s"}` })),
+    h("div", { class: "small muted", text: "Pages Google has not indexed, which none of the site's indexed (or Bing-earning) pages links to from its text. " +
+      "Such a page has no route by which an engine would reach or value it. The list covers every site, including the ones the engine cannot edit, " +
+      "and names indexed pages on the same subject that could link to each. Nothing here is changed automatically." }),
+    h("div", { class: "row" }, select), body);
+}
+
 function viewLinks(params) {
   const v = (S.view.__links ||= { tab: "proposed", site: "" });
   preset(v, params, ["site", "tab"]);
@@ -1395,7 +1436,8 @@ function viewLinks(params) {
       v.tab === "proposed" && shown.length ? h("button", { class: "btn small", title: `Your PC still adds at most ${cap} per site per 24 hours`,
         onclick: (e) => act(shown.slice(0, 100).map((l) => l.id), "approve", e.currentTarget) },
         `Approve all ${Math.min(100, shown.length)} shown`) : null),
-    shown.length ? shown.map(card) : h("div", { class: "card empty", text: v.tab === "proposed" ? "No proposals waiting. New ones appear after the daily run." : "Nothing here." }));
+    shown.length ? shown.map(card) : h("div", { class: "card empty", text: v.tab === "proposed" ? "No proposals waiting. New ones appear after the daily run." : "Nothing here." }),
+    target ? null : linkGapsCard());
 }
 
 function viewAlerts() {

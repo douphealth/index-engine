@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Analysis, offline (local data only): triage -> odds model -> request list ranked by expected gain ->
 best next actions -> measured impact of past actions."""
-from . import aiaccess, impact, model, opportunities, recovery, results as measured, revival, traffic, triage
+from . import aiaccess, impact, linkgaps, model, opportunities, recovery, results as measured, revival, traffic, triage
 
 
 def analyze(db, sites):
@@ -11,6 +11,7 @@ def analyze(db, sites):
     for site, res in results.items():
         res["opportunities"] = opportunities.analyze(db, site, res["buckets"], prior=prior)
         res["ai_access"] = aiaccess.summary(db, site)
+        res["link_gaps"] = linkgaps.analyze(db, site, res["buckets"])
         res["manual"] = triage.manual_queue(db, site, res["rows"], res["buckets"], res["owner"], gains["request"])
         res["traffic"] = traffic.site_traffic(db, site)
         res["health"] = traffic.bing_health(db, site)

@@ -63,6 +63,16 @@ AUDIT_SLOW_MS = 5_000           # an answer slower than this means the site is b
 SLOW_HOSTS = {"mysticaldigits.com": 2}   # uncached pages take up to ~60 s (Sep 2026 audit); never raised
 CONNECT_TIMEOUT, READ_TIMEOUT = 15, 90
 AUDIT_MAX_AGE_DAYS = 7          # re-fetch a page after this, or sooner if its sitemap lastmod moves
+# Most pages one run fetches from one site (an explicit --audit-max or --force-audit overrides it). On 25 Nov 2026
+# the first audit of tenderatlas.shop fetched 3,313 pages in ten minutes; every page costs that site database reads,
+# its daily allowance ran out part-way, and 2,102 pages then answered 404. A large site is now read over several runs.
+AUDIT_MAX_PER_SITE = 500
+AUDIT_SITE_MAX = {"tenderatlas.shop": 150}   # metered database behind every page (Cloudflare D1 free plan)
+AUDIT_RECHECK_BROKEN_DAYS = 1   # a page the sitemap lists but that answered 4xx is fetched again after this, not a week
+# This many failed answers in a row (404, 410, 429, 5xx, no answer), after the site had answered normally in the same
+# run, stops that site's audit for the run: the site is failing, and more requests only add to it.
+AUDIT_STOP_AFTER = 12
+AUDIT_STOP_MIN_OK = 5
 SLOW_MS = 10_000                # pages slower than this are a crawl-rate risk
 THIN_WORDS = 250                # main-content words below this = thin
 HEAVY_PAGE_BYTES = 1_000_000    # HTML served above this is a heavy page (this portfolio's normal article is 150-250 KB)

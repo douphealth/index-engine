@@ -317,8 +317,14 @@ def fetch_page(url, rp):
     return rec
 
 
-def due_rows(db, sites, force=False, max_per_site=None):
-    rows = db.execute(f"""SELECT u.url, u.site, u.lastmod, a.checked_at, a.lastmod_at_check, a.error, a.status
+def due_rows(db, sites, force=False, max_per_site=None, held=None):
+    """{site: [(priority, url, site, lastmod)]}: the pages to fetch this run. A page is due when it was never fetched,
+    its last fetch failed, its sitemap lastmod moved, it is older than AUDIT_MAX_AGE_DAYS, or the sitemap lists it
+    although it answered 4xx at least AUDIT_RECHECK_BROKEN_DAYS ago (a listed page that is "not found" is a
+    contradiction, and usually a passing fault of the site: it is not left standing for a week).
+    One run takes at most AUDIT_MAX_PER_SITE from a site: never-fetched pages first, then the longest unchecked.
+    `held`, when given, receives {site: pages left for later runs}."""
+    rows = db.execute(f"""SELECT u.url, u.site, u.lastmod, u.in_sitemap, a.checked_at, a.lastmod_at_check, a.error, a.status
                           FROM urls u LEFT JOIN audits a ON a.url=u.url
                           WHERE (u.in_sitemap=1 OR u.in_wp=1) AND u.site IN ({','.join('?' * len(sites))})""",
                       list(sites)).fetchall()
@@ -326,13 +332,19 @@ def due_rows(db, sites, force=False, max_per_site=None):
     for r in rows:
         age = days_since(r["checked_at"])
         changed = r["lastmod"] and r["lastmod"] != r["lastmod_at_check"]
-        retry_error = r["error"] or r["status"] == 429 or (r["status"] is not None and r["status"] >= 500)
-        if force or retry_error or age is None or age > config.AUDIT_MAX_AGE_DAYS or changed:
-            per_site[r["site"]].append((0 if age is None else 1, r["url"], r["site"], r["lastmod"]))
+        status = r["status"]
+        retry_error = r["error"] or status == 429 or (status is not None and status >= 500)
+        broken_listed = (r["in_sitemap"] and status is not None and 400 <= status < 500 and status != 429
+                         and age is not None and age >= config.AUDIT_RECHECK_BROKEN_DAYS)
+        if force or retry_error or broken_listed or age is None or age > config.AUDIT_MAX_AGE_DAYS or changed:
+            per_site[r["site"]].append((0 if age is None else 1, r["checked_at"] or "", r["url"], r["site"], r["lastmod"]))
     out = {}
     for site, items in per_site.items():
         items.sort()
-        out[site] = items[:max_per_site] if max_per_site else items
+        cap = max_per_site or (None if force else config.AUDIT_SITE_MAX.get(site, config.AUDIT_MAX_PER_SITE))
+        if cap and len(items) > cap and held is not None:
+            held[site] = len(items) - cap
+        out[site] = [(p, url, s, lastmod) for p, _, url, s, lastmod in (items[:cap] if cap else items)]
     return out
 
 
@@ -421,13 +433,41 @@ class Pace:
             self.fast = 0
 
 
+class Breaker:
+    """Stops one site's audit when it starts failing part-way through: AUDIT_STOP_AFTER failed answers in a row (404,
+    410, 429, 5xx or none) after at least AUDIT_STOP_MIN_OK normal ones in the same run. A site that answered and then
+    stopped is overloaded or its database gave out; a block of dead URLs at the start of a queue is not that, and is
+    read to the end."""
+
+    def __init__(self):
+        self.ok = self.streak = 0
+        self.stopped = False
+
+    def saw(self, rec):
+        status = rec["status"]
+        if status is None or status in (404, 410, 429) or status >= 500:
+            self.streak += 1
+        else:
+            self.ok += 1
+            self.streak = 0
+        if not self.stopped and self.streak >= config.AUDIT_STOP_AFTER and self.ok >= config.AUDIT_STOP_MIN_OK:
+            self.stopped = True
+            return True
+        return False
+
+
 def run(db, sites, force=False, max_per_site=None):
-    work = due_rows(db, sites, force, max_per_site)
+    held = {}
+    work = due_rows(db, sites, force, max_per_site, held)
     total = sum(len(v) for v in work.values())
     if not total:
         log("[audit] nothing due")
         return
     log(f"[audit] {total} pages due across {len(work)} sites")
+    for site, left in held.items():
+        log(f"  {site}: {len(work[site])} pages this run, {left} more in later runs (at most "
+            f"{len(work[site])} per run from this site)")
+    breaker = {s: Breaker() for s in work}
     parsers = {s: robots_parser(store.get_meta(db, s).get("robots", "")) for s in work}
     queues = {s: deque(items) for s, items in work.items()}
     pace = {s: Pace(s) for s in work}
@@ -457,6 +497,17 @@ def run(db, sites, force=False, max_per_site=None):
                 failed[site] += rec["status"] is None
                 save(db, rec, lastmod)
                 done_n += 1
+                if breaker[site].saw(rec):
+                    left = len(queues.pop(site, ()))
+                    total -= left
+                    b = breaker[site]
+                    log(f"  {site}: {b.streak} failed answers in a row after {b.ok} normal ones; stopped for this run, "
+                        f"{left} pages left for the next")
+                    alerts.add(db, site, None, "site_failing", "high",
+                               f"{b.streak} pages in a row answered 404 or an error after {b.ok} had answered normally, so the "
+                               f"audit of this site stopped for this run ({left} pages wait for the next one). A site that "
+                               "starts failing part-way through a crawl is usually overloaded, or its database stopped "
+                               "answering; the pages themselves are probably fine and are fetched again tomorrow.")
                 if done_n % 100 == 0 or done_n == total:
                     db.commit()
                     rate = done_n / max(1e-6, time.time() - t0)
