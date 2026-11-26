@@ -56,22 +56,41 @@ def _verify(location, expected=None):
     return key
 
 
+def _configured(host):
+    """(this host's entry, the keys shared by several sites) from indexnow_keys.json.
+
+    The "*" entry names a key the owner hosts on more than one site, for example every site built
+    from the same template: {"*": {"key": "<key>"}} or {"*": {"keys": ["<key>", ...]}}. A shared key
+    is only ever used on a site that serves it, so listing one costs a site without it one request.
+    """
+    if not config.INDEXNOW_KEYS_FILE.exists():
+        return {}, []
+    try:
+        data = json.loads(config.INDEXNOW_KEYS_FILE.read_text(encoding="utf-8"))
+    except ValueError:
+        log("[indexnow] indexnow_keys.json is not valid JSON - ignored")
+        return {}, []
+    if not isinstance(data, dict):
+        return {}, []
+    own = data.get(host.replace("www.", ""))
+    star = data.get("*")
+    star = star if isinstance(star, dict) else {}
+    shared = [k for k in [star.get("key"), *(star.get("keys") or [])] if isinstance(k, str) and KEY_RE.match(k)]
+    return (own if isinstance(own, dict) else {}), list(dict.fromkeys(shared))
+
+
 def detect_key(db, site, persist=True):
     meta = store.get_meta(db, site)
     base = meta.get("base") or config.site_base(site)
     host = urlsplit(base).netloc
-    configured = {}
-    if config.INDEXNOW_KEYS_FILE.exists():
-        try:
-            configured = json.loads(config.INDEXNOW_KEYS_FILE.read_text(encoding="utf-8")).get(host.replace("www.", ""), {})
-        except ValueError:
-            log("[indexnow] indexnow_keys.json is not valid JSON - ignored")
+    configured, shared = _configured(host)
     candidates = []
     if configured.get("key"):
         candidates.append((configured.get("keyLocation") or f"{base}/{configured['key']}.txt", configured["key"]))
     for m in re.finditer(r"(?i)indexnow[^\n]*?(https?://[^\s#]+\.txt)", meta.get("robots") or ""):
         candidates.append((m.group(1), None))
     candidates += [(base + "/indexnow-key.txt", None), (base + "/indexnow.txt", None)]
+    candidates += [(f"{base}/{k}.txt", k) for k in shared if k != configured.get("key")]
     for loc, expected in candidates:
         if urlsplit(loc).netloc.lower() != host.lower():
             continue

@@ -233,7 +233,7 @@ The first run fetches every page (about 4,000 URLs across the 10 sites on 23 Oct
 5. **Bing** (needs the Bing key). It pulls page traffic, so pages that earn Bing clicks are protected, and checks crawl status for submitted URLs.
 6. **Submit.**
    - **IndexNow** where the site hosts a key file. One call reaches Bing, Yandex, Seznam, Naver and Yep.
-   - Otherwise the **Bing URL Submission API**, within the daily quota Bing reports.
+   - Otherwise, or when IndexNow refuses a batch, the **Bing URL Submission API**, within the daily allowance Bing reports. What does not fit waits, and the log says how much and for how long.
    - **Sitemaps and the RSS feed, to Search Console and Bing:** each is registered once, then resubmitted only when URLs were added or updated since its last submission (at most hourly). A WebSub hub, if the feed declares one, is notified too.
    - Only URLs that are indexable right now are sent: 200 status, no redirect, no `noindex`, self-canonical, allowed by robots.txt.
    - Each URL goes out once per channel, and again only when its `lastmod` changes.
@@ -288,15 +288,21 @@ Without credentials the app still discovers, audits, submits through IndexNow wh
 
 ## IndexNow setup for a site without a key file
 
-**Optional for this portfolio.** On 23 Oct 2026, Bing's URL Submission API allowed 10,000 URLs/day on six sites, 200 on gearuptogrow and 100 on openclaw. That covers every URL, and IndexNow only adds Yandex, Seznam, Naver and Yep. Only affiliatemarketingforsuccess has a key file (`/indexnow-key.txt`).
+**Needed where Bing's allowance is small.** Bing's URL Submission API gives each site a daily and a monthly allowance: 10,000 a day on the older sites, about 100 a day and 500 a month on a new one. On 26 Nov 2026 that left 375 pages of borderwise.online and 1,072 of tenderatlas.shop waiting. IndexNow has no such allowance (10,000 URLs per call), and it also reaches Yandex, Seznam, Naver and Yep.
 
-**imagealchemy.app** is in neither the Bing account nor the service account's Search Console access. To cover it:
-1. Add it in Bing Webmaster Tools (Import from Google Search Console).
-2. Add the service account as a user of its Search Console property.
+When the allowance runs out, the run log says so in one line per site: how many URLs wait, how many went out today, and roughly how many days that is, or that the month's allowance is too small.
 
-The next run picks it up.
+**A key hosted on several sites** is listed once, under `"*"`, in `indexnow_keys.json` (the file is not in git):
 
-If you still want IndexNow on a site, pick one option:
+```json
+{"*": {"key": "<key>"}}
+```
+
+Every site that serves `/<key>.txt` then uses IndexNow, and a new site built from the same template needs no entry. A site that does not serve the file is asked for it once per run and keeps using the Bing API. `"keys": ["<key>", "<key>"]` lists more than one. On 26 Nov 2026 the eleven sites added that week all served the same key file.
+
+If IndexNow refuses a batch, the same run falls back to the Bing API within its allowance.
+
+To add IndexNow to a site that has no key file, pick one option:
 
 - **Rank Math, the official "IndexNow" WordPress plugin by Microsoft Bing, or Cloudflare Crawler Hints:** turn it on. The plugin then pings on every publish or update. For the app to submit too, add the key here as well.
 - **Manual setup:**

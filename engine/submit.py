@@ -6,7 +6,10 @@ Rules that keep this from being spam:
   * each URL once per channel, then again only if its lastmod moved, or (unchanged) after
     RESUBMIT_UNCHANGED_DAYS when Bing still reports it uncrawled;
   * IndexNow first (one call reaches Bing and the other IndexNow engines), the Bing API when a site
-    has no IndexNow key, both with --both.
+    has no IndexNow key or IndexNow refuses the batch, both with --both.
+
+The Bing API gives each site a daily and a monthly allowance (100 a day for a new site). When it runs out
+the rest waits, and the log says how many wait and for how long; IndexNow has no such allowance.
 """
 import os
 import re
@@ -120,24 +123,49 @@ def _record(db, items, channel, code):
     db.commit()
 
 
+def _bing_sent_today(db, site):
+    """URLs Bing's API accepted for this site since 00:00 UTC, when its daily allowance starts again."""
+    return db.execute("""SELECT COUNT(*) FROM submissions s JOIN urls u ON u.url=s.url
+                         WHERE u.site=? AND s.channel='bing' AND s.http_status=200 AND s.submitted_at>=?""",
+                      (site, now_iso()[:10])).fetchone()[0]
+
+
+def bing_wait_note(left, sent_today, daily, monthly):
+    """One sentence on the URLs the Bing API could not take: how many wait, why, and for how long."""
+    if daily is None:
+        return f"{left} URLs wait: Bing's allowance could not be read"
+    why = (f"today's Bing allowance is used ({sent_today} sent today)" if sent_today
+           else "Bing gives this site no URL allowance today")
+    note = f"{why}; {left} URLs wait"
+    if monthly is not None and left > monthly:
+        note += f", more than the {monthly} left in this month's allowance"
+    elif sent_today:
+        days = -(-left // sent_today)
+        note += f", about {days} more day{'s' if days != 1 else ''} at this rate"
+    return note + ". An IndexNow key file removes the limit (README: IndexNow setup)"
+
+
 def run(db, sites, bing_client=None, bing_sites=None, indexnow_client=None, dry_run=False, both=False,
         include_taxonomy=False, max_per_site=None):
     bing_sites = bing_sites or {}
     indexnow_client = indexnow_client or indexnow.IndexNowClient()
+    cap = max_per_site if max_per_site is not None else 10**9
     summary = {}
     for site in sites:
         rows = indexable_rows(db, site, include_taxonomy)
         sent = {}
         key = indexnow.detect_key(db, site)
-        use_bing = bing_client and site in bing_sites and (both or not key)
+        can_bing = bool(bing_client and site in bing_sites)
+        use_bing = can_bing and (both or not key)
         due_now = {ch: due(db, rows, ch) for ch in (["indexnow"] if key else []) + (["bing"] if use_bing else [])}
+        passed = None
         if site in config.SITE_GATES and any(due_now.values()):
             union = list({u: lm for items in due_now.values() for u, lm in items}.items())
             passed = {u for u, _ in site_gate(site, union)}
             due_now = {ch: [(u, lm) for u, lm in items if u in passed] for ch, items in due_now.items()}
         if key:
             host, k, loc = key
-            items = due_now["indexnow"][: min((max_per_site if max_per_site is not None else 10**9), config.INDEXNOW_MAX_PER_POST)]
+            items = due_now["indexnow"][: min(cap, config.INDEXNOW_MAX_PER_POST)]
             if items and dry_run:
                 log(f"[submit] {site}: would send {len(items)} URLs to IndexNow")
             elif items:
@@ -148,22 +176,34 @@ def run(db, sites, bing_client=None, bing_sites=None, indexnow_client=None, dry_
                 if code == 403:
                     log(f"  IndexNow rejected the key for {host}; check the key file is still served")
                 sent["indexnow"] = len(items) if ok else 0
+                if not ok and can_bing and not use_bing:
+                    # IndexNow refused the batch: the Bing API still reaches Bing today, within its allowance.
+                    use_bing = True
+                    due_now["bing"] = [(u, lm) for u, lm in due(db, rows, "bing") if passed is None or u in passed]
+                    log(f"[submit] {site}: falling back to the Bing URL Submission API for this run")
+                left = len(due_now["indexnow"]) - len(items)
+                if ok and left > 0 and cap >= config.INDEXNOW_MAX_PER_POST:
+                    log(f"[submit] {site}: {left} more URLs go out on the next runs ({config.INDEXNOW_MAX_PER_POST} per IndexNow call)")
             else:
                 log(f"[submit] {site}: IndexNow - nothing new or changed to send")
         elif not use_bing:
             log(f"[submit] {site}: no IndexNow key file and no Bing API access - skipped (see README: IndexNow setup)")
         if use_bing:
             burl = bing_sites[site]
-            try:
-                daily, _monthly = bing_client.quota(burl)
-            except Exception as e:
-                log(f"[submit] {site}: Bing quota check failed: {e}")
-                daily = 0
-            items = due_now["bing"][: min(daily, (max_per_site if max_per_site is not None else 10**9))]
-            if items and dry_run:
+            waiting = due_now["bing"]
+            daily = monthly = None
+            if waiting:                                    # nothing to send: no reason to ask Bing anything
+                try:
+                    daily, monthly = bing_client.quota(burl)
+                except Exception as e:
+                    log(f"[submit] {site}: Bing quota check failed: {e}")
+            items = waiting[: min(daily or 0, cap)]
+            n_ok = 0
+            if not waiting:
+                log(f"[submit] {site}: Bing API - nothing new or changed to send")
+            elif items and dry_run:
                 log(f"[submit] {site}: would send {len(items)} URLs to the Bing URL Submission API (quota today {daily})")
             elif items:
-                n_ok = 0
                 for i in range(0, len(items), config.BING_BATCH):
                     chunk = items[i:i + config.BING_BATCH]
                     code, text = bing_client.submit(burl, [u for u, _ in chunk])
@@ -174,7 +214,8 @@ def run(db, sites, bing_client=None, bing_sites=None, indexnow_client=None, dry_
                     n_ok += len(chunk)
                 log(f"[submit] {site}: Bing API accepted {n_ok} URLs (daily quota {daily})")
                 sent["bing"] = n_ok
-            elif daily == 0:
-                log(f"[submit] {site}: Bing daily URL quota is 0 or unknown")
+            # Say what is left behind and why, unless the owner's own per-site limit is what held it back.
+            if waiting and not dry_run and len(waiting) > len(items) and (daily is None or daily < min(len(waiting), cap)):
+                log(f"[submit] {site}: {bing_wait_note(len(waiting) - n_ok, _bing_sent_today(db, site), daily, monthly)}")
         summary[site] = sent
     return summary
