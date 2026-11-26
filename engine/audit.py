@@ -323,6 +323,8 @@ def due_rows(db, sites, force=False, max_per_site=None, held=None):
     although it answered 4xx at least AUDIT_RECHECK_BROKEN_DAYS ago (a listed page that is "not found" is a
     contradiction, and usually a passing fault of the site: it is not left standing for a week).
     One run takes at most AUDIT_MAX_PER_SITE from a site: never-fetched pages first, then the longest unchecked.
+    When both wait, a third of the run (AUDIT_RECHECK_SHARE) is kept for the re-reads: a site that publishes more new
+    pages each day than one run takes would otherwise never have a stale or wrongly recorded page read again.
     `held`, when given, receives {site: pages left for later runs}."""
     rows = db.execute(f"""SELECT u.url, u.site, u.lastmod, u.in_sitemap, a.checked_at, a.lastmod_at_check, a.error, a.status
                           FROM urls u LEFT JOIN audits a ON a.url=u.url
@@ -342,9 +344,13 @@ def due_rows(db, sites, force=False, max_per_site=None, held=None):
     for site, items in per_site.items():
         items.sort()
         cap = max_per_site or (None if force else config.AUDIT_SITE_MAX.get(site, config.AUDIT_MAX_PER_SITE))
-        if cap and len(items) > cap and held is not None:
-            held[site] = len(items) - cap
-        out[site] = [(p, url, s, lastmod) for p, _, url, s, lastmod in (items[:cap] if cap else items)]
+        if cap and len(items) > cap:
+            if held is not None:
+                held[site] = len(items) - cap
+            new, again = [x for x in items if x[0] == 0], [x for x in items if x[0] != 0]
+            n_again = min(len(again), max(int(cap * config.AUDIT_RECHECK_SHARE), cap - len(new)))
+            items = new[:cap - n_again] + again[:n_again]
+        out[site] = [(p, url, s, lastmod) for p, _, url, s, lastmod in items]
     return out
 
 

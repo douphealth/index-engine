@@ -188,6 +188,25 @@ class DueRows(unittest.TestCase):
         self.assertEqual(held, {SITE: 1})
         self.assertNotIn(old, got)
 
+    def test_new_pages_cannot_crowd_out_the_re_reads(self):
+        # tenderatlas.shop, 26 Nov 2026: each ingest added about 450 pages, a run took 150, and 2,102 pages wrongly
+        # recorded as 404 would never have been read again.
+        new = [self.page(f"new-{i:02d}") for i in range(10)]
+        wrong = [self.page(f"wrong-{i}", 2 + i, 404) for i in range(5)]
+        with patch.object(config, "AUDIT_MAX_PER_SITE", 6), patch.object(config, "AUDIT_SITE_MAX", {}):
+            got = self.due()
+        self.assertEqual(len(got), 6)
+        self.assertEqual(got[:4], new[:4])                              # new pages still come first ...
+        self.assertEqual(got[4:], [wrong[4], wrong[3]])                 # ... and the longest-unchecked re-reads get their third
+
+    def test_re_reads_take_the_whole_run_when_little_is_new(self):
+        new = [self.page("new")]
+        old = [self.page(f"old-{i}", 10 + i) for i in range(8)]
+        with patch.object(config, "AUDIT_MAX_PER_SITE", 6), patch.object(config, "AUDIT_SITE_MAX", {}):
+            got = self.due()
+        self.assertEqual((got[0], len(got)), (new[0], 6))
+        self.assertEqual(set(got[1:]), set(old[3:]))
+
     def test_site_override_explicit_max_and_force(self):
         for i in range(10):
             self.page(f"p{i}")

@@ -73,6 +73,7 @@ FETCH_WORKERS = 6
 BING_WORKERS = 4
 WP_WORKERS = 4                  # WordPress sites whose changed posts are read at once (several may share a server)
 AUDIT_SITE_MAX = {"tenderatlas.shop": 150}   # metered database behind every page (Cloudflare D1 free plan)
+AUDIT_RECHECK_SHARE = 1 / 3     # of a capped run, kept for pages due a re-read when new pages alone would fill it
 AUDIT_RECHECK_BROKEN_DAYS = 1   # a page the sitemap lists but that answered 4xx is fetched again after this, not a week
 # This many failed answers in a row (404, 410, 429, 5xx, no answer), after the site had answered normally in the same
 # run, stops that site's audit for the run: the site is failing, and more requests only add to it.
