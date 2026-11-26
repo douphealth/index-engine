@@ -11,7 +11,7 @@ import time
 from . import traffic
 from .bing import bing_date
 from .triage import BLOCKERS
-from .util import days_since, log, norm, now_iso
+from .util import days_since, fetched, log, norm, now_iso
 
 WINDOW_DAYS = 28
 REFRESH_DAYS = 7            # a page's Bing queries are re-read at most once a week
@@ -38,11 +38,9 @@ def pull_google(db, client, props, today=None):
     today = today or dt.date.today()
     start, end = _window(today - dt.timedelta(days=GOOGLE_LAG_DAYS))
     n_all = 0
-    for site, prop in props.items():
-        try:
-            rows = client.search_queries(prop, start, end)
-        except Exception as e:
-            log(f"[queries] {site}: Search Console query report failed: {str(e)[:120]}")
+    for (site, prop), rows, err in fetched(props.items(), lambda it: client.search_queries(it[1], start, end)):
+        if err:
+            log(f"[queries] {site}: Search Console query report failed: {str(err)[:120]}")
             continue
         alias, seen = traffic.aliaser(db, site)
         pages = {}

@@ -17,7 +17,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from urllib.parse import quote
 
 from . import alerts, config, store
-from .util import days_since, log, norm, now_iso, pacific_day, parse_ts
+from .util import days_since, fetched, log, norm, now_iso, pacific_day, parse_ts
 
 API = "https://www.googleapis.com/webmasters/v3"
 INSPECT_API = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
@@ -179,13 +179,20 @@ def resolve_properties(db, client, sites):
     return out
 
 
-def store_page_trend(db, client, site, prop, end):
-    """Per-page clicks/impressions in the latest 28 days of Google data vs the 28 before (best effort)."""
+def read_page_trend(client, prop, end):
+    """(rows of the latest 28 days of Google data, rows of the 28 before) per page. Network only."""
     from . import traffic
     (n0, n1), (p0, p1) = traffic.windows(end.isoformat())
+    return (client.search_pages(prop, dt.date.fromisoformat(n0), dt.date.fromisoformat(n1)),
+            client.search_pages(prop, dt.date.fromisoformat(p0), dt.date.fromisoformat(p1)))
+
+
+def store_page_trend(db, client, site, prop, end, rows=None):
+    """Per-page clicks/impressions in the latest 28 days of Google data vs the 28 before (best effort).
+    `rows` is what read_page_trend returned, when the caller has already read it."""
+    from . import traffic
     try:
-        now_rows = client.search_pages(prop, dt.date.fromisoformat(n0), dt.date.fromisoformat(n1))
-        prev_rows = client.search_pages(prop, dt.date.fromisoformat(p0), dt.date.fromisoformat(p1))
+        now_rows, prev_rows = rows if rows is not None else read_page_trend(client, prop, end)
     except Exception as e:
         log(f"[google] {site}: page trend pull failed: {str(e)[:120]}")
         return
@@ -209,17 +216,32 @@ def store_page_trend(db, client, site, prop, end):
 
 
 def pull_performance(db, client, props):
+    from . import traffic
     end = dt.date.today() - dt.timedelta(days=2)
-    for site, prop in props.items():
-        try:
-            rows90 = client.search_pages(prop, end - dt.timedelta(days=config.PERF_DAYS - 1), end)
-            recent = client.search_pages(prop, end - dt.timedelta(days=config.EVIDENCE_DAYS - 1), end)
-        except Exception as e:
-            log(f"[google] {site}: performance pull failed: {e}")
-            continue
-        from . import traffic
+    trend_end = {}
+    for site in props:
         te = traffic.series_end(db, site, "google")
-        store_page_trend(db, client, site, prop, dt.date.fromisoformat(te) if te else end)
+        trend_end[site] = dt.date.fromisoformat(te) if te else end
+
+    def read(item):
+        site, prop = item
+        rows90 = client.search_pages(prop, end - dt.timedelta(days=config.PERF_DAYS - 1), end)
+        recent = client.search_pages(prop, end - dt.timedelta(days=config.EVIDENCE_DAYS - 1), end)
+        try:                                           # the trend is best effort: its failure keeps the two reports above
+            trend = read_page_trend(client, prop, trend_end[site])
+        except Exception as e:
+            trend = e
+        return rows90, recent, trend
+
+    for (site, prop), got, err in fetched(props.items(), read):
+        if err:
+            log(f"[google] {site}: performance pull failed: {err}")
+            continue
+        rows90, recent, trend = got
+        if isinstance(trend, Exception):
+            log(f"[google] {site}: page trend pull failed: {str(trend)[:120]}")
+        else:
+            store_page_trend(db, client, site, prop, trend_end[site], rows=trend)
         agg = defaultdict(lambda: [0, 0, 0])
         alias, _seen = traffic.aliaser(db, site)
         for r in rows90:

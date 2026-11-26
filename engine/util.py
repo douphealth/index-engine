@@ -6,6 +6,7 @@ import re
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -48,8 +49,15 @@ def close_log():
         _log_fh = None
 
 
+_held = threading.local()         # .lines: what a fetching thread has logged, printed when its result is taken
+
+
 def log(msg=""):
     msg = scrub(msg)
+    lines = getattr(_held, "lines", None)
+    if lines is not None:
+        lines.append(msg)
+        return
     with _log_lock:
         try:
             print(msg, flush=True)
@@ -58,6 +66,43 @@ def log(msg=""):
         if _log_fh:
             _log_fh.write(msg + "\n")
             _log_fh.flush()
+
+
+# ---------------------------------------------------------------- reading several sites at once
+
+def fetched(items, fetch, workers=None):
+    """fetch(item) for every item, several at a time; yields (item, result, error) in the items' own order.
+
+    Only the fetching runs on worker threads. The caller takes each result on its own thread, one at a time and in
+    order, so the database is still written by one thread and the log reads as if the sites had been read one after
+    another: what a worker logs is held and printed when its result is taken. An exception in fetch is handed back as
+    `error` (result None), never raised here, so one site's failure does not cost the others their data."""
+    items = list(items)
+    workers = min(workers or config.FETCH_WORKERS, len(items))
+
+    def job(item):
+        _held.lines = lines = []
+        try:
+            return fetch(item), None, lines
+        except Exception as e:                       # the caller decides what a failed site means
+            return None, e, lines
+        finally:
+            _held.lines = None
+
+    if workers <= 1:
+        for item in items:
+            result, error, lines = job(item)
+            for line in lines:
+                log(line)
+            yield item, result, error
+        return
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [ex.submit(job, item) for item in items]
+        for item, future in zip(items, futures):
+            result, error, lines = future.result()
+            for line in lines:
+                log(line)
+            yield item, result, error
 
 
 # ---------------------------------------------------------------- where a run's time goes

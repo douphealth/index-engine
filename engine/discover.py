@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
 
 from . import alerts, audit, config, sitemaps, store
-from .util import get, log, norm, now_iso, parse_ts, same_site
+from .util import fetched, get, log, norm, now_iso, parse_ts, same_site
 
 SM = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
 ASSET_RE = re.compile(r"\.(jpe?g|png|webp|gif|svg|avif|pdf|mp4|webm|zip|css|js)$", re.I)
@@ -242,25 +242,39 @@ def judge_sitemap(db, site, before, found, removed, history, robots=""):
     return None
 
 
+def read_site(site, use_wp=True, was_wp=False):
+    """Everything discovery reads from one site, with no database access: robots.txt, every sitemap, the WordPress
+    inventory and the feed. Sites are read side by side (util.fetched); run() stores each one in turn."""
+    base = config.site_base(site)
+    host = urlsplit(base).netloc
+    robots = fetch_robots(base)
+    roots = robots_sitemaps(robots)
+    if not roots:
+        for cand in ("/sitemap_index.xml", "/sitemap.xml", "/wp-sitemap.xml"):
+            try:
+                r = get(base + cand, timeout=(10, 30))
+                if r.status_code == 200 and r.text.lstrip()[:1] == "<":
+                    roots = [base + cand]
+                    break
+            except Exception:
+                pass
+    found, read, errors = walk_sitemaps(base, roots, host)
+    wp, wp_complete = _wp_published_scan(base, host) if use_wp else (None, False)
+    feed = sitemaps.feed_meta(sitemaps.detect_feed(base, host)) if use_wp and (wp is not None or was_wp) else None
+    return {"base": base, "robots": robots, "roots": roots, "found": found, "read": read, "errors": errors,
+            "wp": wp, "wp_complete": wp_complete, "feed": feed}
+
+
 def run(db, sites, use_wp=True):
-    for site in sites:
-        base = config.site_base(site)
-        host = urlsplit(base).netloc
+    was_wp = {site: bool(store.get_meta(db, site).get("wp")) for site in sites}
+    for site, got, err in fetched(sites, lambda s: read_site(s, use_wp, was_wp[s])):
         log(f"[discover] {site}")
-        robots = fetch_robots(base)
-        roots = robots_sitemaps(robots)
-        if not roots:
-            for cand in ("/sitemap_index.xml", "/sitemap.xml", "/wp-sitemap.xml"):
-                try:
-                    r = get(base + cand, timeout=(10, 30))
-                    if r.status_code == 200 and r.text.lstrip()[:1] == "<":
-                        roots = [base + cand]
-                        break
-                except Exception:
-                    pass
-        found, read, errors = walk_sitemaps(base, roots, host)
+        if err:
+            log(f"  discovery failed ({type(err).__name__}: {str(err)[:120]}); what is stored for this site is kept")
+            continue
+        base, robots, roots = got["base"], got["robots"], got["roots"]
+        found, read, errors, wp, wp_complete = got["found"], got["read"], got["errors"], got["wp"], got["wp_complete"]
         sitemap_complete = bool(roots) and not errors
-        wp, wp_complete = _wp_published_scan(base, host) if use_wp else (None, False)
         now = now_iso()
         meta_before = store.get_meta(db, site)
         before = meta_before.get("sitemap_count") or 0
@@ -302,8 +316,8 @@ def run(db, sites, use_wp=True):
         extra = {}
         if found:
             extra["lastmod_health"] = sitemaps.lastmod_health(found, wp)
-        if is_wp and use_wp:
-            extra["feed"] = sitemaps.feed_meta(sitemaps.detect_feed(base, host))
+        if got["feed"] is not None:
+            extra["feed"] = got["feed"]
         store.set_meta(db, site, **extra, base=base, robots=robots, sitemap_roots=roots, sitemaps_read=read,
                        sitemap_errors=errors[:20], sitemap_complete=sitemap_complete, sitemap_history=history,
                        wp=is_wp, wp_complete=wp_complete, wp_count=wp_count,

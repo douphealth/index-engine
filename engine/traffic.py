@@ -12,8 +12,9 @@ it is large AND clear against the noise of count data, and everything says what 
 import datetime as dt
 import math
 
+from . import config
 from .bing import bing_date
-from .util import days_since, log, now_iso
+from .util import days_since, fetched, log, now_iso
 
 SPAN = 28                  # days per comparison window
 KEEP_DAYS = 540
@@ -104,24 +105,24 @@ def pull(db, gclient, props, bclient, bsites, today=None):
     """Refresh the daily histories. Bing returns its whole history in one call; Google is read for the last 16 months
     the first time and for the latest 60 days afterwards (the engines revise recent days)."""
     today = today or dt.date.today()
-    for site, burl in (bsites or {}).items():
-        try:
-            series = bclient.rank_traffic(burl)
-            crawl = bclient.crawl_stats(burl)
-        except Exception as e:
-            log(f"[traffic] {site}: Bing statistics failed: {str(e)[:120]}")
+    for (site, burl), got, err in fetched((bsites or {}).items(), lambda it: (bclient.rank_traffic(it[1]), bclient.crawl_stats(it[1])),
+                                          config.BING_WORKERS):
+        if err:
+            log(f"[traffic] {site}: Bing statistics failed: {str(err)[:120]}")
             continue
+        series, crawl = got
         n = _store_series(db, site, "bing", [(bing_date(r.get("Date")), r.get("Clicks"), r.get("Impressions")) for r in series])
         m = _store_crawl(db, site, crawl)
         db.commit()
         log(f"[traffic] {site}: Bing {n} days of traffic, {m} days of crawl statistics")
-    for site, prop in (props or {}).items():
+    starts = {}
+    for site in (props or {}):
         last = series_end(db, site, "google")
-        start = today - dt.timedelta(days=480) if not last else dt.date.fromisoformat(last) - dt.timedelta(days=60)
-        try:
-            rows = gclient.search_dates(prop, start, today - dt.timedelta(days=2))
-        except Exception as e:
-            log(f"[traffic] {site}: Google traffic failed: {str(e)[:120]}")
+        starts[site] = today - dt.timedelta(days=480) if not last else dt.date.fromisoformat(last) - dt.timedelta(days=60)
+    for (site, prop), rows, err in fetched((props or {}).items(),
+                                           lambda it: gclient.search_dates(it[1], starts[it[0]], today - dt.timedelta(days=2))):
+        if err:
+            log(f"[traffic] {site}: Google traffic failed: {str(err)[:120]}")
             continue
         n = _store_series(db, site, "google", [(r["keys"][0], r.get("clicks"), r.get("impressions")) for r in rows])
         db.commit()

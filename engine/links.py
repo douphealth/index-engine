@@ -32,7 +32,7 @@ import requests
 
 from . import config, memo, store
 from .triage import BLOCKERS, STOP as _STOP, clean_title
-from .util import SECRETS, bare_host, days_since, get, log, norm, now_iso
+from .util import SECRETS, bare_host, days_since, fetched, get, log, norm, now_iso
 
 STRICT_SITES = {"gearuptofit.com"}
 MAX_PER_DAY = 10
@@ -154,6 +154,9 @@ STOCK_SHARE = 0.08          # a phrase found in the text of more than 8% of a si
 # whose anchor is that search, from trusted pages whose text already says it. Ranked against indexing gains by this
 # heuristic (estimated extra clicks per 4 weeks, compressed), not by a prediction of what one link is worth.
 GROWTH_GAIN_SCALE = 0.1
+# A page Bing ranks in its top 8 for a search that Google does not show it for ("engine_gap") is a target the same way.
+# It has no click estimate, so it is ranked as if one Bing impression in this many were a click.
+GAP_IMPR_PER_CLICK = 20
 
 
 def stem(w):
@@ -305,12 +308,26 @@ def _usable(key, common, is_main, main_words, core):
     return bool(set(topical) & core) if is_main else bool(set(topical) & main_words)
 
 
-def refresh_corpus(db, site, wpc):
-    """Keep the stored content of every published post/page; only what changed since the last look is re-read."""
+def corpus_window(db, site):
+    """(full, after): whether every post is due a re-read, else the time after which changed posts are read."""
     meta = store.get_meta(db, site)
     age = days_since(meta.get("corpus_full_at"))
     full = age is None or age >= CORPUS_FULL_DAYS
-    after = None if full else meta.get("corpus_watermark")
+    return full, (None if full else meta.get("corpus_watermark"))
+
+
+def read_corpus(wpc, after):
+    """[(url, id, type, modified, compressed content)] from WordPress: network and compression only, no database, so
+    several sites can be read at once (propose) while each is stored in turn."""
+    return [(item["url"], item["id"], item["type"], item["modified"], zlib.compress(item["raw"].encode("utf-8")))
+            for item in wpc.corpus(after=after)]
+
+
+def refresh_corpus(db, site, wpc, rows=None):
+    """Keep the stored content of every published post/page; only what changed since the last look is re-read.
+    `rows` is what read_corpus returned for this site's window, when the caller has already read it."""
+    full, after = corpus_window(db, site)
+    meta = store.get_meta(db, site)
     n, newest = 0, meta.get("corpus_watermark") or ""
     # set_meta commits independently, so write the metadata here as part of the
     # same savepoint as the corpus. A failed fetch must also undo earlier pages.
@@ -318,10 +335,9 @@ def refresh_corpus(db, site, wpc):
     try:
         if full:
             db.execute("DELETE FROM link_corpus WHERE site=?", (site,))
-        for item in wpc.corpus(after=after):
-            db.execute("INSERT OR REPLACE INTO link_corpus VALUES(?,?,?,?,?,?)",
-                       (item["url"], site, item["id"], item["type"], item["modified"], zlib.compress(item["raw"].encode("utf-8"))))
-            newest = max(newest, item["modified"] or "")
+        for url, pid, typ, modified, blob in (rows if rows is not None else read_corpus(wpc, after)):
+            db.execute("INSERT OR REPLACE INTO link_corpus VALUES(?,?,?,?,?,?)", (url, site, pid, typ, modified, blob))
+            newest = max(newest, modified or "")
             n += 1
         meta = store.get_meta(db, site)
         meta["corpus_watermark"] = newest
@@ -432,7 +448,8 @@ def query_phrases(query, own=frozenset()):
 
 
 def growth_targets(db, site, opportunities, buckets, names, owners, taken, scale=1.0):
-    """{phrase: (target, why)} and {target: gain} for pages that already rank close to the top for a search.
+    """{phrase: (target, why)} and {target: gain} for pages that already rank close to the top for a search, and for
+    pages Bing ranks near the top for a search that Google does not show them for.
 
     A search becomes an anchor only when: it names the target (shares a topic word with its title), no other page's
     title or slug contains it, no other page of the site ranks better for it (an anchor must not feed a competitor),
@@ -445,7 +462,8 @@ def growth_targets(db, site, opportunities, buckets, names, owners, taken, scale
     keys, gains = {}, {}
     for item in (opportunities or {}).get("items") or []:
         t = item.get("url")
-        if item.get("kind") != "close_to_top" or t not in buckets or "IGNORED" in buckets[t][1]:
+        kind = item.get("kind")
+        if kind not in ("close_to_top", "engine_gap") or t not in buckets or "IGNORED" in buckets[t][1]:
             continue
         # A Google ranking needs a page Google has indexed (anything else is a stale ranking). A Bing ranking stands on
         # its own: a page Google has not indexed yet but Bing already ranks only has to serve its own content.
@@ -460,9 +478,16 @@ def growth_targets(db, site, opportunities, buckets, names, owners, taken, scale
             for key in query_phrases(q["query"], own):
                 if not own & set(key) or owners.get(key, {t}) - {t} or key in taken or key in keys:
                     continue
-                keys[key] = (t, f"Ranks about #{q['pos']:.0f} on {engine} for “{q['query']}” ({q['impr']:,} impressions in "
-                                f"4 weeks): links with that wording from pages that already rank help it toward the top 3.")
-                gains[t] = max(gains.get(t, 0.0), GROWTH_GAIN_SCALE * scale * math.log1p(item.get("gain") or 0))
+                if kind == "engine_gap":
+                    keys[key] = (t, f"Bing shows it at about #{q['pos']:.0f} for “{q['query']}” ({q['impr']:,} impressions in 4 "
+                                    "weeks) and Google does not: links with that wording from pages Google already trusts "
+                                    "are the signal it lacks there.")
+                    worth = (item.get("impr_total") or q["impr"]) / GAP_IMPR_PER_CLICK
+                else:
+                    keys[key] = (t, f"Ranks about #{q['pos']:.0f} on {engine} for “{q['query']}” ({q['impr']:,} impressions in "
+                                    f"4 weeks): links with that wording from pages that already rank help it toward the top 3.")
+                    worth = item.get("gain") or 0
+                gains[t] = max(gains.get(t, 0.0), GROWTH_GAIN_SCALE * scale * math.log1p(worth))
     return keys, gains
 
 
@@ -478,13 +503,22 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
     learned = measured.calibration(db)              # what the engine's own measured links say about each kind
     link_gain = {u: g * learned["index"] for u, g in link_gain.items()}
     out = []
+    # The posts that changed are read from every site at once (the slow, waiting part); each site is then stored and
+    # scanned in turn. A site whose reading failed is scanned from its stored copy, as before.
+    due = [(site, wpc) for site, wpc in clients.items() if (results.get(site) or {}).get("buckets") and getattr(wpc, "ok", False)]
+    after = {site: corpus_window(db, site)[1] for site, _ in due}
+    read = {site: (rows, err) for (site, _), rows, err in
+            fetched(due, lambda it: read_corpus(it[1], after[it[0]]), config.WP_WORKERS)}
     for site, wpc in clients.items():
         res = results.get(site) or {}
         buckets, rows = res.get("buckets") or {}, {r["url"]: r for r in res.get("rows") or []}
         if not buckets or not getattr(wpc, "ok", False):
             continue
         try:
-            changed = refresh_corpus(db, site, wpc)
+            fresh, err = read[site]
+            if err:
+                raise err
+            changed = refresh_corpus(db, site, wpc, rows=fresh)
         except Exception as e:
             log(f"[links] {site}: could not read post content ({str(e)[:120]}); using the stored copy")
             changed = 0

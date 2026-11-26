@@ -67,6 +67,11 @@ AUDIT_MAX_AGE_DAYS = 7          # re-fetch a page after this, or sooner if its s
 # the first audit of tenderatlas.shop fetched 3,313 pages in ten minutes; every page costs that site database reads,
 # its daily allowance ran out part-way, and 2,102 pages then answered 404. A large site is now read over several runs.
 AUDIT_MAX_PER_SITE = 500
+# Sites read at the same time by the stages that ask one question per site (sitemaps, search data, crawler access).
+# Each site is still asked one thing at a time; only different sites overlap. Bing's API is asked more gently.
+FETCH_WORKERS = 6
+BING_WORKERS = 4
+WP_WORKERS = 4                  # WordPress sites whose changed posts are read at once (several may share a server)
 AUDIT_SITE_MAX = {"tenderatlas.shop": 150}   # metered database behind every page (Cloudflare D1 free plan)
 AUDIT_RECHECK_BROKEN_DAYS = 1   # a page the sitemap lists but that answered 4xx is fetched again after this, not a week
 # This many failed answers in a row (404, 410, 429, 5xx, no answer), after the site had answered normally in the same

@@ -19,7 +19,7 @@ from urllib import robotparser
 import requests
 
 from . import alerts, config
-from .util import log, now_iso
+from .util import fetched, log, now_iso
 
 BOTS = [   # (name, role, User-Agent used for the live request or None for robots.txt only)
     ("Googlebot", "search", None),
@@ -92,9 +92,12 @@ def check_site(site, session=None):
 
 def run(db, sites, session=None):
     """Check every site, store the result and raise an alert when a crawler's access changes."""
-    session = session or requests.Session()
-    for site in sites:
-        rows, baseline_ok = check_site(site, session)
+    # Each site is asked by one thread, one crawler name at a time with the usual pause; different sites overlap.
+    for site, got, err in fetched(sites, lambda s: check_site(s, session)):
+        if err:
+            log(f"[ai-access] {site}: check failed ({type(err).__name__}); crawler access not judged this run")
+            continue
+        rows, baseline_ok = got
         if not baseline_ok:
             log(f"[ai-access] {site}: home page did not answer normally; crawler access not judged this run")
             continue

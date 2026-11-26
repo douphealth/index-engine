@@ -12,7 +12,7 @@ import time
 import requests
 
 from . import config, store
-from .util import days_since, log, norm, now_iso
+from .util import days_since, fetched, log, norm, now_iso
 
 BASE = "https://ssl.bing.com/webmaster/api.svc/json/"
 
@@ -152,11 +152,9 @@ def sync_feeds(db, client, bsites, dry_run=False, only=None):
 
 
 def pull_performance(db, client, bsites):
-    for site, burl in bsites.items():
-        try:
-            rows = client.page_stats(burl)
-        except Exception as e:
-            log(f"[bing] {site}: GetPageStats failed: {e}")
+    for (site, burl), rows, err in fetched(bsites.items(), lambda it: client.page_stats(it[1]), config.BING_WORKERS):
+        if err:
+            log(f"[bing] {site}: GetPageStats failed: {err}")
             continue
         agg, daily = {}, {}
         from . import traffic

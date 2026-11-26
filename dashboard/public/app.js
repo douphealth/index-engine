@@ -523,6 +523,16 @@ function priorities() {
       why: top ? `Biggest: “${top.query}” on ${ENGINE[top.src] || top.src}, position ${top.pos}, ${fmt(top.impr)} impressions in 4 weeks (≈ +${fmt(Math.round(top.gain))} clicks).` :
         "Pages already shown for these searches, where one specific change is most likely to pay." });
   }
+  // ---- pages one engine already ranks: Bing shows them near the top, Google does not (evidence, so no click estimate)
+  for (const s of live) {
+    const o = s.opportunities;
+    if (!o || !o.engine_gap) continue;
+    const un = o.engine_gap_unindexed || 0;
+    add({ tier: 1, site: s.site, minutes: o.engine_gap * 15, cta: "See pages", href: `#/growth?site=${encodeURIComponent(s.site)}&kind=engine_gap`,
+      title: `${plural(o.engine_gap, "page")} on ${s.site} rank${o.engine_gap === 1 ? "s" : ""} on Bing but not on Google`,
+      why: `Bing shows ${o.engine_gap === 1 ? "it" : "them"} in its top 8 for a search` + (un ? `; Google has not indexed ${un === o.engine_gap ? (un === 1 ? "it" : "any of them") : `${un} of them`}` : "") +
+        ". One engine already ranks these pages, so they can rank: get them indexed and linked from related pages." });
+  }
 
   const FINDING_TITLE = { index_bloat: (s, f) => `Bing holds ${s.bing_health.ratio}× more pages than ${s.site} has URLs`,
     robots_blocked: (s) => `Bing keeps requesting URLs that ${s.site}'s robots.txt blocks`, server_errors: (s) => `Bing meets server errors on ${s.site}`,
@@ -885,6 +895,7 @@ const OPP_KIND = {
   close_to_top: ["Close to the top", "Shown at about positions 4 to 15 for a search with real demand. The top 3 is where most clicks start."],
   low_ctr: ["Ranks well, rarely clicked", "Already near the top but clicked far less than usual at that position on your site, by more than chance explains. The title or meta description is the usual cause."],
   split: ["Your pages compete with each other", "Two or more of your pages share one search's impressions and none reaches the top 3."],
+  engine_gap: ["Ranks on Bing, missing on Google", "Bing shows the page in its top 8 for a search. Google has not indexed the page, or has it indexed and reports it far lower or not at all for that search. One engine already ranks it, so the page can rank."],
 };
 const SEARCH_BOTS = [["Googlebot", "Google"], ["bingbot", "Bing (also feeds Copilot and ChatGPT search)"], ["OAI-SearchBot", "ChatGPT search"],
   ["ChatGPT-User", "ChatGPT browsing"], ["Claude-SearchBot", "Claude search"], ["PerplexityBot", "Perplexity"]];
@@ -992,11 +1003,12 @@ async function viewGrowth(params) {
       h("td", {}, h("b", { text: s.site })),
       h("td", { class: "n", text: o.gain ? `+${fmt(Math.round(o.gain))}` : "–" }),
       h("td", { class: "n", text: fmt(o.close_to_top) }), h("td", { class: "n", text: fmt(o.low_ctr) }), h("td", { class: "n hide-sm", text: fmt(o.split) }),
+      h("td", { class: "n", title: o.engine_gap ? `${fmt(o.engine_gap_unindexed || 0)} of them not indexed by Google` : "", text: fmt(o.engine_gap || 0) }),
       h("td", { class: "n hide-sm", title: `${fmt(cov.bing_pages_read)} pages' Bing queries read so far`, text: cov.bing_impr_covered == null ? "–" : pct(cov.bing_impr_covered) }));
   });
   const table = h("div", { class: "tablewrap" }, h("table", {},
-    h("thead", {}, h("tr", {}, ...["Site", "Est. extra clicks / 4 wks", "Pages close to the top", "Pages rarely clicked", "Searches with competing pages", "Bing data read"].map((x, i) =>
-      h("th", { class: i ? `n${i >= 4 ? " hide-sm" : ""}` : null, text: x })))),
+    h("thead", {}, h("tr", {}, ...["Site", "Est. extra clicks / 4 wks", "Pages close to the top", "Pages rarely clicked", "Searches with competing pages", "Ranks on Bing, missing on Google", "Bing data read"].map((x, i) =>
+      h("th", { class: i ? `n${i === 4 || i === 6 ? " hide-sm" : ""}` : null, text: x })))),
     h("tbody", {}, ...rows)));
 
   const data = await loadSite(chosen);
@@ -1029,9 +1041,12 @@ async function viewGrowth(params) {
       h("td", { class: "n", title: "position for its biggest search", text: String(x.pos) }), h("td", { class: "n", text: fmt(x.impr_total || x.impr) }),
       h("td", { class: "n", title: x.expected_ctr != null ? `biggest search: usual click-through at this position on this site is ${(x.expected_ctr * 100).toFixed(1)}%` : "",
         text: fmt(qs.reduce((n, q) => n + (q.clicks || 0), 0) || x.clicks) }),
-      h("td", { class: "small" }, h("b", { class: "good", text: `≈ +${fmt(Math.round(x.gain))} clicks / 4 wks` }),
+      h("td", { class: "small" }, x.kind === "engine_gap"
+          ? h("b", { class: "good", text: x.google === "not_indexed" ? "Bing ranks it; Google has not indexed it" : "Bing ranks it; Google does not for these searches" })
+          : h("b", { class: "good", text: `≈ +${fmt(Math.round(x.gain))} clicks / 4 wks` }),
         h("div", {}, ...qs.map((q) => h("div", {}, h("span", { text: `“${q.query}”` }),
-          h("span", { class: "muted tiny", text: `  position ${q.pos}, ${plural(q.impr, "impression")}, ${plural(q.clicks, "click")}` })))), tip));
+          h("span", { class: "muted tiny", text: `  position ${q.pos}, ${plural(q.impr, "impression")}, ${plural(q.clicks, "click")}` +
+            (x.kind === "engine_gap" && x.google === "indexed" ? (q.google_pos != null ? `; Google position ${q.google_pos}` : "; no Google impressions") : "") })))), tip));
   });
   const site = sites.find((s) => s.site === chosen);
   const cov = (opp(site) || {}).coverage || {};

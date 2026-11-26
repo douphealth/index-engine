@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Search opportunities: where a page already shows for a search and a specific, checkable change is most likely to pay.
 
-Three kinds, all from the engines' own query data (engine/queries.py), never from guesses:
+Four kinds, all from the engines' own query data (engine/queries.py), never from guesses:
   close_to_top  the page ranks around 4-15 for a search with real impressions. The estimated gain is what the site's own
                 click-through at position 3 would bring, minus what the page already gets.
   low_ctr       the page already ranks in the top ~5 but is clicked far less than the site's usual click-through at that
@@ -9,6 +9,10 @@ Three kinds, all from the engines' own query data (engine/queries.py), never fro
                 description) is the usual cause.
   split         two or more of the site's own pages share one search's impressions, none of them in the top 3. Engines
                 rotating between near-equal pages is a common reason none ranks well.
+  engine_gap    Bing shows the page in its top 8 for a search, while Google has not indexed the page, or has it indexed
+                and reports it far lower or not at all for that search. One engine already ranks the page, so the page
+                can rank: this is evidence, where the other kinds are estimates. No click estimate is given, because
+                Google's demand for a search it does not show the page for is not in the data.
 Click-through by position is learned per site and engine from its own data, shrunk toward the portfolio's (so a site with
 little data borrows strength), and forced to never rise as the position gets worse. Estimates are per 4 weeks.
 """
@@ -17,7 +21,7 @@ import re
 from collections import Counter, defaultdict
 from urllib.parse import urlsplit
 
-from . import config, queries
+from . import config, queries, store
 from .triage import BLOCKERS, tokens
 
 MAX_POS = 20
@@ -32,6 +36,12 @@ SPLIT_MIN_IMPR = 50
 TOP_ITEMS = 60
 GAP_MAX_WORDS = 6           # close_to_top: the "title never says ..." note is for searches of at most this many words
 GAP_MAX_MISSING = 3         # ... that the title misses at most this many topic words of (more: the page is about something else)
+GAP_BING_POS = 8            # engine_gap: Bing shows the page at this position or better ...
+GAP_MIN_IMPR = 20           # ... at least this often in 4 weeks ...
+GAP_GOOGLE_POS = 12         # ... while Google reports it below this position for the same search, or not at all
+GAP_ITEMS = 30
+NOT_INDEXED = {"UNKNOWN_TO_GOOGLE": "does not know the page", "DISCOVERED_NOT_INDEXED": "knows the page but has not crawled it",
+               "CRAWLED_NOT_INDEXED": "crawled the page and did not index it"}
 ENGINE = {"bing": "Bing", "google": "Google"}
 
 
@@ -162,6 +172,62 @@ def _desc_state(desc):
     return f"{len(desc)} characters"
 
 
+def engine_gaps(live, buckets, brand):
+    """Pages Bing ranks near the top for a search that Google does not: one item per page, most Bing impressions first.
+    A page counts only when Google's verdict on it is known (indexed, or one of the three not-indexed states), when the
+    search is short enough to be a topic, and when the page's own title, heading or address says at least one of the
+    search's topic words (Bing also shows pages for searches they are not about)."""
+    google = {(r["url"], r["query"]): r for r in live if r["src"] == "google"}
+    by_url = defaultdict(list)
+    for r in live:
+        q, url = r["query"], r["url"]
+        if r["src"] != "bing" or r["pos"] > GAP_BING_POS or r["impr"] < GAP_MIN_IMPR or _skip(q, brand):
+            continue
+        bucket = buckets[url][0]
+        if bucket != "INDEXED" and bucket not in NOT_INDEXED:
+            continue
+        topic = tokens(q)
+        if len(q.split()) > GAP_MAX_WORDS or not topic & tokens(f"{r['title'] or ''} {r['h1'] or ''} {urlsplit(url).path}"):
+            continue
+        g = google.get((url, q))
+        if g and g["pos"] <= GAP_GOOGLE_POS:
+            continue
+        by_url[url].append({"query": q, "pos": round(r["pos"], 1), "impr": r["impr"], "clicks": r["clicks"],
+                            "ctr": round(r["clicks"] / r["impr"], 4), "gain": None,
+                            "google_pos": round(g["pos"], 1) if g else None, "title": r["title"], "h1": r["h1"]})
+    out = []
+    for url, xs in by_url.items():
+        xs.sort(key=lambda x: -x["impr"])
+        lead, bucket = xs[0], buckets[url][0]
+        shown = (f"Bing shows this page at about position {lead['pos']:.0f} for “{lead['query']}” ({lead['impr']:,} times in 4 weeks, "
+                 f"{lead['clicks']} clicks)")
+        more = f" The same holds for {len(xs) - 1} more search{'es' if len(xs) > 2 else ''} listed here." if len(xs) > 1 else ""
+        if bucket in NOT_INDEXED:
+            # Google looked at a crawled page and declined it: a request alone rarely changes that verdict.
+            todo = ("A request alone rarely changes that verdict: strengthen the page first (the subject is right, Bing "
+                    "ranks it), link to it from indexed pages on the same subject, then request indexing in Search Console."
+                    if bucket == "CRAWLED_NOT_INDEXED" else
+                    "A page another engine already ranks is the strongest candidate to get indexed: request indexing in "
+                    "Search Console, and link to it from indexed pages on the same subject.")
+            advice = f"{shown}, so the page can rank for it. Google {NOT_INDEXED[bucket]}, so it cannot show it at all. {todo}{more}"
+        else:
+            where = (f"reports it at about position {lead['google_pos']:.0f}" if lead["google_pos"] is not None
+                     else "reports no impressions for it")
+            missing = missing_words(lead["query"], lead["title"], lead["h1"])
+            gap = (f" Its title and main heading never say {', '.join('“' + w + '”' for w in missing[:4])}."
+                   if missing and len(missing) <= GAP_MAX_MISSING else "")
+            advice = (f"{shown}. Google has the page indexed but {where} on that search. One engine already ranks it, so the "
+                      "page is relevant; on Google the usual differences are the links pointing to the page and how plainly "
+                      "its title and opening answer the search. Link to it from related indexed pages with this wording, and "
+                      "check the title says it." + gap + more)
+        out.append({"kind": "engine_gap", "src": "bing", "url": url, "title": lead["title"], "query": lead["query"],
+                    "pos": lead["pos"], "impr": lead["impr"], "clicks": lead["clicks"], "ctr": lead["ctr"], "gain": None,
+                    "google": "not_indexed" if bucket in NOT_INDEXED else "indexed", "google_pos": lead["google_pos"],
+                    "impr_total": sum(x["impr"] for x in xs), "advice": advice,
+                    "queries": [{k: x[k] for k in ("query", "pos", "impr", "clicks", "ctr", "gain", "google_pos")} for x in xs[:8]]})
+    return sorted(out, key=lambda x: (-x["impr_total"], x["url"]))
+
+
 def analyze(db, site, buckets, prior=None):
     """Opportunities for one site. buckets: {url: (bucket, flags)} from triage, so blocked or ignored pages are skipped."""
     prior = prior if prior is not None else portfolio_curves(db)
@@ -234,9 +300,13 @@ def analyze(db, site, buckets, prior=None):
     splits = sorted([x for x in items if x["kind"] == "split"], key=lambda x: -x["impr"])
     totals = {k: sum(1 for x in pages if x["kind"] == k) for k in ("close_to_top", "low_ctr")}
     totals["split"] = len(splits)
-    totals["searches"] = sum(len(x["queries"]) for x in pages)
+    # Only where Google reports on the site at all: without a property, "Google does not show it" would mean nothing.
+    gaps = engine_gaps(live, buckets, brand) if store.get_meta(db, site).get("gsc_property") else []
+    totals["engine_gap"] = len(gaps)
+    totals["engine_gap_unindexed"] = sum(1 for x in gaps if x["google"] == "not_indexed")
+    totals["searches"] = sum(len(x["queries"]) for x in pages) + sum(len(x["queries"]) for x in gaps[:GAP_ITEMS])
     totals["gain"] = round(sum(x["gain"] for x in pages), 1)
-    return {"items": pages[:TOP_ITEMS] + splits[:20], "totals": totals, "curves": curves, "coverage": queries.coverage(db, site),
+    return {"items": pages[:TOP_ITEMS] + splits[:20] + gaps[:GAP_ITEMS], "totals": totals, "curves": curves, "coverage": queries.coverage(db, site),
             "pairs": len(live)}
 
 
