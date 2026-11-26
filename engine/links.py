@@ -150,7 +150,8 @@ MAX_PER_TARGET = 3          # the model's "add links" estimate is for about 3 ne
 MAX_PER_SOURCE = 2          # new links proposed into one page per run
 MAX_PER_SITE = 60           # proposals per site per run (each one waits for the owner's approval)
 STOCK_SHARE = 0.08          # a phrase found in the text of more than 8% of a site's pages is a stock phrase, not a name
-# Growth anchors: an indexed page that ranks around 4-15 for a search (engine/opportunities.py "close_to_top") gets links
+# Growth anchors: an indexed page that ranks around 4-15 for a search (engine/opportunities.py "close_to_top", and
+# "long_tail" for a topic of many small searches) gets links
 # whose anchor is that search, from trusted pages whose text already says it. Ranked against indexing gains by this
 # heuristic (estimated extra clicks per 4 weeks, compressed), not by a prediction of what one link is worth.
 GROWTH_GAIN_SCALE = 0.1
@@ -464,7 +465,7 @@ def growth_targets(db, site, opportunities, buckets, names, owners, taken, scale
     for item in (opportunities or {}).get("items") or []:
         t = item.get("url")
         kind = item.get("kind")
-        if kind not in ("close_to_top", "engine_gap") or t not in buckets or "IGNORED" in buckets[t][1]:
+        if kind not in ("close_to_top", "long_tail", "engine_gap") or t not in buckets or "IGNORED" in buckets[t][1]:
             continue
         # A Google ranking needs a page Google has indexed (anything else is a stale ranking). A Bing ranking stands on
         # its own: a page Google has not indexed yet but Bing already ranks only has to serve its own content.

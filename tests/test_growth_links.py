@@ -65,6 +65,17 @@ class GrowthLinkTest(unittest.TestCase):
         self.assertIn("Ranks about #6 on Google", p["why"])
         self.assertGreater(p["gain"], 0)
 
+    def test_a_topic_of_small_searches_gives_anchors_the_same_way(self):
+        """long_tail items (many small searches, one topic) are pages near the top too: their searches name them."""
+        self.opps["items"][0].update(kind="long_tail", searches=4, gain=3.0)
+        out = self.propose()
+        self.assertEqual([(p["source"], p["target"], p["anchor"].lower()) for p in out], [(SOURCE, TARGET, QUERY)])
+        self.assertIn("Ranks about #6 on Google", out[0]["why"])
+
+    def test_an_unknown_kind_gives_no_anchor(self):
+        self.opps["items"][0]["kind"] = "split"
+        self.assertEqual(self.propose(), [])
+
     def test_no_anchor_when_another_page_ranks_better_for_the_search(self):
         self.query(RIVAL, QUERY, 3.0)
         self.assertEqual(self.propose(), [])

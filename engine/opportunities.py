@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Search opportunities: where a page already shows for a search and a specific, checkable change is most likely to pay.
 
-Four kinds, all from the engines' own query data (engine/queries.py), never from guesses:
+Five kinds, all from the engines' own query data (engine/queries.py), never from guesses:
   close_to_top  the page ranks around 4-15 for a search with real impressions. The estimated gain is what the site's own
                 click-through at position 3 would bring, minus what the page already gets.
   low_ctr       the page already ranks in the top ~5 but is clicked far less than the site's usual click-through at that
@@ -13,6 +13,10 @@ Four kinds, all from the engines' own query data (engine/queries.py), never from
                 and reports it far lower or not at all for that search. One engine already ranks the page, so the page
                 can rank: this is evidence, where the other kinds are estimates. No click estimate is given, because
                 Google's demand for a search it does not show the page for is not in the data.
+  long_tail     the page shows around positions 4-20 for several related searches, each too small to count alone
+                (under MIN_IMPR impressions) but with real demand together. On 26 Nov 2026, 58% of all impressions in the
+                portfolio (23,895 of 41,273) were in page/search pairs below that threshold, which the other kinds never
+                look at. The searches are grouped by the topic words they share; the gain is the sum over the group.
 Click-through by position is learned per site and engine from its own data, shrunk toward the portfolio's (so a site with
 little data borrows strength), and forced to never rise as the position gets worse. Estimates are per 4 weeks.
 """
@@ -40,6 +44,11 @@ GAP_BING_POS = 8            # engine_gap: Bing shows the page at this position o
 GAP_MIN_IMPR = 20           # ... at least this often in 4 weeks ...
 GAP_GOOGLE_POS = 12         # ... while Google reports it below this position for the same search, or not at all
 GAP_ITEMS = 30
+TAIL_MAX_POS = 20           # long_tail: searches shown at about positions 4 to this
+TAIL_MIN_QUERIES = 3        # ... at least this many related searches for one page
+TAIL_ALIKE = 0.5            # ... two searches are related when they share at least half of their topic words (Jaccard)
+TAIL_MAX_WORDS = 8          # ... Bing also reports whole sentences as "searches": those are not topics
+TAIL_SHOWN = 8              # searches listed per item
 NOT_INDEXED = {"UNKNOWN_TO_GOOGLE": "does not know the page", "DISCOVERED_NOT_INDEXED": "knows the page but has not crawled it",
                "CRAWLED_NOT_INDEXED": "crawled the page and did not index it"}
 ENGINE = {"bing": "Bing", "google": "Google"}
@@ -228,6 +237,74 @@ def engine_gaps(live, buckets, brand):
     return sorted(out, key=lambda x: (-x["impr_total"], x["url"]))
 
 
+def long_tail(live, curves, brand):
+    """Pages shown for a group of related small searches. One item per page, engine and topic.
+
+    A search counts when the pair has fewer than MIN_IMPR impressions (the larger ones are close_to_top's) and sits at
+    about positions 4 to TAIL_MAX_POS. A page's searches are grouped when they share at least half of their topic words,
+    transitively, so "can mice climb", "can a mouse climb a wall" and "can mice climb walls vertically" are one topic and
+    "do mice eat peanuts" on the same page is another. A group is listed with at least TAIL_MIN_QUERIES searches, MIN_IMPR
+    impressions together and MIN_GAIN estimated clicks; the estimate is close_to_top's, summed over the group."""
+    per_page = defaultdict(list)
+    for r in live:
+        q = r["query"]
+        if (r["src"] in curves and 0 < r["impr"] < MIN_IMPR and 3.5 < r["pos"] <= TAIL_MAX_POS and not _skip(q, brand)
+                and len(q.split()) <= TAIL_MAX_WORDS and tokens(q)):
+            per_page[(r["src"], r["url"])].append(r)
+    out = []
+    for (src, url), rs in per_page.items():
+        if len(rs) < TAIL_MIN_QUERIES:
+            continue
+        rs.sort(key=lambda r: (-r["impr"], r["query"]))            # a stable order: the same data gives the same groups
+        topic = [tokens(r["query"]) for r in rs]
+        parent = list(range(len(rs)))
+
+        def root(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+        for i in range(len(rs)):
+            for j in range(i):
+                if len(topic[i] & topic[j]) >= TAIL_ALIKE * len(topic[i] | topic[j]):
+                    parent[root(i)] = root(j)
+        groups = defaultdict(list)
+        for i, r in enumerate(rs):
+            groups[root(i)].append(r)
+        curve = curves[src]
+        for xs in groups.values():
+            impr = sum(x["impr"] for x in xs)
+            if len(xs) < TAIL_MIN_QUERIES or impr < MIN_IMPR:
+                continue
+            gains = [x["impr"] * max(0.0, curve[2] - max(x["clicks"] / x["impr"], at(curve, x["pos"]))) for x in xs]
+            gain = sum(gains)
+            if gain < MIN_GAIN:
+                continue
+            lead, clicks = xs[0], sum(x["clicks"] for x in xs)
+            pos = sum(x["pos"] * x["impr"] for x in xs) / impr
+            # Words the searchers keep using that the title and main heading never say.
+            lacking = Counter()
+            if lead["title"] or lead["h1"]:
+                for x in xs:
+                    lacking.update(missing_words(x["query"], lead["title"], lead["h1"]))
+            missing = [w for w, n in lacking.most_common() if n >= max(2, len(xs) / 3)][:3]
+            gap = (f" The searches keep saying {', '.join('“' + w + '”' for w in missing)}, which the title and main heading "
+                   "never do: if the page covers that, say so in a heading.") if missing else ""
+            out.append({"kind": "long_tail", "src": src, "url": url, "title": lead["title"], "query": lead["query"],
+                        "pos": round(pos, 1), "impr": lead["impr"], "clicks": clicks, "ctr": round(clicks / impr, 4),
+                        "gain": round(gain, 1), "impr_total": impr, "searches": len(xs), "missing": missing,
+                        "advice": (f"Shown on {ENGINE[src]} for {len(xs)} related searches at about position {pos:.0f} "
+                                   f"({impr:,} times in 4 weeks together, {clicks} click{'' if clicks == 1 else 's'}). Each is too small to notice alone; "
+                                   f"in the top 3 they would bring an estimated +{gain:.0f} clicks per 4 weeks, judging by your "
+                                   "own site's click-through by position. The list is in the searchers' own words: answer the "
+                                   "most common ones plainly, each under its own heading, and link to the page from related "
+                                   "pages that already rank." + gap),
+                        "queries": [{"query": x["query"], "pos": round(x["pos"], 1), "impr": x["impr"], "clicks": x["clicks"],
+                                     "ctr": round(x["clicks"] / x["impr"], 4), "gain": round(g, 1)}
+                                    for x, g in list(zip(xs, gains))[:TAIL_SHOWN]]})
+    return sorted(out, key=lambda x: (-x["gain"], x["url"], x["query"]))
+
+
 def analyze(db, site, buckets, prior=None):
     """Opportunities for one site. buckets: {url: (bucket, flags)} from triage, so blocked or ignored pages are skipped."""
     prior = prior if prior is not None else portfolio_curves(db)
@@ -296,15 +373,18 @@ def analyze(db, site, buckets, prior=None):
                                      "and none ranks in the top 3. Engines often rotate between near-equal pages instead of ranking one "
                                      "well. Pick one main page for this search; make the others clearly about something else, or merge "
                                      "them into it after checking clicks on both engines.")})
-    pages = by_page([x for x in items if x["gain"] is not None])
+    tails = long_tail(live, curves, brand)
+    pages = sorted(by_page([x for x in items if x["gain"] is not None]) + tails, key=lambda x: -x["gain"])
     splits = sorted([x for x in items if x["kind"] == "split"], key=lambda x: -x["impr"])
-    totals = {k: sum(1 for x in pages if x["kind"] == k) for k in ("close_to_top", "low_ctr")}
+    totals = {k: sum(1 for x in pages if x["kind"] == k) for k in ("close_to_top", "low_ctr", "long_tail")}
+    totals["long_tail_searches"] = sum(x["searches"] for x in tails)
     totals["split"] = len(splits)
     # Only where Google reports on the site at all: without a property, "Google does not show it" would mean nothing.
     gaps = engine_gaps(live, buckets, brand) if store.get_meta(db, site).get("gsc_property") else []
     totals["engine_gap"] = len(gaps)
     totals["engine_gap_unindexed"] = sum(1 for x in gaps if x["google"] == "not_indexed")
-    totals["searches"] = sum(len(x["queries"]) for x in pages) + sum(len(x["queries"]) for x in gaps[:GAP_ITEMS])
+    totals["searches"] = (sum(x.get("searches") or len(x["queries"]) for x in pages)
+                          + sum(len(x["queries"]) for x in gaps[:GAP_ITEMS]))
     totals["gain"] = round(sum(x["gain"] for x in pages), 1)
     return {"items": pages[:TOP_ITEMS] + splits[:20] + gaps[:GAP_ITEMS], "totals": totals, "curves": curves, "coverage": queries.coverage(db, site),
             "pairs": len(live)}

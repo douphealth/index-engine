@@ -7,37 +7,69 @@
 <title>Index Engine</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
 <script src="/guide.js" defer></script>
 <script src="/app.js" defer></script>
+<script src="/shell.js" defer></script>
 </head>
 <body>
-<header class="top">
-  <div class="top-in">
-    <a class="brand" href="#/"><img src="/favicon.svg" alt="">Index Engine</a>
+<a class="skip" href="#app">Skip to content</a>
+<div class="shell">
+  <aside class="side" id="side" aria-label="Navigation">
+    <a class="brand" href="#/"><img src="/favicon.svg" alt=""><span>Index Engine</span></a>
+    <button class="jump" id="jump-btn" type="button" aria-haspopup="dialog">
+      <svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><path d="m13.5 13.5 3.5 3.5"/></svg>
+      <span>Search or jump to…</span><kbd>Ctrl K</kbd>
+    </button>
     <nav class="tabs" id="tabs">
-      <a href="/workspace">Issues workspace</a>
-      <a href="#/" data-r="">Action Center</a>
-      <a href="#/overview" data-r="overview">Analytics</a>
-      <a href="#/recovery" data-r="recovery">Recovery</a>
-      <a href="#/revival" data-r="revival">Revival</a>
-      <a href="#/growth" data-r="growth">Growth</a>
-      <a href="#/results" data-r="results">Results</a>
-      <a href="#/plan" data-r="plan">Plan</a>
-      <a href="#/requests" data-r="requests">Requests</a>
-      <a href="#/links" data-r="links">Links<span class="badge" id="b-links"></span></a>
-      <a href="#/fixes" data-r="fixes">Fixes</a>
-      <a href="#/alerts" data-r="alerts">Alerts<span class="badge" id="b-alerts"></span></a>
-      <a href="#/runs" data-r="runs">Runs</a>
-      <a href="#/connections" data-r="connections">Connections</a>
-      <a href="#/settings" data-r="settings">Settings</a>
+      <div class="nav-group"><div class="nav-label">Today</div>
+        <a href="#/" data-r=""><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 3l7 6.5V17h-4.5v-4.5h-5V17H3z"/></svg><span>Action Center</span></a>
+        <a href="#/alerts" data-r="alerts"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 14V9a5 5 0 0 1 10 0v5l1.5 1.5h-13z"/><path d="M8.5 17.5h3"/></svg><span>Alerts</span><span class="badge" id="b-alerts"></span></a>
+      </div>
+      <div class="nav-group"><div class="nav-label">Grow</div>
+        <a href="#/growth" data-r="growth"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 15l4.5-5 3.5 3L17 5"/><path d="M12.5 5H17v4.5"/></svg><span>Growth</span></a>
+        <a href="#/links" data-r="links"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M8.5 11.5a3 3 0 0 0 4.2 0l3-3a3 3 0 0 0-4.2-4.2l-1 1"/><path d="M11.5 8.5a3 3 0 0 0-4.2 0l-3 3a3 3 0 0 0 4.2 4.2l1-1"/></svg><span>Links</span><span class="badge" id="b-links"></span></a>
+        <a href="#/plan" data-r="plan"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h12v12H4z"/><path d="M7 8h6M7 11h6M7 14h3"/></svg><span>Plan</span></a>
+      </div>
+      <div class="nav-group"><div class="nav-label">Recover</div>
+        <a href="#/recovery" data-r="recovery"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10a6 6 0 1 0 2-4.5"/><path d="M4 4v3.5h3.5"/></svg><span>Recovery</span></a>
+        <a href="#/revival" data-r="revival"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 11h3l2-5 3.5 9 2-4H17"/></svg><span>Revival</span></a>
+        <a href="#/fixes" data-r="fixes"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4a3.5 3.5 0 0 0-3.3 4.7L3.5 14 6 16.5l5.3-5.2A3.5 3.5 0 0 0 16 8l-2.2 2.2-2-2L14 6a3.5 3.5 0 0 0-2-2z"/></svg><span>Fixes</span></a>
+        <a href="#/requests" data-r="requests"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10 17 4l-4 13-3-5.5z"/><path d="m10 11.5 3-3.5"/></svg><span>Requests</span></a>
+        <a href="/workspace"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h9"/></svg><span>Issues workspace</span></a>
+      </div>
+      <div class="nav-group"><div class="nav-label">Measure</div>
+        <a href="#/overview" data-r="overview"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16V9m4 7V4m4 12v-5m4 5V7"/></svg><span>Analytics</span></a>
+        <a href="#/results" data-r="results"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5"/><path d="m7 10 2 2 4-4"/></svg><span>Results</span></a>
+        <a href="#/runs" data-r="runs"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5"/><path d="M10 6.5V10l2.5 1.5"/></svg><span>Runs</span></a>
+      </div>
+      <div class="nav-group"><div class="nav-label">Manage</div>
+        <a href="#/connections" data-r="connections"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3v4M13 3v4M5 7h10v3a5 5 0 0 1-10 0zM10 15v2"/></svg><span>Connections</span></a>
+        <a href="#/settings" data-r="settings"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h7M15 6h1M4 14h1M9 14h7"/><circle cx="13" cy="6" r="2"/><circle cx="7" cy="14" r="2"/></svg><span>Settings</span></a>
+      </div>
     </nav>
-    <span class="spacer"></span>
-    <span id="engine-pill" class="pill"><span class="dot"></span>engine</span>
-    <button class="btn primary" id="run-btn" type="button">Run now</button>
-    <button class="btn" id="logout" type="button" title="Sign out">Sign out</button>
+    <div class="side-foot">
+      <button class="btn ghost" id="theme-btn" type="button" title="Switch between light, dark and your system's setting">Theme: auto</button>
+      <button class="btn ghost" id="logout" type="button">Sign out</button>
+    </div>
+  </aside>
+  <div class="side-shade" id="side-shade" hidden></div>
+  <div class="main-col">
+    <header class="top">
+      <button class="btn icon" id="menu-btn" type="button" aria-label="Open navigation" aria-controls="side" aria-expanded="false">
+        <svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5.5h14M3 10h14M3 14.5h14"/></svg>
+      </button>
+      <div class="page-title" id="page-title">Action Center</div>
+      <span class="spacer"></span>
+      <button class="btn icon" id="jump-btn-top" type="button" aria-label="Search or jump to a page or website" title="Search or jump (Ctrl K)">
+        <svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><path d="m13.5 13.5 3.5 3.5"/></svg>
+      </button>
+      <span id="engine-pill" class="pill"><span class="dot"></span>engine</span>
+      <button class="btn primary" id="run-btn" type="button">Run now</button>
+    </header>
+    <main id="app" tabindex="-1"><div class="empty">Loading…</div></main>
   </div>
-</header>
-<main id="app" tabindex="-1"><div class="empty">Loading…</div></main>
+</div>
 
 <dialog id="run-dlg">
   <form method="dialog" class="stack" id="run-form">
@@ -54,6 +86,15 @@
       <button class="btn primary" value="ok" type="submit">Queue run</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="jump-dlg" class="jump-dlg" aria-label="Search or jump">
+  <div class="jump-box">
+    <input id="jump-input" type="search" autocomplete="off" spellcheck="false" placeholder="A page, a website, or an action…"
+      role="combobox" aria-expanded="true" aria-controls="jump-list" aria-autocomplete="list">
+    <ul id="jump-list" class="jump-list" role="listbox" aria-label="Results"></ul>
+    <div class="jump-hint tiny muted"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></div>
+  </div>
 </dialog>
 </body>
 </html>

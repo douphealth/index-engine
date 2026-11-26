@@ -516,9 +516,9 @@ function priorities() {
   for (const s of live) {
     const o = s.opportunities;
     if (!o || !(o.gain >= 5)) continue;
-    const n = (o.close_to_top || 0) + (o.low_ctr || 0);
+    const n = (o.close_to_top || 0) + (o.low_ctr || 0) + (o.long_tail || 0);
     const top = (o.top || []).find((x) => x.kind !== "split");
-    add({ tier: 1, site: s.site, clicks: o.gain, minutes: (o.close_to_top || 0) * 30 + (o.low_ctr || 0) * 10,
+    add({ tier: 1, site: s.site, clicks: o.gain, minutes: (o.close_to_top || 0) * 30 + (o.long_tail || 0) * 30 + (o.low_ctr || 0) * 10,
       title: `${plural(n, "page")} on ${s.site} close to the top or rarely clicked`, cta: "See opportunities", href: `#/growth?site=${encodeURIComponent(s.site)}`,
       why: top ? `Biggest: “${top.query}” on ${ENGINE[top.src] || top.src}, position ${top.pos}, ${fmt(top.impr)} impressions in 4 weeks (≈ +${fmt(Math.round(top.gain))} clicks).` :
         "Pages already shown for these searches, where one specific change is most likely to pay." });
@@ -893,6 +893,7 @@ async function viewRevival(params) {
 /* ------------------------------------------------------------------ Growth: search opportunities and AI crawler access */
 const OPP_KIND = {
   close_to_top: ["Close to the top", "Shown at about positions 4 to 15 for a search with real demand. The top 3 is where most clicks start."],
+  long_tail: ["Many small searches, one topic", "Shown at about positions 4 to 20 for several related searches. Each is too small to notice alone; together they have real demand. Answer the most common ones in the page, each under its own heading."],
   low_ctr: ["Ranks well, rarely clicked", "Already near the top but clicked far less than usual at that position on your site, by more than chance explains. The title or meta description is the usual cause."],
   split: ["Your pages compete with each other", "Two or more of your pages share one search's impressions and none reaches the top 3."],
   engine_gap: ["Ranks on Bing, missing on Google", "Bing shows the page in its top 8 for a search. Google has not indexed the page, or has it indexed and reports it far lower or not at all for that search. One engine already ranks it, so the page can rank."],
@@ -1002,13 +1003,15 @@ async function viewGrowth(params) {
       onkeydown: (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); open(s.site); } } },
       h("td", {}, h("b", { text: s.site })),
       h("td", { class: "n", text: o.gain ? `+${fmt(Math.round(o.gain))}` : "–" }),
-      h("td", { class: "n", text: fmt(o.close_to_top) }), h("td", { class: "n", text: fmt(o.low_ctr) }), h("td", { class: "n hide-sm", text: fmt(o.split) }),
+      h("td", { class: "n", text: fmt(o.close_to_top) }),
+      h("td", { class: "n", title: o.long_tail ? `${fmt(o.long_tail_searches || 0)} small searches grouped into ${plural(o.long_tail, "topic")}` : "", text: fmt(o.long_tail || 0) }),
+      h("td", { class: "n", text: fmt(o.low_ctr) }), h("td", { class: "n hide-sm", text: fmt(o.split) }),
       h("td", { class: "n", title: o.engine_gap ? `${fmt(o.engine_gap_unindexed || 0)} of them not indexed by Google` : "", text: fmt(o.engine_gap || 0) }),
       h("td", { class: "n hide-sm", title: `${fmt(cov.bing_pages_read)} pages' Bing queries read so far`, text: cov.bing_impr_covered == null ? "–" : pct(cov.bing_impr_covered) }));
   });
   const table = h("div", { class: "tablewrap" }, h("table", {},
-    h("thead", {}, h("tr", {}, ...["Site", "Est. extra clicks / 4 wks", "Pages close to the top", "Pages rarely clicked", "Searches with competing pages", "Ranks on Bing, missing on Google", "Bing data read"].map((x, i) =>
-      h("th", { class: i ? `n${i === 4 || i === 6 ? " hide-sm" : ""}` : null, text: x })))),
+    h("thead", {}, h("tr", {}, ...["Site", "Est. extra clicks / 4 wks", "Pages close to the top", "Topics of small searches", "Pages rarely clicked", "Searches with competing pages", "Ranks on Bing, missing on Google", "Bing data read"].map((x, i) =>
+      h("th", { class: i ? `n${i === 5 || i === 7 ? " hide-sm" : ""}` : null, text: x })))),
     h("tbody", {}, ...rows)));
 
   const data = await loadSite(chosen);
@@ -1043,10 +1046,11 @@ async function viewGrowth(params) {
         text: fmt(qs.reduce((n, q) => n + (q.clicks || 0), 0) || x.clicks) }),
       h("td", { class: "small" }, x.kind === "engine_gap"
           ? h("b", { class: "good", text: x.google === "not_indexed" ? "Bing ranks it; Google has not indexed it" : "Bing ranks it; Google does not for these searches" })
-          : h("b", { class: "good", text: `≈ +${fmt(Math.round(x.gain))} clicks / 4 wks` }),
+          : h("b", { class: "good", text: `≈ +${fmt(Math.round(x.gain))} clicks / 4 wks` + (x.kind === "long_tail" ? ` from ${plural(x.searches, "search")}` : "") }),
         h("div", {}, ...qs.map((q) => h("div", {}, h("span", { text: `“${q.query}”` }),
           h("span", { class: "muted tiny", text: `  position ${q.pos}, ${plural(q.impr, "impression")}, ${plural(q.clicks, "click")}` +
-            (x.kind === "engine_gap" && x.google === "indexed" ? (q.google_pos != null ? `; Google position ${q.google_pos}` : "; no Google impressions") : "") })))), tip));
+            (x.kind === "engine_gap" && x.google === "indexed" ? (q.google_pos != null ? `; Google position ${q.google_pos}` : "; no Google impressions") : "") }))),
+        x.kind === "long_tail" && x.searches > qs.length ? h("div", { class: "muted tiny", text: `and ${plural(x.searches - qs.length, "smaller search")} on the same topic` }) : null), tip));
   });
   const site = sites.find((s) => s.site === chosen);
   const cov = (opp(site) || {}).coverage || {};
@@ -1861,7 +1865,10 @@ async function render() {
   const route = ["site", "overview", "recovery", "revival", "growth", "results", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
   const params = new URLSearchParams(query || "");
   setTab(route === "site" ? "" : route || "");
-  document.title = `${route === "site" && arg ? safeDecode(arg) : (route ? route[0].toUpperCase() + route.slice(1) : "Overview")} · Index Engine`;
+  const named = { "": "Action Center", overview: "Analytics" }[route] || (route === "site" && arg ? safeDecode(arg) : route[0].toUpperCase() + route.slice(1));
+  const heading = document.getElementById("page-title");
+  if (heading) heading.textContent = named;
+  document.title = `${named} · Index Engine`;
   try {
     let node;
     if (route === "site" && arg) node = await viewSite(safeDecode(arg), params);
