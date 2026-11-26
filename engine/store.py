@@ -116,6 +116,11 @@ CREATE INDEX IF NOT EXISTS inbound_links_site ON inbound_links(site);
 -- Whether each search and AI crawler may read the site (robots.txt) and what a request in its name gets (the edge).
 CREATE TABLE IF NOT EXISTS ai_access(site TEXT, bot TEXT, role TEXT, robots_ok INT, http INT, state TEXT, checked_at TEXT,
   PRIMARY KEY(site, bot));
+
+-- Results computed from a post's stored content (engine/memo.py), reused until that content or the code version changes.
+-- url is the post, or '*<site>' for a result that depends on all of a site's posts. Safe to delete: it only costs time.
+CREATE TABLE IF NOT EXISTS content_memo(url TEXT, kind TEXT, site TEXT, digest TEXT, data BLOB, PRIMARY KEY(url, kind));
+CREATE INDEX IF NOT EXISTS content_memo_site ON content_memo(site, kind);
 """
 
 # Columns added after the first release; ALTER fails harmlessly when the column exists.

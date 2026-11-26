@@ -53,8 +53,14 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
       "Chrome/124 Safari/537.36 PortfolioIndexEngine/1.0")
 
 # ---------------------------------------------------------------- live audit
-PER_HOST_CONCURRENCY = 3
-SLOW_HOSTS = {"mysticaldigits.com": 2}   # uncached pages take up to ~60 s (Sep 2026 audit)
+PER_HOST_CONCURRENCY = 3        # requests in flight per site at the start of an audit
+# A site that keeps answering fast gets one more request in flight at a time, up to this many; a slow answer, an error,
+# a 429/5xx or a bot challenge halves it at once and caps it there for the rest of the run (engine/audit.py Pace).
+PER_HOST_MAX = 8
+AUDIT_FAST_MS = 800             # an answer within this counts as fast ...
+AUDIT_RAMP_AFTER = 8            # ... and this many fast answers in a row earn one more request in flight
+AUDIT_SLOW_MS = 5_000           # an answer slower than this means the site is busy: back off
+SLOW_HOSTS = {"mysticaldigits.com": 2}   # uncached pages take up to ~60 s (Sep 2026 audit); never raised
 CONNECT_TIMEOUT, READ_TIMEOUT = 15, 90
 AUDIT_MAX_AGE_DAYS = 7          # re-fetch a page after this, or sooner if its sitemap lastmod moves
 SLOW_MS = 10_000                # pages slower than this are a crawl-rate risk
@@ -67,7 +73,12 @@ HEAVY_B64_CHARS = 20_000        # embedded base64 image data above this makes a 
 # (developers.google.com/webmaster-tools/limits, checked 23 Oct 2026). Day = Pacific time.
 INSPECT_DAILY_LIMIT = 2000
 INSPECT_SAFETY_MARGIN = 50
-INSPECT_WORKERS_PER_PROPERTY = 4
+# One inspection takes Google several seconds to answer, so the calls in flight decide the speed, not the per-minute
+# cap. Measured on one property on 26 Nov 2026: 4 in flight, 0.53 URLs a second (6.6 s a call); 12 in flight, 1.31 a
+# second (11 s a call: Google slows each call as they pile up, so more than this buys little). The pacing in
+# google.inspect_due still keeps every property under 600 a minute whatever this is.
+INSPECT_WORKERS_PER_PROPERTY = 12
+INSPECT_WORKERS_MAX = 64        # threads in total, however many properties have work
 # Re-inspect a URL only after this many days in its last state.
 REINSPECT_DAYS = {"indexed": 45, "crawled": 14, "discovered": 7, "unknown": 7, "other": 10, "error": 2}
 EVIDENCE_DAYS = 14              # a page with Search impressions in this window is indexed; skip inspecting it

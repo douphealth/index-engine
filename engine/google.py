@@ -31,15 +31,35 @@ class GSCClient:
     def __init__(self, sa):
         self.sa = sa
         self._tls = threading.local()
+        self._creds, self._creds_lock = None, threading.Lock()
+
+    def _credentials(self):
+        """One set of credentials for every thread. Each worker thread used to build its own and fetch its own access
+        token (dozens of token requests at the start of an inspection); now one token is fetched and shared, and it is
+        renewed by one thread at a time."""
+        with self._creds_lock:
+            if self._creds is None:
+                from google.oauth2 import service_account
+                creds = service_account.Credentials.from_service_account_info(
+                    self.sa, scopes=["https://www.googleapis.com/auth/webmasters"])
+                refresh, lock, last = creds.refresh, threading.Lock(), [0.0]
+
+                def refresh_once(request):
+                    with lock:
+                        if creds.valid and time.time() - last[0] < 30:
+                            return                     # another thread renewed it while this one waited
+                        refresh(request)
+                        last[0] = time.time()
+
+                creds.refresh = refresh_once
+                self._creds = creds
+            return self._creds
 
     def _s(self):
         s = getattr(self._tls, "s", None)
         if s is None:
             from google.auth.transport.requests import AuthorizedSession
-            from google.oauth2 import service_account
-            creds = service_account.Credentials.from_service_account_info(
-                self.sa, scopes=["https://www.googleapis.com/auth/webmasters"])
-            s = self._tls.s = AuthorizedSession(creds)
+            s = self._tls.s = AuthorizedSession(self._credentials())
         return s
 
     def list_sites(self):
@@ -299,7 +319,8 @@ def inspect_due(db, client, props, max_per_site=None, include_taxonomy=False, on
     inflight, active, stopped = {}, defaultdict(int), set()
     done_n, t0 = 0, time.time()
     counts = defaultdict(lambda: defaultdict(int))
-    with ThreadPoolExecutor(max_workers=config.INSPECT_WORKERS_PER_PROPERTY * len(queues)) as ex:
+    workers = max(1, min(total, config.INSPECT_WORKERS_PER_PROPERTY * len(queues), config.INSPECT_WORKERS_MAX))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
         while True:
             for site, q in queues.items():
                 while q and site not in stopped and active[site] < config.INSPECT_WORKERS_PER_PROPERTY:

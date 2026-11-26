@@ -18,7 +18,8 @@ class AutopilotDefaultTest(unittest.TestCase):
         self.db.executescript(store.SCHEMA)
         self.applied = []
         for target, fake in (("_apply_one", lambda db, lk, wpc: (self.applied.append(lk["id"]) or True, "ok")),
-                             ("_log_change", lambda *a: None)):
+                             ("_log_change", lambda *a: None),
+                             ("_site_guard_check", lambda: "CLEAN")):      # never start the real guard from a test
             p = patch.object(links, target, side_effect=fake)
             p.start()
             self.addCleanup(p.stop)

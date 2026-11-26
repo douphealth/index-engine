@@ -124,14 +124,21 @@ def link_graph(db, site, urls):
     keys = {u.rstrip("/") for u in urls}
     counts = defaultdict(lambda: [set(), set()])
     out_of = defaultdict(set)
-    for r in db.execute("SELECT l.src, l.dst, l.in_content FROM links l JOIN urls u ON u.url=l.src "
-                        "JOIN audits a ON a.url=l.src AND a.status=200 AND a.hops=0 WHERE u.site=?", (site,)):
-        d = r["dst"].rstrip("/")
-        out_of[r["src"]].add(d)
-        if d in keys and r["src"].rstrip("/") != d:
-            counts[d][0].add(r["src"])
-            if r["in_content"]:
-                counts[d][1].add(r["src"])
+    # A site's links are hundreds of thousands of rows: start from its own URLs (indexed), read plain tuples.
+    cur = db.execute("SELECT l.src, l.dst, l.in_content FROM urls u JOIN audits a ON a.url=u.url AND a.status=200 AND a.hops=0 "
+                     "JOIN links l ON l.src=u.url WHERE u.site=?", (site,))
+    cur.row_factory = None
+    last, last_bare, outs = None, None, None
+    for src, dst, in_content in cur:
+        if src != last:
+            last, last_bare, outs = src, src.rstrip("/"), out_of[src]
+        d = dst.rstrip("/")
+        outs.add(d)
+        if d in keys and last_bare != d:
+            pair = counts[d]
+            pair[0].add(src)
+            if in_content:
+                pair[1].add(src)
     return {k: (len(a), len(c)) for k, (a, c) in counts.items()}, out_of
 
 
@@ -491,7 +498,8 @@ def manual_queue(db, site, rows, buckets, owner=None, gain=None):
         # Best odds first: a fixed problem, then never seen, then seen-not-crawled; a crawled page whose lastmod
         # moved goes last, because lastmod also moves on re-saves without real edits.
         odds = MANUAL_ORDER.index(b)
-        worth = -(gain[u] if u in gain else value_score(r))
+        # Rounded: the model's gains differ in their last digits from run to run, which must not reorder equal pages.
+        worth = -(round(gain[u], 6) if u in gain else value_score(r))
         if age is not None and age < 0.8:
             eligible.append((0, odds, worth, u))     # already on today's list: keep it there on re-runs
         elif age is None or age >= config.MANUAL_REQUEUE_DAYS:

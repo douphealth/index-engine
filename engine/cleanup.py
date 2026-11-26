@@ -31,10 +31,9 @@ import html as htmlmod
 import json
 import re
 import time
-import zlib
 from collections import Counter, defaultdict
 
-from . import alerts, config, store
+from . import alerts, config, memo, store
 from .links import _log_change, _site_guard_check, locate, purge
 from .recovery import GENERIC, LEFTOVERS, NUMBERED_MIN_WORDS, NUMBERED_RUN, _shape
 from .util import get, log, now_iso
@@ -111,12 +110,34 @@ def sections(raw):
 
 
 def _shingles(text):
+    """Every run of SHINGLE consecutive words (a shorter text is one shingle), as a set."""
     w = re.findall(r"[a-z0-9]+", text.lower())
-    return {" ".join(w[i:i + SHINGLE]) for i in range(max(1, len(w) - SHINGLE + 1))} if w else set()
+    if len(w) <= SHINGLE:
+        return {tuple(w)} if w else set()
+    return set(zip(*(w[i:] for i in range(SHINGLE))))
 
 
 def _similar(a, b):
     return len(a & b) / max(1, min(len(a), len(b))) if a and b else 0.0
+
+
+def _repeated(mine, others):
+    """Is this section's text near-identical on at least BOILER_MIN_POSTS posts? Stops counting once it is."""
+    n = 0
+    for other in others:
+        if _similar(mine, other) >= BOILER_SIMILAR:
+            n += 1
+            if n >= BOILER_MIN_POSTS:
+                return True
+    return False
+
+
+def _section_shingles(sec):
+    """The shingles of a section's text, computed once per section however often it is compared."""
+    sh = sec.get("_shingles")
+    if sh is None:
+        sh = sec["_shingles"] = _shingles(_text(sec["body"]))
+    return sh
 
 
 def _cuttable(sec):
@@ -128,10 +149,11 @@ def _cuttable(sec):
     return True, words
 
 
-def find_cuts(raw, boiler=None):
+def find_cuts(raw, boiler=None, secs=None):
     """Sections of one post to cut, each {heading, kind, words, excerpt}. boiler: {normalized heading: [shingle sets]} of
-    section texts repeated across the site (see boilerplate_index)."""
-    secs = sections(raw)
+    section texts repeated across the site (see boilerplate_index). secs: this post's sections(raw) when the caller has
+    them already (a site scan parses each post once)."""
+    secs = sections(raw) if secs is None else secs
     shapes = Counter(_shape(s["heading"]) for s in secs if re.search(r"\d", s["heading"]))
     template = {sh for sh, n in shapes.items() if n >= NUMBERED_RUN and len(re.findall(r"[a-z]+", sh)) >= NUMBERED_MIN_WORDS}
     cuts, taken = [], []
@@ -146,8 +168,8 @@ def find_cuts(raw, boiler=None):
         elif boiler:
             key = _norm_heading(sec["heading"])
             if key in boiler and key not in GENERIC:
-                mine = _shingles(_text(sec["body"]))
-                if len(mine) >= 3 and sum(1 for other in boiler[key] if _similar(mine, other) >= BOILER_SIMILAR) >= BOILER_MIN_POSTS:
+                mine = _section_shingles(sec)
+                if len(mine) >= 3 and _repeated(mine, boiler[key]):
                     kind = "boilerplate"
         if not kind:
             continue
@@ -160,17 +182,18 @@ def find_cuts(raw, boiler=None):
     return cuts
 
 
-def boilerplate_index(posts):
-    """{normalized heading: [shingle set of the section text, one per post]} for headings on BOILER_MIN_POSTS+ posts."""
+def boilerplate_index(posts, parsed=None):
+    """{normalized heading: [shingle set of the section text, one per post]} for headings on BOILER_MIN_POSTS+ posts.
+    parsed: the posts' sections, in the same order, when the caller has parsed them already."""
     by = defaultdict(list)
-    for raw in posts:
+    for secs in (parsed if parsed is not None else map(sections, posts)):
         seen = set()
-        for sec in sections(raw):
+        for sec in secs:
             key = _norm_heading(sec["heading"])
             if key in seen or key in GENERIC or len(re.findall(r"[^\W\d_]{3,}", key)) < 2:
                 continue
             seen.add(key)
-            by[key].append(_shingles(_text(sec["body"])))
+            by[key].append(_section_shingles(sec))
     return {k: v for k, v in by.items() if len(v) >= BOILER_MIN_POSTS}
 
 
@@ -178,12 +201,20 @@ def cleanup_id(url):
     return hashlib.sha1(f"cleanup|{url}".encode()).hexdigest()[:16]
 
 
-def _corpus(db, site):
-    for r in db.execute("SELECT url, raw FROM link_corpus WHERE site=?", (site,)):
-        try:
-            yield r["url"], zlib.decompress(r["raw"]).decode("utf-8", "replace")
-        except (zlib.error, TypeError):
-            continue
+SITE_CUTS_VERSION = "site-cuts-1"     # change it whenever what find_cuts decides changes: cached site scans are redone
+
+
+def site_cuts(posts):
+    """[[url, cuts]] for every post of one site that has something to cut. posts: {url: raw content}. Each post is parsed
+    once; the result depends only on the posts, so engine/memo.py keeps it until one of them changes."""
+    parsed = {url: sections(raw) for url, raw in posts.items()}
+    boiler = boilerplate_index(None, parsed.values())
+    out = []
+    for url, raw in posts.items():
+        cuts = find_cuts(raw, boiler, parsed[url])
+        if cuts:
+            out.append([url, cuts])
+    return out
 
 
 def propose(db, results, sites):
@@ -191,19 +222,15 @@ def propose(db, results, sites):
     left out (blocked or ignored by the owner) are skipped. Returns the list for the dashboard."""
     out = []
     for site in sites:
-        posts = dict(_corpus(db, site))
-        if not posts:
+        found = memo.per_site(db, site, "site_cuts", SITE_CUTS_VERSION, site_cuts)
+        if not found:
             continue
         buckets = (results.get(site) or {}).get("buckets") or {}
         titles = {r[0]: r[1] for r in db.execute("SELECT a.url, a.title FROM audits a JOIN urls u ON u.url=a.url WHERE u.site=?", (site,))}
-        boiler = boilerplate_index(posts.values())
         n = 0
-        for url, raw in posts.items():
+        for url, cuts in found:
             b = buckets.get(url)
             if b and "IGNORED" in b[1]:
-                continue
-            cuts = find_cuts(raw, boiler)
-            if not cuts:
                 continue
             n += 1
             out.append({"id": cleanup_id(url), "site": site, "url": url, "title": titles.get(url) or "",

@@ -5,6 +5,7 @@ import json
 import re
 import sys
 import threading
+import time
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -57,6 +58,40 @@ def log(msg=""):
         if _log_fh:
             _log_fh.write(msg + "\n")
             _log_fh.flush()
+
+
+# ---------------------------------------------------------------- where a run's time goes
+
+_stages = []
+
+
+class stage:
+    """with stage("audit"): ...   records how long that part of a run took; stage_report() says where the time went."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def __enter__(self):
+        self.t0 = time.time()
+        return self
+
+    def __exit__(self, *exc):
+        _stages.append((self.name, time.time() - self.t0))
+        return False
+
+
+def _span(seconds):
+    return f"{seconds:.0f} s" if seconds < 90 else f"{seconds / 60:.1f} min"
+
+
+def stage_report(reset=True):
+    """One log line: the run's stages, slowest first, with each one's time (stages under a second are left out)."""
+    total = sum(s for _, s in _stages)
+    parts = [f"{name} {_span(s)}" for name, s in sorted(_stages, key=lambda x: -x[1]) if s >= 1]
+    line = f"[time] {_span(total)} in all" + (": " + ", ".join(parts) if parts else "")
+    if reset:
+        _stages.clear()
+    return line
 
 
 # ---------------------------------------------------------------- credentials
