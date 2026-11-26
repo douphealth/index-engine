@@ -1,0 +1,5 @@
+# Only for the tests and CI. The engine itself runs on requirements.txt alone, and a test that needs one of these is
+# skipped where it is not installed, so the engine's self-update (which runs the tests on this PC) never depends on them.
+scikit-learn>=1.5      # the reference for engine/related.py: tests/test_related.py checks every number against it
+hypothesis>=6.100      # generated inputs for the rules of the link writer: tests/test_properties.py
+ruff>=0.9              # lint for real mistakes only (undefined names, unused imports): ruff check --select F

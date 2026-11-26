@@ -224,7 +224,8 @@ def page_names(url, title, h1=None):
 
 # How much a source on the target's own subject outranks an unrelated one (see relatedness). A source's strength spans
 # about 2 to 8 (indexed, plus the log of its clicks): a page whose name shares a third of the target's topic words is
-# preferred over an unrelated page with several times its clicks, and a very strong page still wins.
+# preferred over an unrelated page with several times its clicks, and a very strong page still wins. Where the engine
+# has the posts' text, the names are only part of it: what the two posts say is compared too (engine/related.py).
 RELATED_WEIGHT = 6.0
 # Filler words a title phrase may drop from its start, but that belong to the name where the text says them too
 # ("New Balance ...", "best time to run"). Function words ("the", "it", "to") never start an anchor.
@@ -499,6 +500,7 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
     titles, headings = {}, {}
     for r in db.execute("SELECT url, title, h1 FROM audits"):
         titles[r["url"]], headings[r["url"]] = r["title"] or "", r["h1"] or ""
+    from . import related as subject                # imported here: related.py reads this module's tokens()
     from . import results as measured
     learned = measured.calibration(db)              # what the engine's own measured links say about each kind
     link_gain = {u: g * learned["index"] for u, g in link_gain.items()}
@@ -523,6 +525,7 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
             log(f"[links] {site}: could not read post content ({str(e)[:120]}); using the stored copy")
             changed = 0
         texts = corpus(db, site)
+        text = subject.site_index(db, site)              # what each post says, to tell who is on whose subject
         names = {u: page_names(u, titles.get(u), headings.get(u)) for u in buckets}
         df = defaultdict(int)
         for chunks, _slug in names.values():
@@ -578,6 +581,8 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
                 t = keys[key]
                 if src in strength and t != src and not links_to(raw, t):
                     related = relatedness(topic.get(t, set()), topic.get(src, set()), df, len(buckets))
+                    if text is not None and t in text:
+                        related = subject.blend(related, text.cosine(t, src))
                     hits[t].append((len(key) + strength[src] + RELATED_WEIGHT * related, key, src, s, e))
         stock = {k for k, n in used.items() if n > max(3, STOCK_SHARE * len(texts))}
         per_source, made, paired = defaultdict(int), 0, set()
@@ -605,6 +610,9 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
                         a, b, context = longer
                 both = sorted(topic.get(t, set()) & topic.get(src, set()), key=lambda w: (df.get(w, 0), w))[:3]
                 same = f" The linking page is on the same subject (both are about {', '.join(both)})." if both else ""
+                if not both and text is not None and text.cosine(t, src) >= subject.SAME_SUBJECT:
+                    said = text.shared(t, src)
+                    same = f" The linking page covers the same subject in its text (both write about {', '.join(said)})."
                 out.append({"id": link_id(src, t), "site": site, "source": src, "source_title": titles.get(src, ""),
                             "target": t, "target_title": titles.get(t, ""), "anchor": raw[a:b], "context": context,
                             "score": round(rank, 2), "gain": round(gains.get(t, 0), 4), "why": (why.get(key) or "") + same})

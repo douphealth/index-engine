@@ -23,6 +23,8 @@ Index-Engine-*.json
 
 # Tooling
 .venv/
+.hypothesis/
+.ruff_cache/
 dashboard/node_modules/
 dashboard/.wrangler/
 dashboard/dist/

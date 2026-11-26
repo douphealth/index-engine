@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from engine import store, update
-from engine.util import now_iso
 
 GIT = update.git_exe()
 

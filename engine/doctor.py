@@ -5,11 +5,9 @@ Checks are performed by the existing local engine, not by a public Cloudflare Wo
 A configured file is NOT proof of authorization. All errors are categorical so secrets
 and remote response bodies cannot enter logs, GitHub or KV.
 """
-import json
-from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import bing, config, google, indexnow, store, wp
+from . import bing, config, google, indexnow, wp
 from .dashboard import Dashboard
 from .util import load_credentials, now_iso
 

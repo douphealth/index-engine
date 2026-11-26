@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from engine import alerts, revival, store, traffic
+from engine import revival, store, traffic
 
 TODAY = dt.date(2026, 10, 28)
 

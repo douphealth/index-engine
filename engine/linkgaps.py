@@ -8,11 +8,15 @@ names up to three indexed (or Bing-earning) pages on the same subject that do no
 It works for every site, WordPress or not: it reads the links the audit already recorded and fetches nothing. It
 changes nothing either. On WordPress sites the link autopilot (engine/links.py) goes further and proposes the exact
 words to link; this list is the wider net, and the only one for sites the engine cannot edit.
+
+"On the same subject" is judged by the pages' names (title and main heading) and, on the sites whose posts the engine
+keeps, by what the posts say as well (engine/related.py): a page that covers the subject under a differently worded
+title is found, and of several pages sharing a title word the one that really is about it comes first.
 """
 from collections import defaultdict
 from urllib.parse import urlsplit
 
-from . import links
+from . import links, related
 from .triage import BLOCKERS
 
 WANTED = ("UNKNOWN_TO_GOOGLE", "DISCOVERED_NOT_INDEXED", "CRAWLED_NOT_INDEXED")
@@ -20,6 +24,13 @@ TOP_ITEMS = 60              # pages listed per site, most valuable first
 MAX_SOURCES = 3             # suggested linking pages per target
 MAX_PER_SOURCE = 4          # times one page is suggested as a source within a site's list (a page cannot link to everything)
 MIN_RELATED = 0.15          # a suggested page must share this much of the target's subject (links.relatedness)
+# Where the posts' text is known, a suggested page must be one of the NEAR trusted pages closest to the target in
+# what it says, and closer than nine in ten pairs of the site's pages are (related.Index.high). A shared title word is
+# then no longer enough: "trainer" tied a page about waist trainers to three running-shoe reviews. The mixed score
+# (related.blend) must also reach MIN_RELATED_TEXT: below it, the suggestions read on 26 Nov 2026 were mostly pages that
+# share a template or a turn of phrase, not a subject.
+NEAR = 20
+MIN_RELATED_TEXT = 0.25
 # A word says what a page is about only while few pages have it: at most a quarter of the site's pages (three pages
 # on a very small site), and never more than this many. On a large generated site, parts of a reference number ("ocds", "h6vhtk") sit in hundreds of
 # titles and would otherwise make unrelated pages look related.
@@ -72,13 +83,21 @@ def analyze(db, site, buckets):
             by_word[w].add(u)
     suggested = defaultdict(int)
     need = 2 if len(buckets) >= LARGE_SITE else 1
+    text = related.site_index(db, site)
     for t in gaps[:TOP_ITEMS]:
         mine = topic.get(t, set())
         scored = []
-        for s in {s for w in mine for s in by_word.get(w, ())} - inbound[t] - {t}:
-            rel = links.relatedness(mine, topic[s], df, len(buckets))
-            if rel >= MIN_RELATED and len(mine & topic[s]) >= need:
-                scored.append((-rel, s))
+        read = text is not None and t in text            # the target's text is known: compare what the pages say
+        if read:
+            for alike, s in text.nearest(t, among=trusted, k=NEAR):
+                rel = related.blend(links.relatedness(mine, topic[s], df, len(buckets)), alike)
+                if alike > text.high() and rel >= MIN_RELATED_TEXT and s not in inbound[t]:
+                    scored.append((-rel, s))
+        else:
+            for s in {s for w in mine for s in by_word.get(w, ())} - inbound[t] - {t}:
+                rel = links.relatedness(mine, topic[s], df, len(buckets))
+                if rel >= MIN_RELATED and len(mine & topic[s]) >= need:
+                    scored.append((-rel, s))
         sources = []
         for neg, s in sorted(scored):
             if len(sources) >= MAX_SOURCES:
@@ -86,7 +105,7 @@ def analyze(db, site, buckets):
             if suggested[s] >= MAX_PER_SOURCE:
                 continue
             suggested[s] += 1
-            shared = sorted(mine & topic[s], key=lambda w: (df.get(w, 0), w))[:3]
+            shared = text.shared(t, s) if read else sorted(mine & topic[s], key=lambda w: (df.get(w, 0), w))[:3]
             sources.append({"url": s, "title": (info[s]["title"] if s in info else "") or "", "shared": shared,
                             "related": round(-neg, 2)})
         out["items"].append({"url": t, "title": (info[t]["title"] or "") if t in info else "", "bucket": buckets[t][0],

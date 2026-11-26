@@ -494,7 +494,7 @@ def main():
     check(("/good-indexed/", "/good-discovered/") in plan, "link plan: indexed related page suggested as source")
     check(("/good-indexed/", "/good-crawled/") not in plan, "link plan skips links that already exist")
     # Owner decisions pulled from the dashboard
-    from . import dashboard, publish
+    from . import publish
     dashboard.apply_state(db, {"settings": {}, "url_state": [
         {"url": base + "/good-unknown/", "site": base, "ignored": 1, "requested_at": None},
         {"url": base + "/good-crawled/", "site": base, "ignored": 0, "requested_at": util.now_iso()}]})

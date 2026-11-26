@@ -11,7 +11,6 @@ change by what is behind it, so effort goes where it can work:
 
 Everything is an association measured on the engines' own data. It does not say WHY a page lost clicks.
 """
-import datetime as dt
 
 import requests
 
