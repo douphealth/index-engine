@@ -6,7 +6,7 @@ Finds every URL your sites publish and works out why each one is or isn't indexe
 
 The dashboard is built as a Cloudflare Pages app (`dashboard/functions`, `dashboard/public`). In production it runs as a **Worker with static assets**, because the Cloudflare account is at its 100 Pages-project limit. It is the same code: `wrangler pages functions build` compiles `functions/` into one Worker (`dashboard/wrangler.worker.jsonc`), with `run_worker_first` so the password check runs before any file is served. If a Pages slot frees up, `npm run deploy:pages` deploys it to Pages unchanged.
 
-**Adding a website:** Settings → Websites → type the domain(s) → Add. No code change: the PC adds it to its site list on the next tick and the first full run discovers every URL. For full data, also add the engine's Google service account as a user of the site's Search Console property, and add the site to Bing Webmaster Tools. Link and cleanup work needs a WordPress login on the PC (`engine/wp.py`).
+**Adding a website:** Settings → Websites → type the domain(s) → Add. No code change: the PC adds it to its site list on the next tick and the first full run discovers every URL. That run also gives the site Google and Bing access by itself when its DNS is on a Cloudflare account the engine has a DNS token for (see [Automatic onboarding](#automatic-onboarding-of-a-new-site)); otherwise add the service account to the Search Console property and the site to Bing Webmaster Tools by hand, and the dashboard's setup to-do says what the engine found missing. Link and cleanup work needs a WordPress login on the PC (`engine/wp.py`).
 
 ## How it fits together
 
@@ -153,6 +153,7 @@ python D:\Claude\SEO-Setup\index-engine\indexengine.py tick
 | `publish` | Re-uploads the latest results to the dashboard without crawling |
 | `status` | One line per site from the last run |
 | `update` | Check `origin/main` now and adopt it if it passes the tests on this PC |
+| `onboard` | Give every site without Google or Bing access that access now (`--site`, `--dry-run` only checks, `--force` ignores the 6-hour retry wait). A normal `run` does this at its start; `--no-submit` and `--no-onboard` runs do not |
 | `selftest` | Offline end-to-end test: a fake site plus fake Google, Bing, IndexNow and a WebSub hub (129 checks); runs in GitHub Actions on every push |
 
 ## The dashboard (`dashboard/`)
@@ -285,6 +286,21 @@ It reads `D:\Claude\SEO-Setup\GSC-Bing.txt`, the same file `export_gsc_bing.py` 
 - **Bing key:** the Bing Webmaster Tools API key. The file holds two key-shaped values, and on 23 Oct 2026 the first one was stale (`InvalidApiKey`). The app tests each candidate and uses the one Bing accepts.
 
 Without credentials the app still discovers, audits, submits through IndexNow where a key file exists, and reports.
+
+## Automatic onboarding of a new site
+
+Until 27 Nov 2026 each new site needed browser work in two accounts (11 sites took about an hour on 25 Nov). `engine/onboard.py` now does it at the start of every submitting run, for each site the engine has no Google property or no verified Bing site for:
+
+- **Google:** the service account gets a DNS token from Google's Site Verification API, writes it as a TXT record at the domain, becomes a verified owner of the Domain property and adds `sc-domain:<domain>` to its Search Console list. Accounts listed in `onboarding.json` as `"google_owners"` are made owners too, so the property shows in their Search Console.
+- **Bing:** the site is added to the Bing account the engine's key belongs to and verified with that account's DNS record (a CNAME named after the account's `msvalidate.01` code, pointing at `verify.bing.com`). The code is read from sites the account already holds, or from `onboarding.json` as `"bing_code"`.
+
+Each step checks before it writes, so a run that stops half-way is finished by a later one. A record Google or Bing cannot see yet is "waiting" and is retried after 6 hours; something missing is said in one log line and on the site's dashboard setup to-do.
+
+It needs, once:
+- **Google's Site Verification API** switched on in the service account's Google Cloud project (free).
+- **A Cloudflare token with Zone Read and DNS Write** on the account that holds the domain. Tokens are read from `D:\Claude\SEO-Setup\Index-Engine-Cloudflare-DNS-Token.txt`, `Cloudflare_API-Token.txt` and the cache-purge token file (or `INDEX_ENGINE_DNS_TOKEN_FILES`); every token is tried, and none is printed.
+
+A site whose DNS is not on Cloudflare (imagealchemy.app) still needs the manual steps.
 
 ## IndexNow setup for a site without a key file
 

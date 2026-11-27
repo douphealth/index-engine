@@ -40,6 +40,20 @@ class BingClient:
                           headers={"User-Agent": config.UA}, timeout=120)
         return r.status_code, r.text[:200]
 
+    def _post(self, method, body):
+        r = requests.post(BASE + method, params={"apikey": self.key}, json=body, headers={"User-Agent": config.UA}, timeout=90)
+        if r.status_code != 200:
+            raise RuntimeError(f"{method} HTTP {r.status_code}: {r.text[:160]}")
+        return r.json().get("d")
+
+    def add_site(self, site_url):
+        """AddSite: adds the site to this key's Bing account (no error when it is already there)."""
+        return self._post("AddSite", {"siteUrl": site_url})
+
+    def verify_site(self, site_url):
+        """VerifySite: True once Bing finds the account's verification (here: its DNS CNAME)."""
+        return bool(self._post("VerifySite", {"siteUrl": site_url}))
+
     def feeds(self, site_url):
         """Sitemaps and feeds registered for the site (GetFeeds)."""
         return self._get("GetFeeds", siteUrl=site_url) or []

@@ -126,6 +126,15 @@ def engines(args, db, sites):
         f"Bing key {'valid' if bclient else 'not found or rejected' if bing_keys else 'not found'}")
     props = google.resolve_properties(db, gclient, sites) if gclient else {}
     bsites = bing.resolve_sites(db, bclient, sites) if bclient else {}
+    if not (args.no_creds or getattr(args, "no_submit", False) or getattr(args, "no_onboard", False)):
+        # A site without Google or Bing access is given it here (engine/onboard.py), then resolved again.
+        from engine import onboard
+        got_g, got_b = onboard.run(db, sites, sa=sa if gclient else None, bclient=bclient, props=props, bsites=bsites,
+                                   dry_run=args.dry_run)
+        if got_g and not args.dry_run:
+            props.update(google.resolve_properties(db, gclient, list(got_g)))
+        if got_b and not args.dry_run:
+            bsites.update(bing.resolve_sites(db, bclient, list(got_b)))
     return gclient, bclient, props, bsites
 
 
@@ -522,9 +531,36 @@ def print_status(db, sites):
             f"{b.get('NOT_INSPECTED', 0) + b.get('NOT_CHECKED', 0):8d} {d.get('conflicts', 0):8d} {d.get('excluded', 0):8d}")
 
 
+def onboard_cmd(args):
+    """Give the sites (or --site) Google and Bing access now; --dry-run only checks what would happen."""
+    from engine import onboard
+    open_log("onboard")
+    db = store.connect()
+    register_sites(cached_settings(db))
+    sites = args.site or config.SITES
+    sa, keys = load_credentials()
+    gclient = google.GSCClient(sa) if sa else None
+    bclient = bing.working_client(keys) if keys else None
+    with RunLock():
+        props = google.resolve_properties(db, gclient, sites) if gclient else {}
+        bsites = bing.resolve_sites(db, bclient, sites) if bclient else {}
+        got_g, got_b = onboard.run(db, sites, sa=sa, bclient=bclient, props=props, bsites=bsites, dry_run=args.dry_run,
+                                   force=args.force)
+        if got_g and not args.dry_run:
+            google.resolve_properties(db, gclient, list(got_g))
+        if got_b and not args.dry_run:
+            bing.resolve_sites(db, bclient, list(got_b))
+    db.commit()
+    no_g = [s for s in sites if s not in props and s not in got_g]
+    no_b = [s for s in sites if s not in bsites and s not in got_b]
+    log(f"Onboarding: {len(props)} of {len(sites)} sites already had Google access and {len(bsites)} Bing; "
+        f"{'would set up' if args.dry_run else 'set up'} {len(got_g)} Google and {len(got_b)} Bing; "
+        f"still without Google: {len(no_g)}, without Bing: {len(no_b)}")
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["run", "tick", "publish", "status", "seed", "selftest", "doctor", "update"])
+    ap.add_argument("command", choices=["run", "tick", "publish", "status", "seed", "selftest", "doctor", "update", "onboard"])
     ap.add_argument("--site", action="append", help="limit to a site (repeatable)")
     ap.add_argument("--dry-run", action="store_true", help="decide everything, submit and change nothing")
     ap.add_argument("--no-submit", action="store_true", help="skip the submission stage")
@@ -534,6 +570,8 @@ def build_parser():
     ap.add_argument("--no-wp", action="store_true", help="do not query the WordPress REST API")
     ap.add_argument("--no-links", action="store_true", help="no link proposals and no link changes")
     ap.add_argument("--no-dashboard", action="store_true", help="do not sync with the online dashboard")
+    ap.add_argument("--no-onboard", action="store_true", help="do not give new sites Google/Bing access automatically")
+    ap.add_argument("--force", action="store_true", help="onboard: try now even if a site was tried in the last hours")
     ap.add_argument("--no-update", action="store_true", help="tick: do not update the engine code from origin/main")
     ap.add_argument("--both", action="store_true", help="use the Bing API even where IndexNow works")
     ap.add_argument("--include-taxonomy", action="store_true", help="also inspect/submit category, tag and author archives")
@@ -570,6 +608,8 @@ def main():
             with RunLock():
                 print(f"Self-update: {update.Updater().check(db, force=True)}")
             db.commit()
+        elif args.command == "onboard":
+            onboard_cmd(args)
         elif args.command == "status":
             print_status(store.connect(), args.site or config.SITES)
         elif args.command == "seed":

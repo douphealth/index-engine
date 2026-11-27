@@ -22,6 +22,12 @@ LOCK_FILE = OUT / "run.lock"
 LOCK_STALE_HOURS = 4
 # Optional: {"example.com": {"key": "...", "keyLocation": "https://example.com/<key>.txt"}}
 INDEXNOW_KEYS_FILE = APP_DIR / "indexnow_keys.json"
+# Automatic onboarding (engine/onboard.py): Cloudflare tokens that may write DNS, read in this order (missing files are
+# skipped), and local settings (owners to add in Search Console, the Bing account code). Neither is in git.
+DNS_TOKEN_FILES = [Path(p) for p in os.environ.get("INDEX_ENGINE_DNS_TOKEN_FILES", "").split(os.pathsep) if p] or [
+    PORTFOLIO / "Index-Engine-Cloudflare-DNS-Token.txt", PORTFOLIO / "Cloudflare_API-Token.txt", CF_TOKEN_FILE]
+ONBOARDING_FILE = APP_DIR / "onboarding.json"
+ONBOARD_RETRY_HOURS = 6         # a site that could not be onboarded is tried again after this long
 
 SITES = [
     "gearuptofit.com",

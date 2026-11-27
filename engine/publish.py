@@ -45,6 +45,7 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             "site": site, "urls": snap["total"], "counts": dict(res["counts"]), "conflicts": snap.get("conflicts", 0),
             "excluded": snap.get("excluded", 0), "bing_earners": snap["bing_earners"], "indexnow": meta.get("indexnow"),
             "gsc_property": meta.get("gsc_property"), "bing_site": meta.get("bing_site"), "submitted_total": n_sub,
+            "onboarding": meta.get("onboarding"),
             "disabled": site in disabled, "wp": bool(meta.get("wp")),
             "traffic": {k: v for k, v in (res.get("traffic") or {}).items() if k != "series"},
             "bing_health": res.get("health"), "data_health": res.get("data_health"),

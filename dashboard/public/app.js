@@ -465,15 +465,23 @@ function priorities() {
     add({ tier: 2, site, title: `${plural(as.length, "warning")} on ${site}`, why: as[0].message, cta: "Open alerts", href: "#/alerts" });
   }
   for (const s of live) {
+    // The engine sets both up by itself where the site's DNS is on Cloudflare (engine/onboard.py); these to-dos stay
+    // only while it cannot, and say what it found missing.
+    const tried = (engine) => {
+      const o = (s.onboarding || {})[engine];
+      return o && o.state !== "done" ? ` The engine tried ${rel(o.at)}: ${o.note}.` : "";
+    };
     if (!s.gsc_property) {
       add({ tier: 2, site: s.site, title: `Add ${s.site} to Google Search Console`, minutes: 10, cta: "Open Search Console",
         href: "https://search.google.com/search-console/welcome",
-        why: "Without it the engine cannot see what Google thinks of these pages or submit the sitemap. Verify the domain, then add the engine's " +
+        why: "Without it the engine cannot see what Google thinks of these pages or submit the sitemap. The engine does this itself when the " +
+          "domain's DNS is on a Cloudflare account it has a DNS token for." + tried("google") + " By hand: verify the domain, then add the engine's " +
           "service account (client_email in its Google credential file) under Settings → Users and permissions, with Full access." });
     }
     if (!s.bing_site) {
       add({ tier: 2, site: s.site, title: `Add ${s.site} to Bing Webmaster Tools`, minutes: 5, cta: "Open Bing", href: "https://www.bing.com/webmasters",
-        why: "Import it from Search Console (fastest). IndexNow submissions already work without it, but Bing clicks and crawl data need it." });
+        why: "The engine adds and verifies it itself when the domain's DNS is on a Cloudflare account it has a DNS token for." + tried("bing") +
+          " By hand: import it from Search Console. IndexNow submissions already work without it, but Bing clicks and crawl data need it." });
     }
   }
   for (const f of S.st.fixes.filter((x) => x.status === "open")) {

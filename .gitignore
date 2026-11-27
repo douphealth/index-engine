@@ -5,6 +5,7 @@ fixes/backup_*.json
 
 # Secrets and local connection files (credentials live in D:\Claude\SEO-Setup, never in this repo)
 indexnow_keys.json
+onboarding.json
 *.local.json
 dashboard/.dev.vars
 .env
