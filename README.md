@@ -173,9 +173,9 @@ checks that the menu reaches every page the app can draw.
 | Revival | Per-site traffic verdicts with confidence (Bing and Google), a daily-clicks chart, where the lost clicks went by kind of page, Bing's crawl report and its findings, and the pages to recover first with a specific next step for each |
 | Plan | What decides indexing on your sites (the model's drivers and accuracy) and every action ranked by expected gain, with one-click handling |
 | Links | The internal-link approval queue: each proposal shows the anchor highlighted in its sentence. Approve, reject, cancel or undo |
-| Alerts | Regressions and Google gains and drops, with acknowledge |
+| Alerts | Regressions and Google gains and drops, with acknowledge. A page with clicks or in Google's index that stops being indexable gets its own high alert; pages that earned nothing are grouped into one alert per site and run, raised to high when they reach a fifth of the site's indexable pages (and at least 20) at once, which looks like a theme or plugin switch rather than a cleanup. Content that shrinks after the engine's own cleanup raises nothing |
 | Site | Diagnosis, filterable URL table (by state, flag or search), why each page isn't indexed and what to do. Per URL you can open the page, inspect it in Search Console, **ignore** it (never submitted, off the work lists) or add a note. Also lists the internal links to add |
-| Requests | Today's "Request indexing" list with direct Search Console links. Mark each one **done**; it stays off the list for 14 days |
+| Requests | Today's "Request indexing" list with direct Search Console links: one list for all sites, 10 pages by default (Settings), each site's best page in turn. Sites Google has demoted as a whole and pages waiting for a scaffolding cleanup are left out. Mark each one **done**; it stays off the list for 14 days |
 | Fixes | Open fixes with the exact command or wp-admin step. Mark them done or skipped |
 | Runs | Queue, history with totals, and the last run's log |
 | Settings | Enable or disable sites, **pause everything that changes something** (submissions and link edits), daily run time, request-list size, and an inspection cap |
@@ -253,7 +253,7 @@ The first run fetches every page (about 4,000 URLs across the 10 sites on 23 Oct
 | `fix_technical.csv` | Blocked URLs (4xx/5xx, redirects in sitemaps, `noindex`, robots, canonical elsewhere, missing from sitemap). The only bucket a fix is guaranteed to clear |
 | `google_not_indexed.csv` | Indexable pages Google declines, with the reason and what would change it |
 | `internal_link_plan.csv` | For each stuck page: up to 3 related pages Google already indexes, or that earn Bing clicks, that should link to it |
-| `request_indexing_today.csv` | Up to 10 URLs per site for the Search Console button, with direct links |
+| `request_indexing_today.csv` | Today's list for the Search Console button (10 URLs across all sites by default), with direct links |
 | `near_duplicates.csv` | Pairs whose main text overlaps by 50% or more |
 | `prune_plan.csv` | One decision per indexable page (keep, fix, merge, redirect, noindex, review), with the evidence and the target for merges and redirects |
 | `urls.csv` | Every URL with bucket, flags, reason, action and value score |

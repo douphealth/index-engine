@@ -7,6 +7,7 @@ const VALIDATE = {
   sites_disabled: (v) => Array.isArray(v) && v.length <= 50 && v.every((s) => SITE_RE.test(s)),
   submit_paused: (v) => typeof v === "boolean",
   manual_queue_per_site: (v) => Number.isInteger(v) && v >= 0 && v <= 50,
+  manual_queue_total: (v) => Number.isInteger(v) && v >= 0 && v <= 50,
   inspect_max_per_site: (v) => v === null || (Number.isInteger(v) && v >= 0 && v <= 2000),
   daily_run_time: (v) => typeof v === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(v),
   fresh_check: (v) => typeof v === "boolean",

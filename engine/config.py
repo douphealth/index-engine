@@ -129,7 +129,8 @@ INTENTIONAL_OUT_OF_SITEMAP = {
 DELIBERATE_REDIRECT_SITES = {"gearuptofit.com"}
 
 # Manual "Request indexing" in the Search Console UI has no API and a small daily cap per property.
-MANUAL_QUEUE_PER_SITE = 10
+MANUAL_QUEUE_PER_SITE = 10       # Search Console's own limit is about 10 manual requests a day per property
+MANUAL_QUEUE_TOTAL = 10          # across all sites: the owner's daily list (dashboard setting manual_queue_total)
 MANUAL_REQUEUE_DAYS = 14
 
 

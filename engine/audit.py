@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 import time
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -407,6 +407,41 @@ def _why_blocked(rec):
     return "blocked by robots.txt"
 
 
+def _path(url):
+    p = urlsplit(url)
+    return (p.path or "/") + (f"?{p.query}" if p.query else "")
+
+
+def _group_message(lead, tail, reasons=True):
+    def render(items, n):
+        whys = Counter(i["detail"] for i in items)
+        why = (" (" + ", ".join(f"{c} {w}" for w, c in whys.most_common(3)) + (", other reasons" if len(whys) > 3 else "") + ")"
+               if reasons else "")
+        shown = ", ".join(_path(i["url"]) for i in items[:3])
+        more = f" and {n - 3} more" if n > 3 else ""
+        return f"{n} page{'s' if n != 1 else ''} {lead}{why}: {shown}{more}. {tail}"
+    return render
+
+
+BLOCKED_GROUP = _group_message(
+    "that earned no clicks and were not in Google's index stopped being indexable",
+    "Usually a deliberate cleanup. If not, check the theme or SEO plugin settings; the Site page lists every page.")
+UNBLOCKED_GROUP = _group_message("became indexable again", "They go out with the next submission.", reasons=False)
+SITEWIDE_SHARE = 0.2        # a group reaching this share of a site's indexable pages (and at least 20) is raised to high
+
+
+def _site_indexable(db, site):
+    return db.execute("""SELECT COUNT(*) FROM audits a JOIN urls u ON u.url=a.url WHERE u.site=? AND a.status=200
+                         AND COALESCE(a.hops,0)=0 AND COALESCE(a.noindex,0)=0 AND COALESCE(a.canonical_state,'') != 'other'
+                         AND COALESCE(a.robots_google,1)=1""", (site,)).fetchone()[0]
+
+
+def _engine_cleaned(db, url, days=14):
+    """True when the engine's own cleanup changed this page recently: a shorter page is then the intended result."""
+    return db.execute("SELECT 1 FROM cleanup_ops WHERE url=? AND status='applied' AND julianday('now') - julianday(applied_at) < ?",
+                      (url, days)).fetchone() is not None
+
+
 def regressions(db, rec):
     """Compare a fresh fetch with the previous one and raise alerts for changes that matter."""
     prev = db.execute("SELECT status, hops, noindex, canonical_state, robots_google, words FROM audits WHERE url=?",
@@ -420,11 +455,21 @@ def regressions(db, rec):
         p = db.execute("SELECT COALESCE(bing_clicks,0)+COALESCE(gsc_clicks,0) AS c FROM perf WHERE url=?", (rec["url"],)).fetchone()
         g = db.execute("SELECT coverage FROM gsc WHERE url=?", (rec["url"],)).fetchone()
         valuable = (p and p["c"]) or (g and "indexed" in (g["coverage"] or "").lower() and "not" not in (g["coverage"] or "").lower())
-        alerts.add(db, site, rec["url"], "became_blocked", "high" if valuable else "warn",
-                   f"Was indexable, now {_why_blocked(rec)}." + (" It earns clicks or is indexed." if valuable else ""))
+        if valuable:
+            alerts.add(db, site, rec["url"], "became_blocked", "high",
+                       f"Was indexable, now {_why_blocked(rec)}. It earns clicks or is indexed.")
+        else:
+            why = _why_blocked(rec)
+            why = why if not why.startswith(("redirecting to", "canonical pointing to")) else why.split(" to ")[0]
+            alerts.add_to_group(db, site, "pages_blocked", "warn", rec["url"], why, BLOCKED_GROUP)
+            n = alerts.group_size(db, site, "pages_blocked")
+            if n >= 20 and n >= SITEWIDE_SHARE * (_site_indexable(db, site) + n):
+                # So many at once looks site-wide (a theme or plugin switch), not a page-by-page cleanup.
+                db.execute("UPDATE alerts SET severity='high' WHERE site=? AND kind='pages_blocked' AND url IS NULL AND pushed=0",
+                           (site,))
     elif now and not was:
-        alerts.add(db, site, rec["url"], "unblocked", "good", "Indexable again (it was blocked at the previous check).")
-    if now and (prev["words"] or 0) >= 300 and (rec["words"] or 0) < 0.4 * prev["words"]:
+        alerts.add_to_group(db, site, "pages_unblocked", "good", rec["url"], "indexable", UNBLOCKED_GROUP)
+    if now and (prev["words"] or 0) >= 300 and (rec["words"] or 0) < 0.4 * prev["words"] and not _engine_cleaned(db, rec["url"]):
         alerts.add(db, site, rec["url"], "content_shrank", "warn",
                    f"Main content dropped from {prev['words']} to {rec['words']} words. Check for a broken template or a bad save.")
 

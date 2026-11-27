@@ -476,13 +476,58 @@ def run(db, sites, with_manual=True):
 def manual_queue(db, site, rows, buckets, owner=None, gain=None):
     """Today's short list for Search Console's 'Request indexing' button, where a request can help.
     gain: {url: expected gain from a request} from the odds model; it orders pages within each tier."""
+    eligible = manual_candidates(db, site, rows, buckets, owner, gain)
+    picked = [u for _, _, _, u in eligible[:config.MANUAL_QUEUE_PER_SITE]]
+    return _queue_manual(db, picked, rows, buckets)
+
+
+def _queue_manual(db, picked, rows, buckets):
+    by_url = {r["url"]: r for r in rows}
+    for u in picked:
+        db.execute("INSERT INTO manual_queue VALUES(?,?) ON CONFLICT(url) DO UPDATE SET queued_at="
+                   "CASE WHEN julianday('now') - julianday(manual_queue.queued_at) < 0.8 THEN manual_queue.queued_at "
+                   "ELSE excluded.queued_at END", (u, now_iso()))
+    return [{"url": u, "bucket": buckets[u][0], "value": value_score(by_url[u])} for u in picked]
+
+
+def manual_portfolio(db, results, gain=None, skip=()):
+    """One short list across every site, at most MANUAL_QUEUE_TOTAL in all and MANUAL_QUEUE_PER_SITE per site: each
+    site's best page in turn (best first: today's picks, then a fixed problem, never seen, seen-not-crawled), so one
+    site with many stale verdicts does not take every slot. Returns {site: [items]} for every site in results.
+
+    Search Console takes about 10 manual requests a day per property, but the owner is one person: a list of 10 per
+    site (220 a day over 22 sites) was never worked through (1,319 pages listed from 23 Oct to 27 Nov 2026, none
+    marked done). skip: sites left out, for example ones Google has demoted as a whole, where a request cannot help."""
+    pool = []
+    for site, res in results.items():
+        if site in skip:
+            continue
+        for rank, (sticky, odds, worth, url) in enumerate(manual_candidates(db, site, res["rows"], res["buckets"],
+                                                                            res.get("owner"), gain)):
+            pool.append(((sticky, rank, odds, worth, site), url, site))
+    pool.sort()
+    per_site, out, total = Counter(), {site: [] for site in results}, 0
+    for _, url, site in pool:
+        if total >= config.MANUAL_QUEUE_TOTAL:
+            break
+        if per_site[site] >= config.MANUAL_QUEUE_PER_SITE:
+            continue
+        per_site[site] += 1
+        total += 1
+        out[site].append(url)
+    return {site: _queue_manual(db, urls, results[site]["rows"], results[site]["buckets"]) if urls else []
+            for site, urls in out.items()}
+
+
+def manual_candidates(db, site, rows, buckets, owner=None, gain=None):
+    """Pages of one site where a manual request can help, best first, as (sticky, odds, worth, url); writes nothing."""
     owner = owner or {}
     gain = gain or {}
     by_url = {r["url"]: r for r in rows}
     eligible = []
     for u, (b, f) in buckets.items():
         r = by_url[u]
-        if "THIN" in f or "SOFT_404" in f or "NEAR_DUPLICATE" in f or "IGNORED" in f:
+        if "THIN" in f or "SOFT_404" in f or "NEAR_DUPLICATE" in f or "IGNORED" in f or "TEMPLATE_ARTIFACT" in f:
             continue                                  # a request cannot help until the page itself is fixed
         done = owner.get(u) and owner[u]["requested_at"]
         if done and (days_since(done) or 0) < config.MANUAL_REQUEUE_DAYS:
@@ -505,9 +550,4 @@ def manual_queue(db, site, rows, buckets, owner=None, gain=None):
         elif age is None or age >= config.MANUAL_REQUEUE_DAYS:
             eligible.append((1, odds, worth, u))
     eligible.sort()
-    picked = [u for _, _, _, u in eligible[:config.MANUAL_QUEUE_PER_SITE]]
-    for u in picked:
-        db.execute("INSERT INTO manual_queue VALUES(?,?) ON CONFLICT(url) DO UPDATE SET queued_at="
-                   "CASE WHEN julianday('now') - julianday(manual_queue.queued_at) < 0.8 THEN manual_queue.queued_at "
-                   "ELSE excluded.queued_at END", (u, now_iso()))
-    return [{"url": u, "bucket": buckets[u][0], "value": value_score(by_url[u])} for u in picked]
+    return eligible

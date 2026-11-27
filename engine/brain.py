@@ -12,7 +12,6 @@ def analyze(db, sites):
         res["opportunities"] = opportunities.analyze(db, site, res["buckets"], prior=prior)
         res["ai_access"] = aiaccess.summary(db, site)
         res["link_gaps"] = linkgaps.analyze(db, site, res["buckets"])
-        res["manual"] = triage.manual_queue(db, site, res["rows"], res["buckets"], res["owner"], gains["request"])
         res["traffic"] = traffic.site_traffic(db, site)
         res["health"] = traffic.bing_health(db, site)
         res["data_health"] = traffic.data_health(db, site)
@@ -26,6 +25,12 @@ def analyze(db, sites):
                 res["buckets"][url] = (bucket, list(flags) + ["TEMPLATE_ARTIFACT"])
                 db.execute("UPDATE triage SET flags = CASE WHEN flags = '' THEN 'TEMPLATE_ARTIFACT' ELSE flags || ',TEMPLATE_ARTIFACT' END "
                            "WHERE url=?", (url,))
+    # Google has demoted these sites as a whole: a manual request cannot help there, and the dashboard hides them.
+    demoted = {site for site, res in results.items()
+               if (res["recovery"].get("visibility") or {}).get("engine") == "google"
+               and (res["recovery"].get("visibility") or {}).get("state") in ("collapsed", "severe_drop")}
+    for site, items in triage.manual_portfolio(db, results, gains["request"], skip=demoted).items():
+        results[site]["manual"] = items
     db.commit()
     learned = measured.summary(db)
     learned["calibration"] = measured.calibration(db, learned)

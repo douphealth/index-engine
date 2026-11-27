@@ -283,6 +283,8 @@ def run(args, dash=None, state=None, trigger="manual"):
             args.no_submit = True
         if settings.get("manual_queue_per_site") is not None:
             config.MANUAL_QUEUE_PER_SITE = int(settings["manual_queue_per_site"])
+        if settings.get("manual_queue_total") is not None:
+            config.MANUAL_QUEUE_TOTAL = int(settings["manual_queue_total"])
         if args.inspect_max is None and settings.get("inspect_max_per_site") is not None:
             args.inspect_max = int(settings["inspect_max_per_site"])
         options = {k: v for k, v in (("site", ",".join(args.site or [])), ("no_submit", args.no_submit),

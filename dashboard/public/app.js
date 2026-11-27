@@ -449,15 +449,15 @@ function priorities() {
       why: `They point at ${plural(Object.keys(perTarget).length, "page")} Google has not indexed, from pages it already indexes. ` +
         "The anchor text is already on your page. Your PC adds approved links within 10 minutes." });
   }
+  // One item for the whole portfolio: the engine already picked today's best pages across all sites.
   const rate = requestRate();
-  const perDay = setting("manual_queue_per_site", 10) || 10;
-  for (const [site, rs] of Object.entries(bySite(openRequests().filter((r) => liveSet.has(r.site) && !recovering.has(r.site))))) {
-    const today = rs.slice(0, perDay);
+  const today = openRequests().filter((r) => liveSet.has(r.site) && !recovering.has(r.site));
+  if (today.length) {
     const gain = today.reduce((g, r) => g + rate * (1 - (r.odds === "" || r.odds === null || r.odds === undefined ? 0.2 : +r.odds)), 0);
-    add({ tier: 1, site, gain, minutes: today.length, cta: "Request", href: `#/requests?site=${encodeURIComponent(site)}`,
-      title: `Request indexing for ${plural(today.length, "page")} on ${site}`,
-      why: `Pages Google has not crawled, or that changed since it did. Search Console takes only about ${perDay} a day per site` +
-        `${rs.length > today.length ? ` (${rs.length - today.length} more wait for the next days)` : ""}.` });
+    const sitesIn = Object.keys(bySite(today));
+    add({ tier: 1, site: sitesIn.length === 1 ? sitesIn[0] : null, gain, minutes: today.length, cta: "Request", href: "#/requests",
+      title: `Request indexing for ${plural(today.length, "page")}` + (sitesIn.length === 1 ? ` on ${sitesIn[0]}` : ` on ${plural(sitesIn.length, "site")}`),
+      why: "Today's best pages across all sites: Google has not crawled them, or they changed since it did. Optional, about a minute each." });
   }
 
   // ---- technical
@@ -1501,7 +1501,8 @@ function viewRequests(params) {
     h("h1", { text: "Request indexing" }),
     only ? h("div", { class: "row small" }, h("span", { text: `Showing ${only}` }), h("a", { href: "#/requests", text: "show all sites" })) : null,
     h("p", { class: "muted", text: "Search Console's Request indexing button has no API and a small daily limit (about 10 per property). " +
-      "This list holds only pages where a request can help: Google has never seen them, they were fixed since Google's last look, or they changed after Google crawled them. " +
+      `This list holds today's ${setting("manual_queue_total", 10)} best pages across all sites, where a request can help: Google has never seen them, they were fixed since Google's last look, or they changed after Google crawled them. ` +
+      "Sites Google has demoted as a whole are left out, because a request cannot help there. " +
       "Open each one, click Request indexing in Search Console, then mark it done here. Done pages stay off the list for 14 days." }),
     open.length ? Object.entries(bySite).map(([site, rs]) => h("div", { class: "stack" }, h("h3", { text: `${site} (${rs.length})` }), ...rs.map((r) => card(r, false))))
       : h("div", { class: "card empty", text: "Nothing to request right now." }),
@@ -1601,6 +1602,7 @@ function viewSettings() {
   const checks = sites.map((s) => h("label", { class: "chk" }, h("input", { type: "checkbox", value: s, checked: !disabled.has(s) }), s));
   const paused = h("input", { type: "checkbox", checked: setting("submit_paused", false) });
   const queue = h("input", { type: "number", min: 0, max: 50, value: setting("manual_queue_per_site", 10) });
+  const queueTotal = h("input", { type: "number", min: 0, max: 50, value: setting("manual_queue_total", 10) });
   const inspect = h("input", { type: "number", min: 0, max: 2000, placeholder: "no cap", value: setting("inspect_max_per_site", null) ?? "" });
   const time = h("input", { type: "time", value: setting("daily_run_time", "10:30") });
   const freshChk = h("input", { type: "checkbox", checked: setting("fresh_check", true) });
@@ -1616,6 +1618,7 @@ function viewSettings() {
       sites_disabled: checks.map((c) => c.firstChild).filter((i) => !i.checked).map((i) => i.value),
       submit_paused: paused.checked,
       manual_queue_per_site: Number(queue.value || 0),
+      manual_queue_total: Math.max(0, Math.min(50, Number(queueTotal.value || 0))),
       inspect_max_per_site: inspect.value === "" ? null : Number(inspect.value),
       daily_run_time: time.value || "10:30",
       fresh_check: freshChk.checked,
@@ -1635,7 +1638,8 @@ function viewSettings() {
       h("label", { class: "chk" }, paused, "Pause everything that changes something: submissions (Bing, IndexNow, sitemaps and feeds to Google and Bing, WebSub), link edits and content cleanups on your sites"),
       h("div", { class: "muted tiny", text: "While paused the engine only measures, Autonomous mode included. Approved links and cleanups wait; Undo waits too." }),
       field("Daily run time on your PC", time, "The engine checks every 10 minutes and runs once a day after this time. Google's inspection quota resets at midnight Pacific (10:00 in Greece)."),
-      field("Request-indexing list size per site", queue, "Search Console allows roughly 10 manual requests a day per property."),
+      field("Request-indexing list size, all sites together", queueTotal, "The pages a day you are willing to request by hand in Search Console. 0 turns the list off."),
+      field("Request-indexing pages per site, at most", queue, "Search Console allows roughly 10 manual requests a day per property."),
       field("Max URL inspections per site per run", inspect, "Leave empty to use the full daily quota (about 1,950)."),
       h("label", { class: "chk" }, freshChk, "Fresh-content autopilot: every 10 minutes, find new or updated posts and get them audited, inspected and submitted within minutes"),
       h("div", {}, h("button", { class: "btn primary", onclick: save }, "Save settings"))),

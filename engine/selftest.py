@@ -704,10 +704,15 @@ def main():
     FLIP.add("/good-unknown/")
     audit.run(db, sites, force=True)
     kinds = [(r["kind"], r["url"]) for r in db.execute("SELECT kind, url FROM alerts")]
-    check(any(k == "became_blocked" and u.endswith("/good-unknown/") for k, u in kinds), "a page that turns noindex raises an alert")
+    grouped = [r for r in db.execute("SELECT kind, url, message, data FROM alerts WHERE kind='pages_blocked'")]
+    check(any(k == "became_blocked" and u.endswith("/good-unknown/") for k, u in kinds)
+          or (len(grouped) == 1 and grouped[0]["url"] is None and "/good-unknown/" in grouped[0]["data"]
+              and "/good-unknown/" in grouped[0]["message"]),
+          "a page that turns noindex raises an alert (grouped per site when it earned nothing)")
     FLIP.clear()
     audit.run(db, sites, force=True)
-    check(any(r["kind"] == "unblocked" for r in db.execute("SELECT kind FROM alerts")), "its recovery raises a good-news alert")
+    check(any(r["kind"] in ("unblocked", "pages_unblocked") for r in db.execute("SELECT kind FROM alerts")),
+          "its recovery raises a good-news alert")
     FakeGSC.COVERAGE["/good-discovered/"] = "Submitted and indexed"
     db.execute("UPDATE gsc SET inspected_at='2026-09-01T00:00:00+00:00' WHERE url LIKE '%/good-discovered/'")
     google.inspect_due(db, gsc, props)

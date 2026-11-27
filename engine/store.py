@@ -137,6 +137,7 @@ MIGRATIONS = [
     "ALTER TABLE gsc ADD COLUMN last_attempt_at TEXT",
     "ALTER TABLE sitemap_submits ADD COLUMN engine TEXT",
     "ALTER TABLE gsc ADD COLUMN result_link TEXT",
+    "ALTER TABLE alerts ADD COLUMN data TEXT",                       # grouped alerts (alerts.add_to_group): the pages so far
     "ALTER TABLE cleanup_ops ADD COLUMN auto INT DEFAULT 0",        # applied in Autonomous mode (no owner click)            # Search Console's own link to this URL's inspection report      # NULL = google (rows written before Bing was added)
 ]
 
