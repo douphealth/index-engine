@@ -28,7 +28,10 @@ def para(n, seed="word"):
     return "<p>" + " ".join(f"{seed}{k}" for k in range(n)) + ".</p>"
 
 
-NUMBERED = "".join(f"<h2>Use-case notes for ASICS Gel-Nimbus 27 review #{k}</h2>{para(30, f'n{k}x')}" for k in range(1, 8))
+# Scaffolding repeats one text under each numbered heading (on the live sites the texts overlap 0.98-1.00).
+NUMBERED = "".join(f"<h2>Use-case notes for ASICS Gel-Nimbus 27 review #{k}</h2>{para(30, 'note')}" for k in range(1, 8))
+# Content numbered by its subject has its own text under each heading (mysticaldigits.com, 27 Nov 2026).
+SUBJECT_NUMBERED = "".join(f"<h2>The Meaning of Birthday Number {k}</h2>{para(60, f'meaning{k}x')}" for k in range(1, 8))
 BOILER = ("<h2>Editorial promise</h2><p>We publish only what we can check. Every claim links to its source, every update is dated, "
           "and corrections are made in the open within two working days of a report.</p>")
 
@@ -67,6 +70,16 @@ class FindCutsTests(unittest.TestCase):
         self.assertEqual(kinds.count("numbered"), 7)
         self.assertEqual(kinds.count("leftover"), 1)
         self.assertNotIn("What the shoe does well", [c["heading"] for c in cuts])
+
+    def test_headings_numbered_by_their_subject_are_kept(self):
+        self.assertEqual(cl.find_cuts(post(SUBJECT_NUMBERED)), [])
+        faq = "".join(f"<h3>What are the {k} C’s of content marketing?</h3>{para(70, f'c{k}x')}" for k in (3, 4, 5))
+        self.assertEqual(cl.find_cuts(post(faq)), [])
+
+    def test_a_numbered_run_with_mostly_shared_text_is_still_cut(self):
+        mostly = "".join(f"<h2>Example {k}: adjust slowly and observe clearly</h2>{para(40, 'same')}<p>Pot {k}.</p>"
+                         for k in range(1, 9))
+        self.assertEqual([c["kind"] for c in cl.find_cuts(post(mostly))], ["numbered"] * 8)
 
     def test_boilerplate_needs_near_identical_text_on_five_posts(self):
         posts = [post(BOILER, f"p{k}") for k in range(6)]

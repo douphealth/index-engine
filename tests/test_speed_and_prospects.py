@@ -149,7 +149,7 @@ class CleanupScanTest(unittest.TestCase):
             out[f"https://site.test/p{i}/"] = (f"<h2>Intro {i}</h2>{para(i)}{BOILER}<h2>Closing thoughts on item {i}</h2>{para(100 + i)}")
         out["https://site.test/own/"] = "<h2>How we review every product here</h2>" + para(999) + "<h2>End</h2>" + para(998)
         out["https://site.test/numbered/"] = "".join(
-            f"<h2>Use-case notes for the trail shoe review #{k}</h2>{para(200 + k, 12)}" for k in range(1, 5)) + "<h2>End</h2>" + para(997)
+            f"<h2>Use-case notes for the trail shoe review #{k}</h2>{para(200, 12)}" for k in range(1, 5)) + "<h2>End</h2>" + para(997)
         return out
 
     def test_one_parse_per_post_decides_what_two_parses_decided(self):

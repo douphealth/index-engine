@@ -23,6 +23,7 @@ Two questions the rest of the engine did not answer:
 """
 import datetime as dt
 import html
+import itertools
 import re
 from collections import Counter, defaultdict
 from urllib.parse import quote, urlsplit
@@ -203,6 +204,8 @@ LEFTOVERS = re.compile(r"wordpress media library|image generation failed|as an a
 BOILER_SHARE, BOILER_MIN = 0.25, 5    # a heading on this share of posts (and at least this many) is site boilerplate
 NUMBERED_RUN = 3                      # this many headings on one page that differ only by a number are a template...
 NUMBERED_MIN_WORDS = 4                # ... when they say more than "Week N" or "Day N workout" (training plans are fine)
+NUMBERED_SAME_TEXT = 0.8              # ... and carry near-identical text under every heading (mean pairwise overlap)
+SHINGLE = 5                           # words per shingle when texts are compared
 # Section names every editor uses on many posts; repeating them is normal, not scaffolding.
 GENERIC = {"faq", "faqs", "frequently asked questions", "conclusion", "final thoughts", "key takeaways", "table of contents",
            "summary", "related posts", "related articles", "references", "sources", "introduction", "overview",
@@ -219,19 +222,60 @@ def _shape(heading):
     return re.sub(r"#?\d+", "#", heading.lower())
 
 
-POST_SCAN_VERSION = "post-scan-1"     # change it whenever post_scan (or a pattern it uses) changes: cached scans are redone
+def shingles(text):
+    """Every run of SHINGLE consecutive words of a text (a shorter text is one shingle), as a set."""
+    w = re.findall(r"[a-z0-9]+", text.lower())
+    if len(w) <= SHINGLE:
+        return {tuple(w)} if w else set()
+    return set(zip(*(w[i:] for i in range(SHINGLE))))
+
+
+def overlap(a, b):
+    """Shared shingles over the smaller set: 1.0 when one text is contained in the other."""
+    return len(a & b) / max(1, min(len(a), len(b))) if a and b else 0.0
+
+
+def numbered_templates(items):
+    """items: [(heading, shingle set of the text under it)]. Returns {shape: count} for every run of NUMBERED_RUN+
+    headings that differ only by a number, say more than "Week N", and carry near-identical text under each heading
+    ("Use-case notes for ASICS Gel-Nimbus 27 review #1" ... "#7", "Example 8: adjust slowly and observe clearly").
+    Content numbered by its subject has its own text under each heading and is not a template ("The Meaning of
+    Birthday Number 1" ... "7", "What are the 3/4/5 C's of content marketing?"): on 27 Nov 2026 the heading-only rule
+    cut such sections on three posts, which were restored. On the portfolio's 3,324 posts the texts of real numbered
+    content overlap 0.48 at most, and template runs 0.98 or more."""
+    groups = defaultdict(list)
+    for heading, sh in items:
+        if re.search(r"\d", heading):
+            groups[_shape(heading)].append(sh)
+    out = {}
+    for shape, shs in groups.items():
+        if len(shs) < NUMBERED_RUN or len(re.findall(r"[a-z]+", shape)) < NUMBERED_MIN_WORDS:
+            continue
+        pairs = list(itertools.combinations(shs, 2))
+        if sum(overlap(a, b) for a, b in pairs) / len(pairs) >= NUMBERED_SAME_TEXT:
+            out[shape] = len(shs)
+    return out
+
+
+POST_SCAN_VERSION = "post-scan-2"     # change it whenever post_scan (or a pattern it uses) changes: cached scans are redone
 
 
 def post_scan(text):
     """What one post's content shows by itself: {"heads": its h2-h4 headings, "found": numbered-template and leftover
     findings}. Depends on nothing but the text, so engine/memo.py keeps it until the post changes."""
-    hs = [_text(m.group(2)) for m in HEADING.finditer(text)]
-    hs = [x for x in hs if 3 <= len(x) <= 160]
+    ms = list(HEADING.finditer(text))
+    hs, numbered = [], []
+    for i, m in enumerate(ms):
+        h = _text(m.group(2))
+        if not 3 <= len(h) <= 160:
+            continue
+        hs.append(h)
+        if re.search(r"\d", h):
+            end = ms[i + 1].start() if i + 1 < len(ms) else len(text)
+            numbered.append((h, shingles(_text(text[m.end():end]))))
     found = []
-    shapes = Counter(_shape(x) for x in hs if re.search(r"\d", x))
-    for shape, n in shapes.items():
-        if n >= NUMBERED_RUN and len(re.findall(r"[a-z]+", shape)) >= NUMBERED_MIN_WORDS:
-            found.append(f"{n} headings follow one numbered template (“{shape.replace('#', 'N')}”)")
+    for shape, n in numbered_templates(numbered).items():
+        found.append(f"{n} headings follow one numbered template (“{shape.replace('#', 'N')}”)")
     for x in hs:
         if LEFTOVERS.search(x):
             found.append(f"automation leftover in a heading: “{x[:90]}”")

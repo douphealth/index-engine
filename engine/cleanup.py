@@ -3,7 +3,8 @@
 time, with a backup, verification and undo. The fixing half of engine/recovery.py's TEMPLATE_ARTIFACT findings.
 
 What it proposes to cut (whole sections: the heading and everything up to the next heading of the same or a higher level):
-  numbered     3+ headings on one post that differ only by a number and say more than "Week N"
+  numbered     3+ headings on one post that differ only by a number, say more than "Week N", and carry near-identical
+               text under each (recovery.numbered_templates; content numbered by its subject is kept)
                ("Use-case notes for ASICS Gel-Nimbus 27 review #1" ... "#7")
   leftover     a heading an automated pipeline left behind ("Visual Examples From the WordPress Media Library")
   boilerplate  a section whose text is near-identical (shingle overlap >= 80%) on at least 5 posts of the site, so cutting
@@ -35,7 +36,7 @@ from collections import Counter, defaultdict
 
 from . import alerts, config, memo, store
 from .links import _log_change, _site_guard_check, locate, purge
-from .recovery import GENERIC, LEFTOVERS, NUMBERED_MIN_WORDS, NUMBERED_RUN, _shape
+from .recovery import GENERIC, LEFTOVERS, _shape, numbered_templates
 from .util import get, log, now_iso
 
 MAX_PER_DAY = 30
@@ -154,8 +155,7 @@ def find_cuts(raw, boiler=None, secs=None):
     section texts repeated across the site (see boilerplate_index). secs: this post's sections(raw) when the caller has
     them already (a site scan parses each post once)."""
     secs = sections(raw) if secs is None else secs
-    shapes = Counter(_shape(s["heading"]) for s in secs if re.search(r"\d", s["heading"]))
-    template = {sh for sh, n in shapes.items() if n >= NUMBERED_RUN and len(re.findall(r"[a-z]+", sh)) >= NUMBERED_MIN_WORDS}
+    template = numbered_templates([(s["heading"], _section_shingles(s)) for s in secs if re.search(r"\d", s["heading"])])
     cuts, taken = [], []
     for sec in secs:
         if any(a <= sec["start"] < b for a, b in taken):       # inside a section already being cut
@@ -201,7 +201,7 @@ def cleanup_id(url):
     return hashlib.sha1(f"cleanup|{url}".encode()).hexdigest()[:16]
 
 
-SITE_CUTS_VERSION = "site-cuts-1"     # change it whenever what find_cuts decides changes: cached site scans are redone
+SITE_CUTS_VERSION = "site-cuts-2"     # change it whenever what find_cuts decides changes: cached site scans are redone
 
 
 def site_cuts(posts):

@@ -146,14 +146,18 @@ class TemplateScanTests(unittest.TestCase):
     def test_finds_numbered_headings_leftovers_and_boilerplate(self):
         db = new_db()
         boiler = "<h2>Direct Answer for Searchers &amp; AI Engines</h2><h2>Editorial promise</h2>"
-        self.corpus(db, U("nimbus"), boiler + "".join(f"<h2>Use-case notes for Nimbus review #{k}</h2>" for k in range(1, 8)))
+        self.corpus(db, U("nimbus"), boiler + "".join(f"<h2>Use-case notes for Nimbus review #{k}</h2><p>Template text: a light trainer that held "
+                                                       f"up well on easy runs and long days.</p>" for k in range(1, 8)))
+        self.corpus(db, U("birthday"), "".join(f"<h2>The Meaning of Birthday Number {k}</h2><p>Number {k} brings "
+                                               f"{'its own ' * k}distinct trait {k * 7} described here.</p>" for k in range(1, 8)))
         self.corpus(db, U("trail"), boiler + "<h2>🖼️ Visual Examples From the WordPress Media Library</h2>")
         for k in range(6):
             self.corpus(db, U(f"post-{k}"), boiler + f"<h2>Unique heading {k}a</h2><p>Text.</p>")
         self.corpus(db, U("clean"), "<h2>Why cushioning matters</h2><p>Plain text.</p>")
         scan = rc.template_scan(db, S)
-        self.assertEqual(scan["scanned"], 9)
+        self.assertEqual(scan["scanned"], 10)
         self.assertTrue(any("numbered template" in f for f in scan["pages"][U("nimbus")]))
+        self.assertNotIn(U("birthday"), scan["pages"], "headings numbered by their subject are not a template")
         self.assertTrue(any("leftover" in f for f in scan["pages"][U("trail")]))
         self.assertTrue(any("repeated across the site" in f for f in scan["pages"][U("post-0")]))
         self.assertNotIn(U("clean"), scan["pages"])
