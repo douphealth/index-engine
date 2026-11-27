@@ -32,6 +32,7 @@ from engine import (aiaccess, alerts, audit, bing, brain, cleanup, config, disco
                     queries, report, revival, sitemaps, store, submit, traffic, update, wp)
 from engine import results as measured  # noqa: E402
 from engine.dashboard import Dashboard, apply_state, cached_settings, register_sites, safe  # noqa: E402
+from engine import power  # noqa: E402
 from engine.util import (load_credentials, log, log_text, now_iso, open_log, parse_ts, stage, stage_report,  # noqa: E402
                          utf8_stdout)
 
@@ -106,10 +107,12 @@ class RunLock:
                 continue
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps({"pid": os.getpid(), "at": now_iso()}))
+            power.keep_awake(True)                 # a PC woken for the daily run must not fall asleep mid-run
             return self
         raise Locked(f"could not take the run lock {f}")
 
     def __exit__(self, *exc):
+        power.keep_awake(False)
         try:
             if json.loads(config.LOCK_FILE.read_text(encoding="utf-8")).get("pid") == os.getpid():
                 config.LOCK_FILE.unlink(missing_ok=True)
@@ -482,6 +485,7 @@ def tick(args):
     # When the dashboard cannot be reached, keep honouring the last settings (paused / disabled sites) it gave us.
     settings = (state.get("settings") or {}) if state is not None else cached_settings(db)
     register_sites(settings)
+    power.sync_wake_task(db, settings.get("daily_run_time") or config.DAILY_RUN_TIME)
     if self_update(args, db, dash, settings) == "updated":
         print("Engine updated; the next tick runs the new version.")
         return

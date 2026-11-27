@@ -343,6 +343,8 @@ The task **"Index Engine"** is already registered. It runs `indexengine.py tick`
 
 `tick` decides whether anything needs doing. A queued dashboard run goes first; otherwise the daily run happens once, after the time set in the dashboard.
 
+A second task, **"Index Engine (wake)"** (added 27 Nov 2026), runs the same `tick` once a day with *Wake the computer to run this task* on, one minute after the dashboard's daily run time. When that time changes in the dashboard, the next tick moves the task with it (`engine/power.py`). While a run holds the lock the engine tells Windows the system is needed, so a PC woken for the run does not fall back asleep part-way. It needs you logged in (the screen may be locked) and wake timers allowed on mains power; running while logged out would need an administrator to change the task's logon type.
+
 **What it guarantees when things go wrong**
 - **Pause and paused sites are honoured even offline.** The engine keeps the last settings the dashboard gave it. If the dashboard cannot be reached, a paused engine stays paused and a disabled site stays untouched, instead of the settings silently lapsing.
 - **A paused site is never touched.** Not by a scheduled run, a queued run (the dashboard marks it "skipped: paused in Settings", not "done"), a link edit or the fresh-content check. With everything paused, approved links and undo wait too, and the Links page says so.
