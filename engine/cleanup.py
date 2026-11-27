@@ -290,6 +290,24 @@ BREAKER_FAILS = 2
 BREAKER_HOURS = 24
 
 
+# Sections that carry trust or safety even when the same text repeats on many posts: cited sources, disclosures,
+# disclaimers, safety steps, responsible-use notes. Autonomous mode leaves a post with any of them for the owner's
+# click (dashboard/public/app.js has the same pattern, so such a post stays on the owner's to-do list).
+OWNER_ONLY = re.compile(r"source|reference|resource|further reading|citation|disclos|disclaim|safe|warning|caution|"
+                        r"medical|legal|affiliate|checklist|responsib|grounded|prove", re.I)
+
+
+def owner_only(item):
+    """Does this proposal touch a section only the owner should remove?"""
+    secs = item.get("sections") or []
+    if isinstance(secs, str):
+        try:
+            secs = json.loads(secs or "[]")
+        except ValueError:
+            return True
+    return any(OWNER_ONLY.search((s.get("heading") if isinstance(s, dict) else str(s)) or "") for s in secs)
+
+
 def autonomous_for(settings, site):
     """May the engine act on this site without the owner's click?"""
     return bool(settings.get("autonomous")) and (site not in STRICT_SITES or bool(settings.get("autonomous_strict_sites")))
@@ -333,7 +351,7 @@ def apply(db, items, settings, clients, report):
             continue
         auto = it["status"] == "proposed"
         if auto:
-            if not autonomous_for(settings, site) or breaker(db, site):
+            if not autonomous_for(settings, site) or breaker(db, site) or owner_only(it):
                 continue
             if not _verified_before(db, site) and auto_done[site] >= 1:      # canary: one a day until one is verified live
                 continue

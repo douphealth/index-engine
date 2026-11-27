@@ -427,7 +427,11 @@ function priorities() {
     }
   }
   const autoSite = (site) => setting("autonomous", false) === true && (site !== "gearuptofit.com" || setting("autonomous_strict_sites", false) === true);
-  for (const [site, cs] of Object.entries(bySite((S.st.cleanups || []).filter((c) => c.status === "proposed" && liveSet.has(c.site) && !autoSite(c.site))))) {
+  // Same pattern as engine/cleanup.py OWNER_ONLY: sources, disclosures, safety and responsible-use sections wait for you
+  // even in Autonomous mode.
+  const OWNER_ONLY = /source|reference|resource|further reading|citation|disclos|disclaim|safe|warning|caution|medical|legal|affiliate|checklist|responsib|grounded|prove/i;
+  const ownerOnly = (c) => (c.sections || []).some((x) => OWNER_ONLY.test((x && x.heading) || ""));
+  for (const [site, cs] of Object.entries(bySite((S.st.cleanups || []).filter((c) => c.status === "proposed" && liveSet.has(c.site) && (!autoSite(c.site) || ownerOnly(c)))))) {
     const words = cs.reduce((n, c) => n + (c.words || 0), 0);
     add({ tier: 0, site, minutes: Math.max(2, cs.length * 0.5), cta: "Review cleanups", href: `#/recovery?site=${encodeURIComponent(site)}`,
       title: `Approve the removal of automated-content scaffolding from ${plural(cs.length, "post")} on ${site}`,

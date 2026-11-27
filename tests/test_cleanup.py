@@ -241,6 +241,23 @@ class AutonomousTests(ApplyTests):
         self.assertEqual(self.reports[-1][1], "applied")
         self.assertEqual(self.db.execute("SELECT auto FROM cleanup_ops").fetchone()[0], 1)
 
+    def test_sources_safety_and_disclaimers_wait_for_the_owner(self):
+        for heading in ("Go deeper: trusted resources", "Sources and further reading", "Final checklist before you act",
+                        "What is the safest way to use this page?", "Affiliate disclosure",
+                        "Can numerology or astrology prove what will happen?"):
+            self.assertTrue(cl.owner_only({"sections": json.dumps([{"heading": heading}])}), heading)
+        for heading in ("Use-case notes for ASICS Gel-Nimbus 27 review #1", "How often should I practice with prompts?",
+                        "Internal linking and topical authority notes", "Real implementation example"):
+            self.assertFalse(cl.owner_only({"sections": [{"heading": heading}]}), heading)
+        wp = FakeWP(self.raw)
+        secs = json.loads(self.item["sections"]) + [{"heading": "Sources and further reading", "kind": "boilerplate"}]
+        held = dict(self.item, status="proposed", sections=json.dumps(secs))
+        with self.live(wp):
+            cl.apply(self.db, [held], {"autonomous": True}, {S: wp}, self.report)
+            self.assertEqual((wp.saves, self.reports), (0, []))
+            cl.apply(self.db, [dict(held, status="approved")], {"autonomous": True}, {S: wp}, self.report)
+        self.assertEqual(self.reports[-1][1], "applied", "the owner's approval still applies it")
+
     def test_canary_one_a_day_until_one_is_verified_on_the_live_page(self):
         wp = FakeWP(self.raw)
         items = [dict(self.item, status="proposed"), self.add_post(wp, "b", 8), self.add_post(wp, "c", 9)]
