@@ -134,7 +134,8 @@ async function viewCrawl(params) {
       h("option", { value: "", text: "All websites" }), ...rows.map((s) => h("option", { value: s.site, selected: s.site === site, text: s.site }))));
   const intro = h("p", { class: "muted", text: "What Googlebot and Bingbot fetched, day by day, from Cloudflare's own analytics (read-only; nothing runs in front of your sites). " +
     "It shows within a day whether Google came back after a change, and catches a site that answers crawlers with errors before Search Console does. " +
-    "Crawlers are recognised by their user agent and Cloudflare samples busy sites, so the numbers are close estimates. Days are UTC." });
+    "Only requests from the addresses Google and Bing publish for their crawlers count; anything else that calls itself Googlebot (your own checking tools, scrapers) is counted apart. " +
+    "Cloudflare samples busy sites, so the numbers are close estimates. Days are UTC." });
   const after = crawlAfterCard();
   if (!site) {
     if (!rows.length) return h("div", { class: "stack" }, head, intro, h("div", { class: "card empty", text: "No crawler data yet. It is read on the next full run (needs the Cloudflare analytics token)." }));
@@ -163,18 +164,31 @@ async function viewCrawl(params) {
   const blockers = new Set(["FETCH_FAILED", "BROKEN", "SERVER_ERROR", "REDIRECTS", "NOINDEX", "ROBOTS_BLOCKED", "CANONICAL_ELSEWHERE", "NOT_HTML"]);
   const unseen = urls.filter((u) => !u.g30 && !blockers.has(u.bucket)).sort((a, b) => b.value - a.value);
   const n = c.googlebot_7d || 0, bad = crawlBad(c.status_7d), gone = crawlGone(c.status_7d);
+  const fake = c.impostors_7d || {}, fakeN = (fake.google || 0) + (fake.bing || 0);
+  const kinds = Object.entries(c.missing_7d || {});
+  const moved = (c.errors_7d || []).filter((e) => e.moved_to);
+  const missingCard = kinds.length ? h("div", { class: "card stack" }, h("h2", { text: "Missing addresses Googlebot asked for, by kind (7 days)" }),
+    h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Kind" }), h("th", { class: "n", text: "Fetches" }), h("th", { class: "n", text: "Addresses" }))),
+      h("tbody", {}, ...kinds.map(([k, v]) => h("tr", {}, h("td", { text: k }), h("td", { class: "n", text: fmt(v.hits) }), h("td", { class: "n", text: fmt(v.paths) })))))),
+    h("p", { class: "small muted", text: "Google keeps re-checking addresses it once knew for months after they are removed. That is normal and does not hurt rankings. " +
+      "What is worth fixing: a page that only moved (a 301 to its new address keeps its history and links), a file the live pages still use, and a link on your own pages that points at a missing address." }),
+    moved.length ? h("p", { class: "small", text: `${fmt(moved.length)} of the most-fetched missing pages only moved: their new address is shown in the list below.` }) : null) : null;
   return h("div", { class: "stack" }, head, intro,
     h("div", { class: "grid kpis" },
       h("div", { class: "kpi" }, h("div", { class: "v", text: fmt(n) }), h("div", { class: "l", text: "Googlebot fetches in 7 days" })),
       h("div", { class: "kpi" }, h("div", { class: "v", text: fmt(c.bingbot_7d) }), h("div", { class: "l", text: "Bingbot fetches in 7 days" })),
       h("div", { class: "kpi" }, h("div", { class: `v ${n && bad / n >= 0.1 ? "bad" : ""}`, text: n ? pct(bad / n) : "–" }), h("div", { class: "l", text: "answered with a server error (5xx, 429)" })),
-      h("div", { class: "kpi" }, h("div", { class: `v ${n && gone / n >= 0.15 ? "warn" : ""}`, text: n ? pct(gone / n) : "–" }), h("div", { class: "l", text: "were pages that do not exist (404, 410)" }))),
+      h("div", { class: "kpi" }, h("div", { class: `v ${n && gone / n >= 0.15 ? "warn" : ""}`, text: n ? pct(gone / n) : "–" }), h("div", { class: "l", text: "were addresses that do not exist (404, 410)" })),
+      h("div", { class: "kpi" }, h("div", { class: "v", text: fmt(fakeN) }), h("div", { class: "l", text: "requests that called themselves Googlebot or Bingbot from other addresses (not counted)" }))),
     h("div", { class: "card stack" }, h("h2", { text: "Fetches per day" }), crawlChart(data.crawl.series),
       h("div", { class: "row" }, ...Object.entries(c.status_7d || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => h("span", { class: `chip ${+k >= 500 || +k === 429 ? "bad" : +k >= 400 ? "warn" : ""}`, text: `${k}: ${fmt(v)}` })))),
+    missingCard,
     (c.errors_7d || []).length ? h("div", { class: "card stack" }, h("h2", { text: "What Googlebot asked for and did not get (7 days)" }),
-      h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Path" }), h("th", { class: "n", text: "Answer" }), h("th", { class: "n", text: "Fetches" }))),
-        h("tbody", {}, ...c.errors_7d.map((e) => h("tr", {}, h("td", { class: "small path", text: e.path }), h("td", { class: "n", text: String(e.status) }), h("td", { class: "n", text: fmt(e.hits) })))))),
-      h("p", { class: "small muted", text: "A 404 that Googlebot keeps asking for has links pointing at it somewhere: a 301 to the right page, or fixing those links, gives that crawl back to real pages." })) : null,
+      h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Address" }), h("th", { text: "Kind" }), h("th", { class: "n", text: "Answer" }), h("th", { class: "n", text: "Fetches" }))),
+        h("tbody", {}, ...c.errors_7d.map((e) => h("tr", {},
+          h("td", { class: "small path" }, h("div", { text: e.path }),
+            e.moved_to ? h("div", { class: "tiny" }, "Moved: a 301 to ", h("a", { href: e.moved_to, target: "_blank", rel: "noopener", text: shortPath(e.moved_to) || e.moved_to }), " keeps its history") : null),
+          h("td", { class: "small muted", text: e.kind || "" }), h("td", { class: "n", text: String(e.status) }), h("td", { class: "n", text: fmt(e.hits) }))))))) : null,
     h("div", { class: "card stack" }, h("h2", { text: `Indexable pages Googlebot has not fetched in 30 days (${fmt(unseen.length)} of ${fmt(urls.length)})` }),
       unseen.length ? h("ul", { class: "small" }, ...unseen.slice(0, 25).map((u) => h("li", {}, h("a", { href: u.url, target: "_blank", rel: "noopener", text: decodeEntities(u.title || "") || shortPath(u.url) }),
         h("span", { class: "muted tiny", text: ` · ${(GOOGLE_STATE[u.bucket] || u.bucket || "").toString().toLowerCase().replace(/_/g, " ")}` }))))

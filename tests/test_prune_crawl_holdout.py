@@ -1,8 +1,11 @@
 """Prune queue (eligibility, the helper, apply/verify/undo against a fake WordPress), crawler telemetry, and the
 randomized holdout."""
 import datetime as dt
+import ipaddress
 import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from engine import config, crawl, holdout, prune, results, store
@@ -62,6 +65,10 @@ class Resp:
 
     def json(self):
         return self._js
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 class FakeWP:
@@ -204,7 +211,7 @@ class CrawlTest(unittest.TestCase):
         db = new_db()
         db.executescript(crawl.SCHEMA)
         today = dt.date(2026, 11, 28)
-        db.execute("INSERT INTO crawl_days VALUES(?,?,?,?,?)", (S, "2026-11-27", "t", 0, 0))
+        db.execute("INSERT INTO crawl_days(site, day, read_at, rows, truncated, verified) VALUES(?,?,?,?,?,1)", (S, "2026-11-27", "t", 0, 0))
         got = crawl.due_days(db, S, today, keep=3)
         self.assertEqual(got, ["2026-11-25", "2026-11-26"])
 
@@ -222,7 +229,7 @@ class CrawlTest(unittest.TestCase):
                 (S, "2026-11-27", "bing", "/old-post/", 200, 2)]
         db.executemany("INSERT INTO crawl_hits VALUES(?,?,?,?,?,?)", rows)
         for d in ("2026-11-26", "2026-11-27"):
-            db.execute("INSERT INTO crawl_days VALUES(?,?,?,?,?)", (S, d, "t", 1, 0))
+            db.execute("INSERT INTO crawl_days(site, day, read_at, rows, truncated, verified) VALUES(?,?,?,?,?,1)", (S, d, "t", 1, 0))
         return db
 
     def test_pages_match_with_and_without_slash(self):
@@ -245,6 +252,83 @@ class CrawlTest(unittest.TestCase):
         kinds = [r["kind"] for r in db.execute("SELECT kind FROM alerts")]
         self.assertIn("googlebot_missing", kinds)
         self.assertNotIn("googlebot_errors", kinds)
+
+
+class VerifiedCrawlerTest(unittest.TestCase):
+    """Only requests from the engines' published crawler ranges count (28 Nov 2026: 52% of gearuptofit's "Googlebot"
+    requests in a week came from the owner's PC or from other networks)."""
+    NETS = {"google": [ipaddress.ip_network("66.249.64.0/27"), ipaddress.ip_network("2001:4860:4801:10::/64")],
+            "bing": [ipaddress.ip_network("157.55.39.0/24")]}
+
+    def test_verifier_checks_the_right_engine_and_both_ip_versions(self):
+        v = crawl.Verifier(self.NETS)
+        self.assertTrue(v.is_real("google", "66.249.64.5"))
+        self.assertTrue(v.is_real("google", "2001:4860:4801:10::1"))
+        self.assertFalse(v.is_real("google", "94.65.157.157"))      # a PC sending a Googlebot user agent
+        self.assertFalse(v.is_real("bing", "66.249.64.5"))          # Google's address is not Bingbot
+        self.assertFalse(v.is_real("google", "not an ip"))
+
+    def test_read_span_counts_impostors_apart(self):
+        rows = [{"count": 3, "dimensions": {"date": "2026-11-27", "clientRequestPath": "/a/", "edgeResponseStatus": 200, "clientIP": "66.249.64.9"}},
+                {"count": 7, "dimensions": {"date": "2026-11-27", "clientRequestPath": "/a/", "edgeResponseStatus": 200, "clientIP": "94.65.157.157"}},
+                {"count": 2, "dimensions": {"date": "2026-11-27", "clientRequestPath": "/b/", "edgeResponseStatus": 404, "clientIP": "66.249.64.9"}}]
+
+        class Session:
+            def post(self, *a, **k):
+                return Resp(200, js={"data": {"viewer": {"zones": [{"google": rows, "bing": []}]}}})
+        hits, fake, truncated = crawl.read_span("t", "z", S, ["2026-11-27"], Session(), crawl.Verifier(self.NETS))
+        self.assertEqual(hits["2026-11-27"], {("google", "/a/", 200): 3, ("google", "/b/", 404): 2})
+        self.assertEqual(fake["2026-11-27"], {"google": 7})
+        self.assertFalse(truncated)
+
+    def test_ranges_are_cached_refreshed_and_kept_when_a_download_fails(self):
+        lists = {u: {"prefixes": [{"ipv4Prefix": "66.249.64.0/27"}] if "google" in u else [{"ipv4Prefix": "157.55.39.0/24"}]}
+                 for urls in crawl.VERIFY_LISTS.values() for u in urls}
+
+        class Session:
+            def __init__(self, fail=False):
+                self.fail, self.calls = fail, 0
+
+            def get(self, url, timeout=None):
+                self.calls += 1
+                if self.fail:
+                    raise crawl.requests.ConnectionError("offline")
+                return Resp(200, js=lists[url])
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "ranges.json"
+            t0 = dt.datetime(2026, 11, 28, tzinfo=dt.timezone.utc)
+            with patch.object(crawl, "log"):
+                self.assertIsNone(crawl.ranges(Session(fail=True), path, t0))        # never downloaded: nothing
+                s1 = Session()
+                got = crawl.ranges(s1, path, t0)
+                self.assertEqual(got["google"], [ipaddress.ip_network("66.249.64.0/27")])
+                s2 = Session()
+                crawl.ranges(s2, path, t0 + dt.timedelta(days=3))                    # fresh: no download
+                self.assertEqual(s2.calls, 0)
+                kept = crawl.ranges(Session(fail=True), path, t0 + dt.timedelta(days=9))  # stale and offline: last copy
+                self.assertEqual(kept["bing"], [ipaddress.ip_network("157.55.39.0/24")])
+
+    def test_data_read_before_verification_is_read_again(self):
+        db = new_db()
+        db.execute("CREATE TABLE crawl_days(site TEXT, day TEXT, read_at TEXT, rows INT, truncated INT DEFAULT 0, PRIMARY KEY(site, day))")
+        db.execute("CREATE TABLE crawl_hits(site TEXT, day TEXT, bot TEXT, path TEXT, status INT, hits INT, PRIMARY KEY(site, day, bot, path, status))")
+        db.execute("INSERT INTO crawl_days VALUES(?,?,?,?,?)", (S, "2026-11-27", "t", 1, 0))
+        db.execute("INSERT INTO crawl_hits VALUES(?,?,?,?,?,?)", (S, "2026-11-27", "google", "/a/", 200, 9))
+        crawl._migrate(db)
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM crawl_hits").fetchone()[0], 0)
+        self.assertEqual(crawl.due_days(db, S, dt.date(2026, 11, 28), keep=1), ["2026-11-27"])
+
+    def test_missing_addresses_are_sorted_by_kind_and_moved_pages_named(self):
+        self.assertEqual(crawl.missing_kind("/wp-content/plugins/phastpress/phast.php/c2Vy"), "plugin or theme file")
+        self.assertEqual(crawl.missing_kind("/wp-content/uploads/2020/03/shoe.jpg"), "image or file")
+        self.assertEqual(crawl.missing_kind("/ads.txt"), "image or file")
+        self.assertEqual(crawl.missing_kind("/category/running/page/108/"), "archive page past the end")
+        self.assertEqual(crawl.missing_kind("/old-post/"), "page")
+        db = new_db()
+        db.execute("INSERT INTO urls(url, site) VALUES(?,?)", (f"https://{S}/fitness/walking-vs-running/", S))
+        self.assertEqual(crawl.moved_to(db, S, "/walking-vs-running/"), f"https://{S}/fitness/walking-vs-running/")
+        self.assertIsNone(crawl.moved_to(db, S, "/deleted-post/"))
+        self.assertIsNone(crawl.moved_to(db, S, "/fitness/walking-vs-running/"))   # the live address itself
 
 
 class HoldoutTest(unittest.TestCase):
