@@ -329,6 +329,12 @@ class VerifiedCrawlerTest(unittest.TestCase):
         self.assertEqual(crawl.moved_to(db, S, "/walking-vs-running/"), f"https://{S}/fitness/walking-vs-running/")
         self.assertIsNone(crawl.moved_to(db, S, "/deleted-post/"))
         self.assertIsNone(crawl.moved_to(db, S, "/fitness/walking-vs-running/"))   # the live address itself
+        db.executescript(crawl.SCHEMA)
+        db.execute("INSERT INTO crawl_days(site, day, read_at, rows, truncated, verified) VALUES(?,?,?,?,?,1)", (S, "2026-11-27", "t", 1, 0))
+        db.execute("INSERT INTO crawl_hits VALUES(?,?,?,?,?,?)", (S, "2026-11-27", "google", "/walking-vs-running/", 404, 4))
+        db.execute("INSERT INTO audits(url, noindex) VALUES(?, 1)", (f"https://{S}/fitness/walking-vs-running/",))
+        e = crawl.site_summary(db, S)["errors_7d"][0]
+        self.assertEqual((e["kind"], e["moved_to"], e["moved_noindex"]), ("page", f"https://{S}/fitness/walking-vs-running/", True))
 
 
 class HoldoutTest(unittest.TestCase):

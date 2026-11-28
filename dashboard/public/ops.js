@@ -172,7 +172,7 @@ async function viewCrawl(params) {
       h("tbody", {}, ...kinds.map(([k, v]) => h("tr", {}, h("td", { text: k }), h("td", { class: "n", text: fmt(v.hits) }), h("td", { class: "n", text: fmt(v.paths) })))))),
     h("p", { class: "small muted", text: "Google keeps re-checking addresses it once knew for months after they are removed. That is normal and does not hurt rankings. " +
       "What is worth fixing: a page that only moved (a 301 to its new address keeps its history and links), a file the live pages still use, and a link on your own pages that points at a missing address." }),
-    moved.length ? h("p", { class: "small", text: `${fmt(moved.length)} of the most-fetched missing pages only moved: their new address is shown in the list below.` }) : null) : null;
+    moved.length ? h("p", { class: "small", text: `${fmt(moved.length)} of the most-fetched missing pages only moved; ${fmt(moved.filter((e) => !e.moved_noindex).length)} of them to a page that can be indexed. Their new addresses are in the list below.` }) : null) : null;
   return h("div", { class: "stack" }, head, intro,
     h("div", { class: "grid kpis" },
       h("div", { class: "kpi" }, h("div", { class: "v", text: fmt(n) }), h("div", { class: "l", text: "Googlebot fetches in 7 days" })),
@@ -187,7 +187,8 @@ async function viewCrawl(params) {
       h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Address" }), h("th", { text: "Kind" }), h("th", { class: "n", text: "Answer" }), h("th", { class: "n", text: "Fetches" }))),
         h("tbody", {}, ...c.errors_7d.map((e) => h("tr", {},
           h("td", { class: "small path" }, h("div", { text: e.path }),
-            e.moved_to ? h("div", { class: "tiny" }, "Moved: a 301 to ", h("a", { href: e.moved_to, target: "_blank", rel: "noopener", text: shortPath(e.moved_to) || e.moved_to }), " keeps its history") : null),
+            e.moved_to ? h("div", { class: "tiny" }, "Moved to ", h("a", { href: e.moved_to, target: "_blank", rel: "noopener", text: shortPath(e.moved_to) || e.moved_to }),
+              e.moved_noindex ? ", which is noindex on purpose: a 301 only helps once that page is indexable again" : ": a 301 there keeps the old address's history and links") : null),
           h("td", { class: "small muted", text: e.kind || "" }), h("td", { class: "n", text: String(e.status) }), h("td", { class: "n", text: fmt(e.hits) }))))))) : null,
     h("div", { class: "card stack" }, h("h2", { text: `Indexable pages Googlebot has not fetched in 30 days (${fmt(unseen.length)} of ${fmt(urls.length)})` }),
       unseen.length ? h("ul", { class: "small" }, ...unseen.slice(0, 25).map((u) => h("li", {}, h("a", { href: u.url, target: "_blank", rel: "noopener", text: decodeEntities(u.title || "") || shortPath(u.url) }),

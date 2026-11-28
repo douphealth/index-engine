@@ -368,8 +368,16 @@ def site_summary(db, site):
     known = pages(db, site)
     n_urls = db.execute("SELECT COUNT(*) FROM urls WHERE site=?", (site,)).fetchone()[0]
     g7 = sum(series[d][0] for d in days if d >= week)
+    def blocked(url):                                    # the new address is noindex: a 301 gains nothing yet
+        try:
+            r = db.execute("SELECT noindex FROM audits WHERE url=?", (url,)).fetchone()
+        except Exception:                                # a database without audits (tests)
+            return None
+        return bool(r and r[0]) if r else None
+
     errors = [{"path": r["path"], "status": r["status"], "hits": r["n"], "kind": missing_kind(r["path"]),
-               "moved_to": moved_to(db, site, r["path"]) if r["status"] in (404, 410) else None} for r in db.execute(
+               "moved_to": (m := moved_to(db, site, r["path"]) if r["status"] in (404, 410) else None),
+               "moved_noindex": blocked(m) if m else None} for r in db.execute(
         """SELECT path, status, SUM(hits) AS n FROM crawl_hits WHERE site=? AND bot='google' AND day>=? AND status>=400
            GROUP BY path, status ORDER BY n DESC LIMIT 15""", (site, week))]
     missing = defaultdict(lambda: [0, 0])                 # kind -> [fetches, addresses]
