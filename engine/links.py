@@ -318,11 +318,37 @@ def corpus_window(db, site):
     return full, (None if full else meta.get("corpus_watermark"))
 
 
-def read_corpus(wpc, after):
-    """[(url, id, type, modified, compressed content)] from WordPress: network and compression only, no database, so
-    several sites can be read at once (propose) while each is stored in turn."""
-    return [(item["url"], item["id"], item["type"], item["modified"], zlib.compress(item["raw"].encode("utf-8")))
-            for item in wpc.corpus(after=after)]
+class CorpusRows(list):
+    """read_corpus's rows, plus `live`: every URL WordPress listed (a full check), or None (rows are the whole truth
+    for a full read, or only the changes for a window read)."""
+    live = None
+
+
+def stored_index(db, site):
+    """{(type, id): (modified, url)} of the posts stored for a site: what a full check compares the listing with."""
+    return {(r[0], r[1]): (r[2], r[3]) for r in db.execute(
+        "SELECT post_type, post_id, modified, url FROM link_corpus WHERE site=?", (site,))}
+
+
+def read_corpus(wpc, after, known=None):
+    """CorpusRows of (url, id, type, modified, compressed content) from WordPress: network and compression only, no
+    database, so several sites can be read at once (propose) while each is stored in turn.
+
+    A full check with `known` (stored_index) lists every post without content and downloads only the posts that are
+    new or changed (date or address); posts that disappeared are dropped by refresh_corpus. Before, the weekly check
+    downloaded every post's content, and on 28 Nov 2026 two sites cut that read off part-way, so it failed on every
+    run after."""
+    pack = lambda it: (it["url"], it["id"], it["type"], it["modified"], zlib.compress(it["raw"].encode("utf-8")))  # noqa: E731
+    if after is None and known is not None and hasattr(wpc, "listing"):
+        live = list(wpc.listing())
+        todo = {}
+        for it in live:
+            if known.get((it["type"], it["id"])) != (it["modified"], it["url"]):
+                todo.setdefault(it["type"], []).append(it["id"])
+        out = CorpusRows(pack(it) for typ, ids in todo.items() for it in wpc.contents(typ, ids))
+        out.live = {it["url"] for it in live}
+        return out
+    return CorpusRows(pack(it) for it in wpc.corpus(after=after))
 
 
 def refresh_corpus(db, site, wpc, rows=None):
@@ -335,9 +361,16 @@ def refresh_corpus(db, site, wpc, rows=None):
     # same savepoint as the corpus. A failed fetch must also undo earlier pages.
     db.execute("SAVEPOINT refresh_link_corpus")
     try:
-        if full:
+        if rows is None:
+            rows = read_corpus(wpc, after)
+        live = getattr(rows, "live", None)
+        if full and live is None:
             db.execute("DELETE FROM link_corpus WHERE site=?", (site,))
-        for url, pid, typ, modified, blob in (rows if rows is not None else read_corpus(wpc, after)):
+        elif full:                                       # a listing-based check: drop only what is gone
+            gone = [r[0] for r in db.execute("SELECT url FROM link_corpus WHERE site=?", (site,)) if r[0] not in live]
+            for url in gone:
+                db.execute("DELETE FROM link_corpus WHERE site=? AND url=?", (site, url))
+        for url, pid, typ, modified, blob in rows:
             db.execute("INSERT OR REPLACE INTO link_corpus VALUES(?,?,?,?,?,?)", (url, site, pid, typ, modified, blob))
             newest = max(newest, modified or "")
             n += 1
@@ -511,8 +544,9 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
     # scanned in turn. A site whose reading failed is scanned from its stored copy, as before.
     due = [(site, wpc) for site, wpc in clients.items() if (results.get(site) or {}).get("buckets") and getattr(wpc, "ok", False)]
     after = {site: corpus_window(db, site)[1] for site, _ in due}
+    known = {site: stored_index(db, site) for site, _ in due if after[site] is None}   # full checks compare with these
     read = {site: (rows, err) for (site, _), rows, err in
-            fetched(due, lambda it: read_corpus(it[1], after[it[0]]), config.WP_WORKERS)}
+            fetched(due, lambda it: read_corpus(it[1], after[it[0]], known.get(it[0])), config.WP_WORKERS)}
     for site, wpc in clients.items():
         res = results.get(site) or {}
         buckets, rows = res.get("buckets") or {}, {r["url"]: r for r in res.get("rows") or []}

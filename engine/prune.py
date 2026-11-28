@@ -160,8 +160,8 @@ def eligible(row, linked=frozenset()):
     if d == "noindex":
         if inbound is None or inbound > 0:          # unknown inbound links: a 301 might be the right answer
             return None
-        return "noindex", (f"0 clicks and {impr} impressions on both engines in 90 days, {age} days old, no other site links "
-                           f"to it. {row.get('why', '')}").strip()
+        return "noindex", (f"0 clicks and {impr} impressions on both engines in 90 days, {age} days old, and Bing's link "
+                           f"report shows no other site linking to it. {row.get('why', '')}").strip()
     if not row.get("target"):
         return None
     return "redirect", (f"0 clicks and {impr} impressions in 90 days, but {inbound} links from other sites point at it: a 301 "

@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import re
+import time
 from urllib.parse import urlsplit
 
 import requests
@@ -47,6 +48,7 @@ class WPClient:
         self.base = (base or config.site_base(site)).rstrip("/")
         self.s = requests.Session()
         self.s.headers.update({"User-Agent": config.UA})
+        self.unreachable = False
         self.ok = self._login(creds if creds is not None else _candidates(site))
 
     def _login(self, combos):
@@ -60,8 +62,12 @@ class WPClient:
             try:
                 r = self.s.get(f"{self.base}/wp-json/wp/v2/users/me", params={"context": "edit"},
                                headers={"Authorization": auth}, timeout=40)
-            except requests.RequestException:
-                continue
+            except requests.RequestException as e:
+                # The site did not answer at all: another password cannot change that. Trying each saved login in
+                # turn cost 326 s on 28 Nov 2026, when mysticaldigits.com's origin stopped answering.
+                log(f"[wp] {self.site}: WordPress did not answer ({type(e).__name__}); WordPress steps skipped this run")
+                self.unreachable = True
+                return False
             if r.status_code == 200:
                 self.s.headers["Authorization"] = auth
                 if hints.get(self.site) != digest(u, p):
@@ -115,6 +121,49 @@ class WPClient:
                         yield {"url": norm(it["link"]), "id": it["id"], "type": typ, "modified": it.get("modified_gmt"),
                                "raw": raw}
                 page += 1
+
+    def _get(self, typ, params, timeout=120):
+        """One page of a collection, tried twice: a server that drops one connection usually answers the next."""
+        for attempt in (1, 2):
+            try:
+                return self.s.get(f"{self.base}/wp-json/wp/v2/{typ}", params=params, timeout=timeout)
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt == 2:
+                    raise
+                time.sleep(3)
+
+    def listing(self, per_page=100):
+        """Every published post and page without its content: {"url", "id", "type", "modified"}. A few kilobytes per
+        hundred posts, so the weekly check of what changed or disappeared costs seconds instead of the whole site."""
+        for typ in ("posts", "pages"):
+            page, pages = 1, 1
+            while page <= pages:
+                r = self._get(typ, {"status": "publish", "per_page": per_page, "page": page, "orderby": "id",
+                                    "_fields": "id,link,modified_gmt"})
+                if r.status_code == 400 and page > 1:
+                    break
+                if r.status_code >= 300:
+                    raise RuntimeError(f"GET {typ} list page {page} -> HTTP {r.status_code}: {r.text[:120]}")
+                pages = int(r.headers.get("X-WP-TotalPages") or 1)
+                for it in r.json():
+                    if it.get("link"):
+                        yield {"url": norm(it["link"]), "id": it["id"], "type": typ, "modified": it.get("modified_gmt")}
+                page += 1
+
+    def contents(self, typ, ids, per_page=20):
+        """The stored content of these published posts (or pages), per_page at a time. Same items as corpus()."""
+        ids = sorted(set(ids))
+        for i in range(0, len(ids), per_page):
+            chunk = ids[i:i + per_page]
+            r = self._get(typ, {"context": "edit", "status": "publish", "include": ",".join(map(str, chunk)),
+                                "per_page": len(chunk), "_fields": "id,link,modified_gmt,content"}, timeout=180)
+            if r.status_code >= 300:
+                raise RuntimeError(f"GET {typ} by id -> HTTP {r.status_code}: {r.text[:120]}")
+            for it in r.json():
+                raw = (it.get("content") or {}).get("raw")
+                if raw and it.get("link"):
+                    yield {"url": norm(it["link"]), "id": it["id"], "type": typ, "modified": it.get("modified_gmt"),
+                           "raw": raw}
 
     def update(self, pid, typ, raw):
         return self._call("POST", f"{typ}/{pid}", json={"content": raw})

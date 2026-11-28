@@ -130,14 +130,18 @@ class Handler(BaseHTTPRequestHandler):
             if "slug" in q:
                 path = f"/{q['slug'][0]}/"
                 return js([{"id": POST_IDS[path], "link": f"{base}{path}", "status": "publish"}] if path in POST_IDS else [])
+            if q.get("_fields") == ["id,link,modified_gmt"] and "context" not in q:   # the weekly listing, no content
+                return js([{"id": POST_IDS[x], "link": f"{base}{x}", "modified_gmt": "2026-10-20T10:00:00"}
+                           for x in PAGES if x in POST_IDS])
             if q.get("context") == ["edit"]:                 # bulk content for the link finder
                 if not self._authed():
                     return js({"code": "rest_forbidden_context"}, 401)
                 after = (q.get("modified_after") or [""])[0]
                 paths = [x for x, m in FRESH if m > after] if after else list(PAGES)
+                inc = {int(i) for i in (q.get("include") or [""])[0].split(",") if i}   # posts asked for by id
                 return js([{"id": POST_IDS[x], "link": f"{base}{x}", "modified_gmt": "2026-10-20T10:00:00",
                             "content": {"raw": RAW.get(x) or f"<p>{body_text(x, PAGES[x][1], PAGES[x][2].get('dup'))}</p>"}}
-                           for x in paths if x in POST_IDS])
+                           for x in paths if x in POST_IDS and (not inc or POST_IDS[x] in inc)])
             if "modified_after" in q:
                 if int((q.get("page") or ["1"])[0]) in FAIL_PAGE:
                     return self._send(500, "{}", "application/json")

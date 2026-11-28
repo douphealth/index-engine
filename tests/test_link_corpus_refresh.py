@@ -1,4 +1,5 @@
 import sqlite3
+from pathlib import Path
 import unittest
 import zlib
 from unittest.mock import patch
@@ -151,6 +152,123 @@ class CorpusRefreshTests(unittest.TestCase):
         self.assertEqual(links.corpus(self.db, OTHER_SITE), {'https://other.test/page': 'other content'})
         self.assertEqual(store.get_meta(self.db, SITE)['corpus_watermark'], OLD_WATERMARK)
         self.assertEqual(store.get_meta(self.db, SITE)['corpus_full_at'], 'new full time')
+
+
+class FakeListWP:
+    """A WordPress that can list posts without content (the weekly check) and return chosen posts' content."""
+    def __init__(self, posts, fail_contents=False):
+        self.posts = posts                     # [(type, id, url, modified, raw)]
+        self.fail_contents = fail_contents
+        self.asked = []
+        self.ok = True
+
+    def listing(self):
+        for typ, pid, url, modified, _raw in self.posts:
+            yield {'url': url, 'id': pid, 'type': typ, 'modified': modified}
+
+    def contents(self, typ, ids):
+        self.asked.append((typ, sorted(ids)))
+        if self.fail_contents:
+            raise RuntimeError('dropped connection')
+        for t, pid, url, modified, raw in self.posts:
+            if t == typ and pid in ids:
+                yield {'url': url, 'id': pid, 'type': t, 'modified': modified, 'raw': raw}
+
+    def corpus(self, after=None):
+        raise AssertionError('a full check with a stored index must not download every post')
+
+
+class ListingCheckTests(unittest.TestCase):
+    """The weekly full check lists posts without content and downloads only the new or changed ones."""
+    def setUp(self):
+        self.db = sqlite3.connect(':memory:')
+        self.db.row_factory = sqlite3.Row
+        self.db.executescript(store.SCHEMA)
+        for row in (('https://example.test/old', SITE, 1, 'posts', OLD_WATERMARK, zlib.compress(b'old content')),
+                    ('https://example.test/keep', SITE, 2, 'pages', OLD_WATERMARK, zlib.compress(b'keep content')),
+                    ('https://other.test/page', OTHER_SITE, 3, 'posts', OLD_WATERMARK, zlib.compress(b'other content'))):
+            self.db.execute('INSERT INTO link_corpus VALUES(?,?,?,?,?,?)', row)
+        store.set_meta(self.db, SITE, corpus_full_at=OLD_FULL, corpus_watermark=OLD_WATERMARK)
+        self.addCleanup(self.db.close)
+
+    def refresh(self, wp):
+        known = links.stored_index(self.db, SITE)
+        with patch.object(links, 'days_since', return_value=8), patch.object(links, 'now_iso', return_value='full now'):
+            rows = links.read_corpus(wp, None, known)
+            return links.refresh_corpus(self.db, SITE, wp, rows=rows)
+
+    def test_only_new_and_changed_posts_are_downloaded_and_removed_ones_dropped(self):
+        wp = FakeListWP([('pages', 2, 'https://example.test/keep', OLD_WATERMARK, 'never read'),
+                         ('posts', 5, 'https://example.test/new', NEW_WATERMARK, 'new content')])
+        self.assertEqual(self.refresh(wp), 1)
+        self.assertEqual(wp.asked, [('posts', [5])])
+        self.assertEqual(links.corpus(self.db, SITE), {'https://example.test/keep': 'keep content',
+                                                       'https://example.test/new': 'new content'})
+        self.assertEqual(links.corpus(self.db, OTHER_SITE), {'https://other.test/page': 'other content'})
+        self.assertEqual(store.get_meta(self.db, SITE)['corpus_full_at'], 'full now')
+
+    def test_a_new_date_or_address_is_downloaded_again(self):
+        wp = FakeListWP([('posts', 1, 'https://example.test/old', NEW_WATERMARK, 'edited'),
+                         ('pages', 2, 'https://example.test/moved', OLD_WATERMARK, 'moved content')])
+        self.assertEqual(self.refresh(wp), 2)
+        self.assertEqual(sorted(wp.asked), [('pages', [2]), ('posts', [1])])
+        self.assertEqual(links.corpus(self.db, SITE), {'https://example.test/old': 'edited',
+                                                       'https://example.test/moved': 'moved content'})
+
+    def test_nothing_changed_downloads_nothing(self):
+        wp = FakeListWP([('posts', 1, 'https://example.test/old', OLD_WATERMARK, 'x'),
+                         ('pages', 2, 'https://example.test/keep', OLD_WATERMARK, 'y')])
+        self.assertEqual(self.refresh(wp), 0)
+        self.assertEqual(wp.asked, [])
+        self.assertEqual(len(links.corpus(self.db, SITE)), 2)
+        self.assertEqual(store.get_meta(self.db, SITE)['corpus_full_at'], 'full now')
+
+    def test_a_failed_download_changes_nothing(self):
+        before = [tuple(r) for r in self.db.execute('SELECT * FROM link_corpus ORDER BY url')]
+        wp = FakeListWP([('posts', 5, 'https://example.test/new', NEW_WATERMARK, 'new')], fail_contents=True)
+        with self.assertRaisesRegex(RuntimeError, 'dropped connection'):
+            self.refresh(wp)
+        self.assertEqual([tuple(r) for r in self.db.execute('SELECT * FROM link_corpus ORDER BY url')], before)
+        self.assertEqual(store.get_meta(self.db, SITE)['corpus_full_at'], OLD_FULL)
+
+
+class RetryTests(unittest.TestCase):
+    def test_a_dropped_connection_is_tried_once_more(self):
+        import requests
+        from engine import wp as wpmod
+        c = wpmod.WPClient.__new__(wpmod.WPClient)
+        c.base = 'https://example.test'
+        calls = []
+
+        class Session:
+            def get(self, url, params=None, timeout=None):
+                calls.append(url)
+                if len(calls) == 1:
+                    raise requests.ConnectionError('Remote end closed connection without response')
+                return 'answer'
+        c.s = Session()
+        with patch.object(wpmod.time, 'sleep'):
+            self.assertEqual(c._get('posts', {}), 'answer')
+        self.assertEqual(len(calls), 2)
+
+    def test_a_site_that_does_not_answer_is_not_tried_with_every_login(self):
+        import tempfile
+        import requests
+        from engine import wp as wpmod
+        calls = []
+
+        class Session:
+            headers = {}
+
+            def get(self, url, params=None, headers=None, timeout=None):
+                calls.append(url)
+                raise requests.Timeout('read timed out')
+        c = wpmod.WPClient.__new__(wpmod.WPClient)
+        c.site, c.base, c.s, c.unreachable = 'example.test', 'https://example.test', Session(), False
+        with tempfile.TemporaryDirectory() as d, patch.object(wpmod, '_hints', return_value=Path(d) / 'hints.json'),                 patch.object(wpmod, 'log'):
+            self.assertFalse(c._login([('u%d' % i, 'p%d' % i) for i in range(12)]))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(c.unreachable)
 
 
 if __name__ == '__main__':
