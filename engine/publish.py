@@ -2,14 +2,16 @@
 """Publish source-backed portfolio results and per-URL evidence without credentials."""
 from collections import Counter
 
-from . import config, linkgaps, opportunities, recovery, report, sitemaps
+from . import config, crawl, linkgaps, opportunities, recovery, report, sitemaps
 from .triage import BLOCKERS
 
 # The original columns retain their positions for older dashboard clients.
 COLS = ["url", "bucket", "flags", "reason", "action", "value", "google", "bing", "kind", "in_sitemap", "words", "title",
         "odds", "why", "trust", "checked_at", "http_status", "canonical_state", "canonical", "robots_google", "noindex",
         "inspected_at", "google_verdict", "google_coverage", "google_error", "google_canonical", "last_crawl",
-        "gsc_clicks", "gsc_impr", "gsc_at", "bing_clicks", "bing_impr", "bing_at", "linked_at", "gsc_link"]
+        "gsc_clicks", "gsc_impr", "gsc_at", "bing_clicks", "bing_impr", "bing_at", "linked_at", "gsc_link",
+        "googlebot_last", "googlebot_7d", "googlebot_30d", "bingbot_last"]
+CRAWL_COLS = {"googlebot_last": "g_last", "googlebot_7d": "g_7d", "googlebot_30d": "g_30d", "bingbot_last": "b_last"}
 KNOWN = ("INDEXED", "CRAWLED_NOT_INDEXED", "DISCOVERED_NOT_INDEXED", "UNKNOWN_TO_GOOGLE", "GOOGLE_STALE", "GOOGLE_PICKED_OTHER")
 
 
@@ -58,6 +60,7 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             "recovery": recovery.site_summary(res.get("recovery")),
             "link_gaps": linkgaps.site_summary(res.get("link_gaps")),
             "ai_access": res.get("ai_access"),
+            "crawl": {k: v for k, v in (crawl.site_summary(db, site) or {}).items() if k != "series"} or None,
             "flags": dict(Counter(f for r in rows if r["bucket"] not in BLOCKERS and "IGNORED" not in (r["flags"] or "")
                                   for f in (r["flags"] or "").split(",") if f)),
             "potential": (intel.get("potential") or {}).get(site, {}),
@@ -67,8 +70,11 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
             "feed": {k: (meta.get("feed") or {}).get(k) for k in ("url", "ok", "items", "hubs", "why")} if meta.get("feed") else None,
             "lastmod_trusted": sitemaps.lastmod_trusted(meta) if meta.get("lastmod_health") else None,
         })
+        fetched_by = crawl.pages(db, site)
+        cell = lambda r, c: ((fetched_by.get(r["url"]) or {}).get(CRAWL_COLS[c]) if c in CRAWL_COLS else r[c])  # noqa: E731
         tables[site] = {"site": site, "generated_at": generated_at, "schema_version": 2, "cols": COLS,
-                        "rows": [[r[c] if r[c] is not None else "" for c in COLS] for r in rows],
+                        "rows": [[v if (v := cell(r, c)) is not None else "" for c in COLS] for r in rows],
+                        "crawl": crawl.site_summary(db, site),
                         "plan": res["plan"][:200],
                         "traffic_series": (res.get("traffic") or {}).get("series") or [],
                         "revival": res.get("revival"),
@@ -110,6 +116,7 @@ def build(db, results, generated_at, submitted=None, disabled=(), intel=None):
     portfolio_series = [[d, *v] for d, v in sorted(series.items())]
     summary = {"generated_at": generated_at, "evidence_schema": 2, "sites": sites, "requests": requests_, "portfolio_series": portfolio_series,
                "model": intel.get("model"), "impact": imp, "results": intel.get("results"),
+               "experiment": intel.get("experiment"), "crawl_after": intel.get("crawl_after"),
                "actions": [dict(a, gsc_link=glinks.get(a.get("url"))) for a in intel.get("actions") or []]}
     return summary, tables, {"totals": totals, "sites": per_site}
 

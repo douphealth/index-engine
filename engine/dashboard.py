@@ -93,6 +93,14 @@ class Dashboard:
         return self._call("POST", "/api/engine/cleanup", json={"id": cid, "status": status, "result": result,
                                                                "applied_at": applied_at})
 
+    def prunes(self, items, sites):
+        """Replace the open prune proposals (noindex / 301) of these sites; decided ones are kept."""
+        return self._call("POST", "/api/engine/prunes", json={"proposals": items, "sites": sites}, timeout=120)
+
+    def prune_result(self, pid, status, result, applied_at=None):
+        return self._call("POST", "/api/engine/prune", json={"id": pid, "status": status, "result": result,
+                                                             "applied_at": applied_at})
+
     def put(self, key, body):
         data = body if isinstance(body, (bytes, bytearray)) else (body if isinstance(body, str) else json.dumps(body, separators=(",", ":")))
         if isinstance(data, str):

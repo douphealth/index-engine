@@ -32,7 +32,7 @@ from engine import (aiaccess, alerts, audit, bing, brain, cleanup, config, disco
                     queries, report, revival, sitemaps, store, submit, traffic, update, wp)
 from engine import results as measured  # noqa: E402
 from engine.dashboard import Dashboard, apply_state, cached_settings, register_sites, safe  # noqa: E402
-from engine import power  # noqa: E402
+from engine import crawl, holdout, power, prune  # noqa: E402
 from engine.util import (load_credentials, log, log_text, now_iso, open_log, parse_ts, stage, stage_report,  # noqa: E402
                          utf8_stdout)
 
@@ -189,6 +189,24 @@ def apply_cleanups(db, dash, state, settings):
     return touched
 
 
+def apply_prunes(db, dash, state, settings):
+    """Apply owner-approved prunes (noindex / 301 through the sites' Index Engine helper) and process undo requests.
+    Only rows the owner approved ever arrive here: the prune queue has no autopilot."""
+    def report_(pid, status, result, applied_at):
+        safe(dash.prune_result, pid, status, result, applied_at, what="report prune result")
+
+    prune.recheck(db, report_)
+    disabled = set(settings.get("sites_disabled") or [])
+    todo = [p for p in (state or {}).get("prunes") or []
+            if p.get("site") not in disabled and p.get("status") in ("approved", "undo")]
+    if not todo:
+        return set()
+    clients = wp_clients(sorted({p["site"] for p in todo}))
+    touched = prune.apply(db, todo, settings, clients, report_)
+    safe(alerts.push, dash, db, what="push alerts")
+    return touched
+
+
 def pipeline(db, args, sites):
     """The full engine. Returns (results, {site: {channel: n}}, intel, proposals or None)."""
     if not args.skip_discover:
@@ -213,6 +231,7 @@ def pipeline(db, args, sites):
             queries.pull_bing(db, bclient, bsites, max_total=QUERY_DAILY_MAX)   # more pages are read on idle ticks
         if not args.no_creds:
             aiaccess.run(db, sites)                                # can search and AI crawlers read each site?
+            crawl.pull(db, sites)                                  # which pages Googlebot/Bingbot fetched (Cloudflare analytics)
     if props and args.inspect_max != 0:
         with stage("Google inspection"):
             google.inspect_due(db, gclient, props, max_per_site=args.inspect_max, include_taxonomy=args.include_taxonomy)
@@ -242,6 +261,8 @@ def pipeline(db, args, sites):
         results, intel = brain.analyze(db, config.SITES)
         if props or bsites:
             revival.raise_alerts(db, results, set(sites))
+        crawl.raise_alerts(db, sites)
+        intel["crawl_after"] = crawl.after_changes(db)
     m = intel["model"]
     log(f"[model] trained on {m.get('n')} Google verdicts ({m.get('indexed')} indexed), held-out AUC {m.get('auc')}, "
         f"quality {m.get('quality')}; {len(intel['actions'])} best next actions")
@@ -252,6 +273,10 @@ def pipeline(db, args, sites):
     if not args.no_wp:                                              # from the stored content: no WordPress calls
         with stage("cleanup proposals"):
             intel["cleanups"] = cleanup.propose(db, results, [s for s in sites if s in wp.SITE_DIRS])
+        with stage("prune proposals"):
+            intel["prunes"] = prune.propose(db, results, [s for s in sites if s in wp.SITE_DIRS])
+    intel["experiment"] = holdout.summary(db)                      # after the proposals: they enrol this run's pages
+    db.commit()
     with stage("report"):
         path = report.write(db, results)
     log("")
@@ -267,6 +292,8 @@ def upload(dash, db, results, intel, submitted, disabled, proposals=None, propos
         safe(dash.proposals, proposals, sorted(proposal_sites), what="upload link proposals")
     if intel.get("cleanups") is not None:
         safe(dash.cleanups, intel["cleanups"][:1000], sorted(proposal_sites), what="upload cleanup proposals")
+    if intel.get("prunes") is not None:
+        safe(dash.prunes, intel["prunes"][:3000], sorted(proposal_sites), what="upload prune proposals")
     safe(alerts.push, dash, db, what="push alerts")
     return run_summary
 
@@ -297,6 +324,8 @@ def run(args, dash=None, state=None, trigger="manual"):
             config.MANUAL_QUEUE_PER_SITE = int(settings["manual_queue_per_site"])
         if settings.get("manual_queue_total") is not None:
             config.MANUAL_QUEUE_TOTAL = int(settings["manual_queue_total"])
+        if settings.get("holdout_pct") is not None:
+            config.HOLDOUT_PCT = max(0, min(30, int(settings["holdout_pct"])))
         if args.inspect_max is None and settings.get("inspect_max_per_site") is not None:
             args.inspect_max = int(settings["inspect_max_per_site"])
         options = {k: v for k, v in (("site", ",".join(args.site or [])), ("no_submit", args.no_submit),
@@ -312,6 +341,7 @@ def run(args, dash=None, state=None, trigger="manual"):
             if dash and state and writes_allowed(args, settings):
                 apply_links(db, dash, state, settings)
                 apply_cleanups(db, dash, state, settings)
+                apply_prunes(db, dash, state, settings)
             results, submitted, intel, proposals = pipeline(db, args, sites)
         except Exception as e:
             log(traceback.format_exc())
@@ -365,7 +395,8 @@ def quick(args, dash, state, settings):
         sites = [s for s in config.SITES if s not in disabled]
         touched = set()
         if dash and state and writes_allowed(args, settings):
-            touched = apply_links(db, dash, state, settings) | apply_cleanups(db, dash, state, settings)
+            touched = (apply_links(db, dash, state, settings) | apply_cleanups(db, dash, state, settings)
+                       | apply_prunes(db, dash, state, settings))
         changes = fresh.changed(db, sites) if settings.get("fresh_check", True) else {}
         if not changes and not touched:
             db.commit()

@@ -19,13 +19,13 @@ test("the menu links to every page the app can draw, and to nothing else", () =>
 });
 
 test("search or jump knows the same pages as the menu", () => {
-  const menu = [...html.matchAll(/<a href="([^"]+)"(?: data-r="[a-z]*")?><svg/g)].map((m) => m[1]).sort();
+  const menu = [...html.matchAll(/<a href="([^"]+)"(?: data-r="[a-z]*")?><span class="ico-tile"><svg/g)].map((m) => m[1]).sort();
   assert.deepEqual(M.PAGES.map((p) => p[1]).sort(), menu);
 });
 
 test("the ids the app's code looks up are all in the page", () => {
   for (const id of ["tabs", "b-alerts", "b-links", "engine-pill", "run-btn", "logout", "app", "run-dlg", "run-form", "run-site", "run-nosubmit",
-    "run-force", "run-dry", "run-cancel", "page-title", "side", "side-shade", "menu-btn", "theme-btn", "jump-btn", "jump-btn-top", "jump-dlg",
+    "run-force", "run-dry", "run-cancel", "page-title", "side", "side-shade", "side-status", "b-prune", "b-crawl", "menu-btn", "theme-btn", "jump-btn", "jump-btn-top", "jump-dlg",
     "jump-input", "jump-list"]) {
     assert.equal(html.split(`id="${id}"`).length - 1, 1, `id="${id}" must be in index.html exactly once`);
   }
@@ -94,4 +94,26 @@ test("the theme button goes light, dark, auto, light", () => {
 test("the growth page names and counts the grouped small searches", () => {
   assert.ok(/long_tail: \["Many small searches, one topic"/.test(app));
   assert.ok(app.includes("(o.close_to_top || 0) + (o.low_ctr || 0) + (o.long_tail || 0)"));
+});
+
+test("a folded menu group never hides the page that is open", () => {
+  assert.deepEqual(M.collapsed(["grow", "recover", "measure"], "recover"), ["grow", "measure"]);
+  assert.deepEqual(M.collapsed(null, "today"), []);
+  assert.deepEqual(M.collapsed(["", "manage"], ""), ["manage"]);
+});
+
+test("every menu group can be folded and names the list it folds", () => {
+  const groups = [...html.matchAll(/<section class="nav-group" data-g="([a-z]+)">\s*<button class="nav-label" type="button" aria-expanded="true" aria-controls="ng-([a-z]+)">/g)];
+  assert.equal(groups.length, 5);
+  for (const [, g, ctl] of groups) {
+    assert.equal(g, ctl);
+    assert.ok(html.includes(`<div class="nav-items" id="ng-${g}">`), `group ${g} has its list`);
+  }
+});
+
+test("the new pages are drawn by app.js and their views exist", () => {
+  const ops = pub("ops.js");
+  for (const r of ["prune", "crawl"]) assert.ok(app.includes(`route === "${r}"`), `app.js draws #/${r}`);
+  for (const fn of ["function viewPrune", "async function viewCrawl", "function experimentCard", "function crawlAfterCard"]) assert.ok(ops.includes(fn), fn);
+  assert.ok(html.indexOf('src="/ops.js"') < html.indexOf('src="/app.js"'), "ops.js loads before app.js renders");
 });

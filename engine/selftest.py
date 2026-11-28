@@ -321,6 +321,9 @@ def main():
     config.OUT, config.DB_PATH, config.LOG_DIR = tmp, tmp / "t.db", tmp / "logs"
     config.INDEXNOW_KEYS_FILE = tmp / "none.json"
     config.CF_TOKEN_FILE = tmp / "no-token.txt"
+    config.HOLDOUT_PCT = 0                       # the control group is tested in tests/; here every page is offered
+    from . import crawl
+    crawl.TOKEN_FILES = [tmp / "no-analytics-token.txt"]   # never reads the real Cloudflare analytics
     util.open_log("selftest")
     fails, checks = [], []
 

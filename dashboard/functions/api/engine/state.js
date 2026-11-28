@@ -8,7 +8,7 @@ export const onRequestGet = handle(async ({ request, env }) => {
   const host = (request.headers.get("X-Engine-Host") || "").slice(0, 80);
   const capabilities = (request.headers.get("X-Engine-Capabilities") || "").split(",").map(x => x.trim());
   const version = /^[0-9a-f]{7,40}$/.test(request.headers.get("X-Engine-Version") || "") ? request.headers.get("X-Engine-Version") : null;
-  const [, settings, urls, commands, links, cleanups] = await env.DB.batch([
+  const [, settings, urls, commands, links, cleanups, prunes] = await env.DB.batch([
     sweepStuckCommands(env),
     env.DB.prepare("SELECT key, value FROM settings"),
     env.DB.prepare("SELECT url, site, ignored, requested_at FROM url_state WHERE ignored = 1 OR requested_at IS NOT NULL"),
@@ -16,6 +16,8 @@ export const onRequestGet = handle(async ({ request, env }) => {
     env.DB.prepare("SELECT id, site, source, target, anchor, status FROM link_proposals WHERE status IN ('approved', 'undo') ORDER BY updated_at"),
     // Cleanups are applied only after the owner's approval: no autopilot.
     env.DB.prepare("SELECT id, site, url, sections, status FROM cleanup_proposals WHERE status IN ('approved', 'undo') ORDER BY updated_at"),
+    // Prunes (noindex / 301): only ever after the owner's approval, never in Autonomous mode.
+    env.DB.prepare("SELECT id, site, url, action, target, status FROM prune_proposals WHERE status IN ('approved', 'undo') ORDER BY updated_at"),
     env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('engine_last_seen', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
       .bind(JSON.stringify({ at: now(), host, version, capabilities: capabilities.filter(x => ["run", "doctor"].includes(x)) }), now()),
   ]);
@@ -51,5 +53,6 @@ export const onRequestGet = handle(async ({ request, env }) => {
     commands: commands.results.filter(c => c.kind === "run" || (c.kind === "doctor" && capabilities.includes("doctor"))).map((c) => ({ ...c, options: JSON.parse(c.options || "{}") })),
     links: work,
     cleanups: cleanupWork,
+    prunes: prunes.results,
   });
 });

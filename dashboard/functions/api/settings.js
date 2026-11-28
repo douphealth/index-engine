@@ -14,6 +14,8 @@ const VALIDATE = {
   link_autopilot: (v) => typeof v === "boolean",
   links_per_site_per_day: (v) => Number.isInteger(v) && v >= 0 && v <= 10,
   cleanups_per_site_per_day: (v) => Number.isInteger(v) && v >= 0 && v <= 30,
+  prunes_per_site_per_day: (v) => Number.isInteger(v) && v >= 0 && v <= 100,
+  holdout_pct: (v) => Number.isInteger(v) && v >= 0 && v <= 30,
   autonomous: (v) => typeof v === "boolean",
   // Websites added from the dashboard (plain domain names); the engine adds them to its site list on the next tick.
   sites_extra: (v) => Array.isArray(v) && v.length <= 100 && v.every((s) => typeof s === "string" && DOMAIN_RE.test(s)),

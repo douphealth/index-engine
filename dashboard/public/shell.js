@@ -10,18 +10,20 @@ const ShellModel = {
     ["Links", "#/links", "internal links approvals proposals link gaps"],
     ["Plan", "#/plan", "internal link plan prune"],
     ["Recovery", "#/recovery", "drop lost visibility cleanup"],
+    ["Prune queue", "#/prune", "noindex redirect 301 prune approve thin pages"],
     ["Revival", "#/revival", "lost clicks traffic"],
     ["Fixes", "#/fixes", "technical fix list"],
     ["Requests", "#/requests", "request indexing search console"],
     ["Issues workspace", "/workspace", "queue urls issues"],
     ["Analytics", "#/overview", "overview indexed coverage trend"],
-    ["Results", "#/results", "measured impact what worked"],
+    ["Results", "#/results", "measured impact what worked experiment holdout control"],
+    ["Crawlers", "#/crawl", "googlebot bingbot crawl fetches 404 errors cloudflare"],
     ["Runs", "#/runs", "history log engine"],
     ["Connections", "#/connections", "google bing wordpress access check"],
     ["Settings", "#/settings", "websites schedule autopilot pause add site"],
   ],
   SITE_PAGES: [["overview", "site"], ["growth", "growth"], ["links", "links"], ["recovery", "recovery"], ["revival", "revival"],
-    ["plan", "plan"], ["requests", "requests"]],
+    ["plan", "plan"], ["requests", "requests"], ["prune queue", "prune"], ["crawlers", "crawl"]],
 
   /** Everything the box can open: pages, each website's pages, and actions. `sites` is a list of host names. */
   entries(sites) {
@@ -57,6 +59,9 @@ const ShellModel = {
     return scored.sort((a, b) => a[0] - b[0] || a[1] - b[1]).slice(0, limit).map((x) => x[2]);
   },
 
+  /** Menu groups to show collapsed: the saved ones, except the group holding the open page. */
+  collapsed(saved, activeGroup) { return (Array.isArray(saved) ? saved : []).filter((g) => g && g !== activeGroup); },
+
   /** light -> dark -> auto -> light. */
   nextTheme: (now) => (now === "light" ? "dark" : now === "dark" ? "auto" : "light"),
 };
@@ -75,6 +80,29 @@ if (typeof document !== "undefined") (() => {
   menu.addEventListener("click", () => drawer(!side.classList.contains("open")));
   shade.addEventListener("click", () => drawer(false));
   side.addEventListener("click", (e) => { if (e.target.closest("a")) drawer(false); });
+
+  /* ---------------------------------------------------------------- collapsible menu groups (remembered per browser) */
+  const readCollapsed = () => { try { return JSON.parse(localStorage.getItem("ie-nav-collapsed") || "[]"); } catch { return []; } };
+  const groupOf = () => { const on = document.querySelector("#tabs a.on"); const g = on && on.closest(".nav-group"); return g ? g.dataset.g : ""; };
+  const paintGroups = () => {
+    const shut = new Set(ShellModel.collapsed(readCollapsed(), groupOf()));
+    for (const g of document.querySelectorAll("#tabs .nav-group")) {
+      const c = shut.has(g.dataset.g);
+      g.classList.toggle("collapsed", c);
+      g.querySelector(".nav-label").setAttribute("aria-expanded", String(!c));
+    }
+  };
+  for (const btn of document.querySelectorAll("#tabs .nav-label")) btn.addEventListener("click", () => {
+    const group = btn.closest(".nav-group");
+    const saved = new Set(readCollapsed());
+    const shut = group.classList.contains("collapsed");
+    if (shut) saved.delete(group.dataset.g); else saved.add(group.dataset.g);
+    try { localStorage.setItem("ie-nav-collapsed", JSON.stringify([...saved])); } catch { /* a preference only */ }
+    group.classList.toggle("collapsed", !shut);       // the open page's own group may be folded by hand, too
+    btn.setAttribute("aria-expanded", String(shut));
+  });
+  paintGroups();
+  window.addEventListener("hashchange", () => setTimeout(paintGroups, 0));
 
   /* ---------------------------------------------------------------- theme */
   const themeBtn = $("theme-btn");

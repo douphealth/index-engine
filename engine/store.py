@@ -108,6 +108,14 @@ CREATE TABLE IF NOT EXISTS results(target TEXT PRIMARY KEY, site TEXT, kind TEXT
 CREATE TABLE IF NOT EXISTS cleanup_ops(id TEXT PRIMARY KEY, site TEXT, url TEXT, post_id INT, post_type TEXT, status TEXT,
   applied_at TEXT, backup TEXT, after_hash TEXT, result TEXT, gone TEXT, live_before TEXT);
 
+-- Noindex and 301 rules the prune queue set through the sites' Index Engine helper (engine/prune.py): verification, undo.
+CREATE TABLE IF NOT EXISTS prune_ops(id TEXT PRIMARY KEY, site TEXT, url TEXT, action TEXT, target TEXT, post_id INT,
+  status TEXT, applied_at TEXT, result TEXT, verified INT DEFAULT 0);
+
+-- Randomized holdout (engine/holdout.py): every page that became eligible for a kind of change, and its arm.
+CREATE TABLE IF NOT EXISTS experiment(kind TEXT, site TEXT, url TEXT, arm TEXT, since TEXT, state TEXT,
+  PRIMARY KEY(kind, url));
+
 -- External links pointing at each page (Bing GetLinkCounts), read weekly: a page other sites link to is redirected, never
 -- just noindexed, by the prune plan.
 CREATE TABLE IF NOT EXISTS inbound_links(url TEXT PRIMARY KEY, site TEXT, links INT, at TEXT);

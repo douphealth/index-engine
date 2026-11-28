@@ -227,14 +227,40 @@ def summary(db):
     return out
 
 
-def calibration(db, s=None):
-    """{kind: multiplier} for ranking links: what the engine learned from its own measured results."""
+NEUTRAL_LIFT = 0.05             # a measured lift this size leaves the ranking as the model has it (multiplier 1)...
+LIFT_STEP = 0.05                # ... and each LIFT_STEP more (or less) moves the multiplier by 0.5, between 0.5 and 1.5
+
+
+def _multiplier(lift, n):
+    """How strongly a measured lift moves the ranking. The same anchors as the old steps (0 or less -> 0.5, above 0.1 ->
+    1.5) but continuous, and shrunk towards neutral while the sample is small, so a few lucky pages cannot swing it."""
+    if lift is None or not n:
+        return 1.0
+    eff = NEUTRAL_LIFT + (lift - NEUTRAL_LIFT) * n / (n + MIN_CALIBRATION)
+    return round(max(0.5, min(1.5, 1 + 0.5 * (eff - NEUTRAL_LIFT) / LIFT_STEP)), 3)
+
+
+def calibration(db, s=None, exp=None):
+    """{kind: multiplier} for ranking links: what the engine learned from its own measured results. The randomized
+    holdout (engine/holdout.py), once it has enough pages, outranks the observational comparison for "index"."""
     s = s or summary(db)
-    out = {"growth": 1.0, "index": 1.0}
+    out = {"growth": 1.0, "index": 1.0, "source": {"growth": "none", "index": "none"}}
     g = s.get("growth")
     if g and g["n"] >= MIN_CALIBRATION:
-        out["growth"] = 1.5 if g["median_impr_lift"] > 0.1 else 0.5 if g["median_impr_lift"] <= 0 else 1.0
+        out["growth"] = _multiplier(g["median_impr_lift"], g["n"])
+        out["source"]["growth"] = "observational"
     i = s.get("index")
     if i and i["n"] >= MIN_CALIBRATION:
-        out["index"] = 1.5 if i["lift"] > 0.1 else 0.5 if i["lift"] <= 0 else 1.0
+        out["index"] = _multiplier(i["lift"], i["n"])
+        out["source"]["index"] = "observational"
+    if exp is None:
+        from . import holdout
+        try:
+            exp = holdout.summary(db)
+        except Exception:
+            exp = {}
+    e = (exp or {}).get("link")
+    if e and e.get("ready") and e.get("lift") is not None:
+        out["index"] = _multiplier(e["lift"], min(e["treat"]["n"], e["hold"]["n"]))
+        out["source"]["index"] = "randomized"
     return out

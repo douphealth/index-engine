@@ -129,13 +129,14 @@ class CalibrationTest(unittest.TestCase):
         return {"growth": None, "index": {"n": n, "lift": value}}
 
     def test_small_samples_change_nothing(self):
-        self.assertEqual(results.calibration(None, self.summary("growth", 14, 0.9)), {"growth": 1.0, "index": 1.0})
+        got = results.calibration(None, self.summary("growth", 14, 0.9), exp={})
+        self.assertEqual((got["growth"], got["index"]), (1.0, 1.0))
 
     def test_measured_effects_move_the_ranking_both_ways(self):
-        self.assertEqual(results.calibration(None, self.summary("growth", 20, 0.3))["growth"], 1.5)
-        self.assertEqual(results.calibration(None, self.summary("growth", 20, -0.1))["growth"], 0.5)
-        self.assertEqual(results.calibration(None, self.summary("index", 20, 0.2))["index"], 1.5)
-        self.assertEqual(results.calibration(None, self.summary("index", 20, 0.0))["index"], 0.5)
+        self.assertEqual(results.calibration(None, self.summary("growth", 20, 0.3), exp={})["growth"], 1.5)
+        self.assertEqual(results.calibration(None, self.summary("growth", 20, -0.1), exp={})["growth"], 0.5)
+        self.assertEqual(results.calibration(None, self.summary("index", 20, 0.2), exp={})["index"], 1.5)
+        self.assertEqual(results.calibration(None, self.summary("index", 20, 0.0), exp={})["index"], 0.714)
 
     def test_sign_test(self):
         self.assertEqual(results._sign_p(10, 10), 0.002)

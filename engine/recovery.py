@@ -365,7 +365,8 @@ def prune_plan(db, site, buckets, dups, inbound=None, artifacts=None):
         flags = set(flags) | ({"TEMPLATE_ARTIFACT"} if (artifacts or {}).get(url) else set())
         clicks, impr = r["gc"] + r["bc"] + r["prev_clicks"], max(r["gi"], 0) + max(r["bi"], 0)
         age = days_since(r["published"] or r["first_seen"])
-        links = (inbound or {}).get(url)
+        # Bing's report lists only pages that have links: once it has been read, a page missing from it has none.
+        links = (inbound or {}).get(url, 0 if inbound is not None else None)
         ev = {"url": url, "title": r["title"] or "", "kind": r["kind"] or "", "bucket": bucket, "flags": ",".join(sorted(flags)),
               "google_clicks_90d": r["gc"], "google_impr_90d": r["gi"], "bing_clicks": r["bc"], "bing_impr": r["bi"],
               "words": r["words"] or 0, "age_days": round(age) if age is not None else None,

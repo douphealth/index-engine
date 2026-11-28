@@ -501,6 +501,7 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
     titles, headings = {}, {}
     for r in db.execute("SELECT url, title, h1 FROM audits"):
         titles[r["url"]], headings[r["url"]] = r["title"] or "", r["h1"] or ""
+    from . import holdout
     from . import related as subject                # imported here: related.py reads this module's tokens()
     from . import results as measured
     learned = measured.calibration(db)              # what the engine's own measured links say about each kind
@@ -586,10 +587,16 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
                         related = subject.blend(related, text.cosine(t, src))
                     hits[t].append((len(key) + strength[src] + RELATED_WEIGHT * related, key, src, s, e))
         stock = {k for k, n in used.items() if n > max(3, STOCK_SHARE * len(texts))}
+        # Randomized holdout: of the pages a link can be proposed for, a fixed hash holds a share back for 31 days, so
+        # engine/holdout.py can measure what links do against a true control group.
+        offered = [t for t in targets if any(h[1] not in stock for h in hits.get(t, []))]
+        held = holdout.assign(db, "link", site, offered, holdout.states(buckets, offered))
         per_source, made, paired = defaultdict(int), 0, set()
         for t in targets:
             if made >= per_site:
                 break
+            if t in held:
+                continue
             picked = 0
             for rank, key, src, s, e in sorted(hits.get(t, []), key=lambda h: (-h[0], h[2])):
                 if picked >= MAX_PER_TARGET or made >= per_site:
@@ -624,7 +631,7 @@ def propose(db, results, link_gain, clients, per_site=MAX_PER_SITE):
         n_targets = len({p["target"] for p in out if p["site"] == site})
         n_growth = len({p["target"] for p in out if p["site"] == site and p["target"] in qgains})
         log(f"[links] {site}: {made} link proposals with natural anchors for {n_targets} pages ({n_growth} of them ranking "
-            f"close to the top: anchors from their searches) "
+            f"close to the top: anchors from their searches; {len(held)} pages held back as the control group) "
             f"({len(strength)} trusted source pages scanned, {len(stock)} stock phrases skipped, {changed} posts re-read)")
     return out
 

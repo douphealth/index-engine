@@ -194,6 +194,16 @@ function renderChrome() {
   const bl = document.getElementById("b-links");
   bl.textContent = waiting ? String(waiting) : "";
   bl.className = "badge soft";
+  const bp = document.getElementById("b-prune");
+  const pruning = (S.st.prunes || []).filter((p) => p.status === "proposed").length;
+  if (bp) { bp.textContent = pruning ? (pruning > 999 ? "999+" : String(pruning)) : ""; bp.className = "badge soft"; }
+  const bc = document.getElementById("b-crawl");
+  const crawlProblems = (S.summary ? S.summary.sites : []).filter((x) => x.crawl && x.crawl.googlebot_7d &&
+    crawlBad(x.crawl.status_7d) / x.crawl.googlebot_7d >= 0.1).length;
+  if (bc) bc.textContent = crawlProblems ? String(crawlProblems) : "";
+  const side = document.getElementById("side-status");
+  if (side) side.replaceChildren(h("span", { class: `dot ${es.cls}` }), h("span", { class: "side-status-t", text: es.text }),
+    h("span", { class: "muted tiny", text: S.summary ? `${fmt((S.summary.sites || []).length)} websites` : "" }));
 }
 function setTab(route) {
   for (const a of document.querySelectorAll("#tabs a")) {
@@ -952,6 +962,7 @@ function viewResults() {
   const stat = (big, label) => h("div", { class: "kpi" }, h("div", { class: "v", text: big }), h("div", { class: "l", text: label }));
   const learned = (k, what) => {
     const m = cal[k] || 1;
+    if ((cal.source || {})[k] === "randomized") return `${what}: ranked by the controlled experiment (multiplier ${m}), which compares them with pages held back at random.`;
     return m > 1 ? `${what} measurably beat similar pages without links, so the engine now ranks them higher.`
       : m < 1 ? `${what} did not beat similar pages without links, so the engine now ranks them lower and favours what works.`
       : `${what}: not enough measured pages yet to change how they are ranked (needs 15).`;
@@ -985,8 +996,8 @@ function viewResults() {
       h("td", { text: (p.applied_at || "").slice(0, 10) }), h("td", { class: "small", text: what }));
   });
   return h("div", { class: "stack" }, h("h1", { text: "Results" }),
-    h("p", { class: "muted", text: "What the internal links the engine applied measurably did. Each linked page is compared with similar pages of the same site that got no link in the same weeks, so seasonal and site-wide swings cancel out. These are comparisons on your own sites, not controlled experiments: strong evidence, not proof." }),
-    growthCard, indexCard,
+    h("p", { class: "muted", text: "What the internal links the engine applied measurably did. Each linked page is compared with similar pages of the same site that got no link in the same weeks, so seasonal and site-wide swings cancel out. That comparison is strong evidence, not proof; the controlled experiment below is the proof, once it has enough pages." }),
+    growthCard, indexCard, experimentCard(), crawlAfterCard(),
     rows.length ? h("div", { class: "card stack" }, h("h2", { text: "Measured pages" }), h("div", { class: "tablewrap" }, h("table", {},
       h("thead", {}, h("tr", {}, ...["Page", "Before the link", "Links", "First link", "Result"].map((x, i) => h("th", { class: i === 2 ? "n" : null, text: x })))),
       h("tbody", {}, ...rows)))) : null);
@@ -1623,6 +1634,8 @@ function viewSettings() {
   const strictSites = h("input", { type: "checkbox", checked: setting("autonomous_strict_sites", false) === true });
   const linkCap = h("input", { type: "number", min: 0, max: 10, value: setting("links_per_site_per_day", 5) });
   const cleanCap = h("input", { type: "number", min: 0, max: 30, value: setting("cleanups_per_site_per_day", 10) });
+  const pruneCap = h("input", { type: "number", min: 0, max: 100, value: setting("prunes_per_site_per_day", 25) });
+  const holdPct = h("input", { type: "number", min: 0, max: 30, value: setting("holdout_pct", 10) });
   const autoUpdate = h("input", { type: "checkbox", checked: setting("auto_update", true) });
   const running = (setting("engine_last_seen", null) || {}).version;
   const save = async () => {
@@ -1639,6 +1652,8 @@ function viewSettings() {
       autonomous_strict_sites: strictSites.checked,
       links_per_site_per_day: Math.max(0, Math.min(10, Number(linkCap.value || 0))),
       cleanups_per_site_per_day: Math.max(0, Math.min(30, Number(cleanCap.value || 0))),
+      prunes_per_site_per_day: Math.max(0, Math.min(100, Math.round(Number(pruneCap.value || 0)))),
+      holdout_pct: Math.max(0, Math.min(30, Math.round(Number(holdPct.value || 0)))),
       auto_update: autoUpdate.checked,
     };
     try { await api.post("/api/settings", body); await loadAll(); toast("Saved. The engine applies it on its next run."); } catch (e) { toast(e.message); }
@@ -1662,6 +1677,8 @@ function viewSettings() {
         "It never noindexes, redirects, merges or deletes pages, and never writes text." }),
       h("label", { class: "chk" }, strictSites, "Include gearuptofit (its AGENTS.md asks for your click on every change; tick only if you are overriding that rule)"),
       field("Cleanups applied per site per day (max 30)", cleanCap, "Cleanups beyond this wait for the next day. Each one saves and re-dates a post. 0 pauses cleanups."),
+      field("Prunes applied per site per day (max 100)", pruneCap, "Noindex and 301 rules from the prune queue. They never apply without your approval, even in Autonomous mode; this only spreads approved ones over days. 0 pauses them."),
+      field("Control group: share of pages held back (0 to 30%)", holdPct, "A fixed share of the pages a link or cleanup could go to waits 31 days, so Results can show what the change itself does. 0 switches the experiment off."),
       h("div", {}, h("button", { class: "btn primary", onclick: save }, "Save settings"))),
     h("div", { class: "card stack" }, h("h2", { text: "Internal links" }),
       field("Links applied per site per day (max 10)", linkCap, "Approved links beyond this wait for a free slot. Keep it low: your portfolio guardrails forbid bulk edits, and every saved post is re-dated. 0 pauses link changes."),
@@ -1846,6 +1863,10 @@ async function viewRecovery(params) {
     ...Object.entries(DECISION).filter(([k]) => counts[k]).map(([k, [label]]) =>
       h("button", { class: `btn small ${dec === k ? "primary" : ""}`, title: DECISION[k][1], onclick: () => { v.decision = k; render(); } }, `${label} (${counts[k]})`)),
     h("span", { class: "spacer" }),
+    (() => {
+      const waiting = (S.st.prunes || []).filter((p) => p.site === chosen && p.status === "proposed").length;
+      return waiting ? h("a", { class: "btn small primary", href: `#/prune?site=${encodeURIComponent(chosen)}` }, `Prune queue: ${fmt(waiting)} waiting`) : null;
+    })(),
     all.length ? h("button", { class: "btn small", onclick: () => pruneCsv(chosen, all) }, "Download CSV") : null);
   const SHOW = 300;
   const whyOf = (x) => [h("div", { text: x.why }), ...(x.artifacts || []).map((a) => h("div", { class: "tiny muted", text: a }))];
@@ -1878,10 +1899,10 @@ async function render() {
   const app = document.getElementById("app");
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
   const [asked, arg] = path.split("/");
-  const route = ["site", "overview", "recovery", "revival", "growth", "results", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings"].includes(asked) ? asked : "";   // anything else is the Overview
+  const route = ["site", "overview", "recovery", "revival", "growth", "results", "plan", "links", "alerts", "requests", "fixes", "runs", "connections", "settings", "prune", "crawl"].includes(asked) ? asked : "";   // anything else is the Overview
   const params = new URLSearchParams(query || "");
   setTab(route === "site" ? "" : route || "");
-  const named = { "": "Action Center", overview: "Analytics" }[route] || (route === "site" && arg ? safeDecode(arg) : route[0].toUpperCase() + route.slice(1));
+  const named = { "": "Action Center", overview: "Analytics", prune: "Prune queue", crawl: "Crawlers" }[route] || (route === "site" && arg ? safeDecode(arg) : route[0].toUpperCase() + route.slice(1));
   const heading = document.getElementById("page-title");
   if (heading) heading.textContent = named;
   document.title = `${named} · Index Engine`;
@@ -1901,6 +1922,8 @@ async function render() {
     else if (route === "runs") node = viewRuns();
     else if (route === "connections") node = viewConnections();
     else if (route === "settings") node = viewSettings();
+    else if (route === "prune") node = viewPrune(params);
+    else if (route === "crawl") node = await viewCrawl(params);
     else node = viewActionCenter();
     app.replaceChildren(node);
   } catch (e) {
@@ -1939,6 +1962,7 @@ document.getElementById("logout").addEventListener("click", async () => {
 });
 window.addEventListener("hashchange", render);
 const signature = () => JSON.stringify([S.st && S.st.links.map((l) => `${l.id}${l.status}${(l.result || "").length}`).join(","),
+  S.st && (S.st.prunes || []).map((p) => p.status[0]).join(""),
   S.st && S.st.commands.map((c) => `${c.id}${c.status}`).join(","), S.st && S.st.runs.slice(0, 3).map((r) => `${r.id}${r.status}`).join(","),
   S.st && S.st.alerts.filter((a) => !a.acked).length, S.st && S.st.fixes.map((f) => f.status).join(""), S.summary && S.summary.generated_at,
   S.st && S.st.settings.engine_last_seen && S.st.settings.engine_last_seen.updated_at]);

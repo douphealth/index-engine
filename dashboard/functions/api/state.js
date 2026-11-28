@@ -3,7 +3,7 @@
 import { handle, json, sweepStuckCommands } from "../../lib/http.js";
 
 export const onRequestGet = handle(async ({ env }) => {
-  const [, settings, urls, fixes, commands, runs, alerts, active, proposed, history, cleanups] = await env.DB.batch([
+  const [, settings, urls, fixes, commands, runs, alerts, active, proposed, history, cleanups, prunes] = await env.DB.batch([
     sweepStuckCommands(env),
     env.DB.prepare("SELECT key, value, updated_at FROM settings"),
     env.DB.prepare("SELECT url, site, ignored, requested_at, note, updated_at FROM url_state"),
@@ -19,6 +19,9 @@ export const onRequestGet = handle(async ({ env }) => {
     // Cleanup queue: in flight and open first (most words to cut first), then the newest history.
     env.DB.prepare(`SELECT * FROM cleanup_proposals ORDER BY CASE status WHEN 'approved' THEN 0 WHEN 'undo' THEN 0 WHEN 'failed' THEN 1
                     WHEN 'proposed' THEN 2 ELSE 3 END, CASE WHEN status = 'proposed' THEN -words ELSE 0 END, updated_at DESC LIMIT 1500`),
+    // Prune queue: in flight first, then open (sites in order), then the newest history.
+    env.DB.prepare(`SELECT * FROM prune_proposals ORDER BY CASE status WHEN 'approved' THEN 0 WHEN 'undo' THEN 0 WHEN 'failed' THEN 1
+                    WHEN 'proposed' THEN 2 ELSE 3 END, site, updated_at DESC LIMIT 3000`),
   ]);
   const s = {};
   for (const r of settings.results) s[r.key] = { value: JSON.parse(r.value), updated_at: r.updated_at };
@@ -31,5 +34,6 @@ export const onRequestGet = handle(async ({ env }) => {
     alerts: alerts.results,
     links: [...active.results, ...proposed.results, ...history.results],
     cleanups: cleanups.results.map((c) => ({ ...c, sections: JSON.parse(c.sections || "[]") })),
+    prunes: prunes.results.map((p) => ({ ...p, evidence: JSON.parse(p.evidence || "{}") })),
   });
 });

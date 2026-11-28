@@ -34,7 +34,7 @@ import re
 import time
 from collections import Counter, defaultdict
 
-from . import alerts, config, memo, store
+from . import alerts, config, holdout, memo, store
 from .links import _log_change, _site_guard_check, locate, purge
 from .recovery import GENERIC, LEFTOVERS, _shape, numbered_templates
 from .util import get, log, now_iso
@@ -227,16 +227,18 @@ def propose(db, results, sites):
             continue
         buckets = (results.get(site) or {}).get("buckets") or {}
         titles = {r[0]: r[1] for r in db.execute("SELECT a.url, a.title FROM audits a JOIN urls u ON u.url=a.url WHERE u.site=?", (site,))}
+        offered = [url for url, _c in found if not (buckets.get(url) and "IGNORED" in buckets[url][1])]
+        held = holdout.assign(db, "cleanup", site, offered, holdout.states(buckets, offered))   # the control group
         n = 0
         for url, cuts in found:
             b = buckets.get(url)
-            if b and "IGNORED" in b[1]:
+            if (b and "IGNORED" in b[1]) or url in held:
                 continue
             n += 1
             out.append({"id": cleanup_id(url), "site": site, "url": url, "title": titles.get(url) or "",
                         "sections": cuts, "words": sum(c["words"] for c in cuts)})
-        if n:
-            log(f"[cleanup] {site}: {n} posts with automated-content scaffolding to cut")
+        if n or held:
+            log(f"[cleanup] {site}: {n} posts with automated-content scaffolding to cut ({len(held)} held back as the control group)")
     out.sort(key=lambda x: -x["words"])
     return out
 

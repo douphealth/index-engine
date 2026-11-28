@@ -442,6 +442,15 @@ def _engine_cleaned(db, url, days=14):
                       (url, days)).fetchone() is not None
 
 
+def _engine_pruned(db, url, days=14):
+    """True when the prune queue set this page to noindex or redirect recently (owner-approved): no alert for it."""
+    try:
+        return db.execute("SELECT 1 FROM prune_ops WHERE url=? AND status='applied' AND julianday('now') - julianday(applied_at) < ?",
+                          (url, days)).fetchone() is not None
+    except Exception:                                   # an older database without the table
+        return False
+
+
 def regressions(db, rec):
     """Compare a fresh fetch with the previous one and raise alerts for changes that matter."""
     prev = db.execute("SELECT status, hops, noindex, canonical_state, robots_google, words FROM audits WHERE url=?",
@@ -451,6 +460,8 @@ def regressions(db, rec):
     site = (db.execute("SELECT site FROM urls WHERE url=?", (rec["url"],)).fetchone() or {"site": None})["site"]
     was = _indexable(prev["status"], prev["hops"], prev["noindex"], prev["canonical_state"], prev["robots_google"])
     now = _indexable(rec["status"], rec["hops"], rec["noindex"], rec["canonical_state"], rec["robots_google"])
+    if was and not now and _engine_pruned(db, rec["url"]):
+        return                                          # the owner approved this noindex/redirect in the prune queue
     if was and not now:
         p = db.execute("SELECT COALESCE(bing_clicks,0)+COALESCE(gsc_clicks,0) AS c FROM perf WHERE url=?", (rec["url"],)).fetchone()
         g = db.execute("SELECT coverage FROM gsc WHERE url=?", (rec["url"],)).fetchone()
